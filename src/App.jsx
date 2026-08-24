@@ -6,7 +6,7 @@ import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, L
 // (Settings → API no painel do Supabase)
 // =========================================================
 const SUPABASE_URL = "https://zmkpfiqtwfcknwzzolcv.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpta3BmaXF0d2Zja253enpvbGN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcwODM3NTUsImV4cCI6MjEwMjY1OTc1NX0.Ip2BA9g82dVPiruT71Ae47xsX9_qZ1sWr5_FtTuEtv4"; // cole a chave inteira que você copiou do painel
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpta3BmaXF0d2Zja253enpvbGN2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcwODM3NTUsImV4cCI6MjEwMjY1OTc1NX0.Ip2BA9g82dVPiruT71Ae47xsX9_qZ1sWr5_FtTuEtv4";
 const FOTOS_BUCKET = "funcionarios-fotos";
 
 // ---------- constants ----------
@@ -47,6 +47,100 @@ function brl(v) {
 }
 
 // =========================================================
+// CLASSIFICAÇÃO AUTOMÁTICA DE PONTO DIÁRIO
+// Regras Prosign:
+//  - Segunda: 08:30–17:30, almoço 12:00–13:00 (8h normais)
+//  - Terça a sexta: 08:00–18:00, almoço 12:00–13:00 (9h normais)
+//  - Sábado: sem expediente normal, tudo é extra 60%
+//  - Domingo ou feriado (marcado manualmente): tudo é extra 100%
+//  - 22:00–05:00: adicional noturno de 20% (sobre hora normal ou extra)
+// =========================================================
+const HORARIOS_SEMANA = {
+  1: { inicio: "08:30", fim: "17:30" }, // segunda
+  2: { inicio: "08:00", fim: "18:00" }, // terça
+  3: { inicio: "08:00", fim: "18:00" }, // quarta
+  4: { inicio: "08:00", fim: "18:00" }, // quinta
+  5: { inicio: "08:00", fim: "18:00" }, // sexta
+};
+const ALMOCO = { inicio: "12:00", fim: "13:00" };
+const NOITE_INICIO = "22:00";
+const NOITE_FIM = "05:00";
+
+function toMin(hhmm) {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+}
+
+function diaVazio() {
+  return { he50: 0, he60: 0, he100: 0, heNot50: 0, heNot60: 0, heNot100: 0, adicNot: 0, normal: 0 };
+}
+
+function classificarDia(entradaStr, saidaStr, dataISO, feriado) {
+  if (!entradaStr || !saidaStr || !dataISO) return diaVazio();
+  const weekday = new Date(dataISO + "T00:00:00").getDay();
+
+  let entrada = toMin(entradaStr);
+  let saida = toMin(saidaStr);
+  if (saida <= entrada) saida += 24 * 60;
+
+  let horario = null;
+  let percentual;
+  if (feriado || weekday === 0) {
+    percentual = "he100";
+  } else if (weekday === 6) {
+    percentual = "he60";
+  } else {
+    const h = HORARIOS_SEMANA[weekday];
+    horario = { inicio: toMin(h.inicio), fim: toMin(h.fim) };
+    percentual = "he50";
+  }
+
+  const almocoIni = toMin(ALMOCO.inicio);
+  const almocoFim = toMin(ALMOCO.fim);
+  const noiteIni = toMin(NOITE_INICIO);
+  const noiteFim = toMin(NOITE_FIM);
+
+  const NOT_MAP = { he50: "heNot50", he60: "heNot60", he100: "heNot100" };
+  const buckets = diaVazio();
+
+  for (let m = entrada; m < saida; m++) {
+    const mod = m % 1440;
+    if (horario && mod >= almocoIni && mod < almocoFim) continue;
+    const noite = mod >= noiteIni || mod < noiteFim;
+    const dentroHorario = horario && mod >= horario.inicio && mod < horario.fim;
+    if (dentroHorario) {
+      buckets.normal += 1;
+      if (noite) buckets.adicNot += 1;
+    } else {
+      buckets[noite ? NOT_MAP[percentual] : percentual] += 1;
+    }
+  }
+  Object.keys(buckets).forEach((k) => (buckets[k] = buckets[k] / 60));
+  return buckets;
+}
+
+function agregarMes(registros) {
+  const soma = diaVazio();
+  registros.forEach((r) => {
+    const c = classificarDia(r.entrada, r.saida, r.data, r.feriado);
+    Object.keys(soma).forEach((k) => (soma[k] += c[k]));
+  });
+  return soma;
+}
+
+function mesRange(mesRef) {
+  const [ano, mes] = mesRef.split("-").map(Number);
+  const inicio = `${mesRef}-01`;
+  const fimExclusivo = mes === 12 ? `${ano + 1}-01-01` : `${ano}-${String(mes + 1).padStart(2, "0")}-01`;
+  return { inicio, fimExclusivo };
+}
+
+const DIAS_SEMANA = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+function diaSemanaLabel(dataISO) {
+  return DIAS_SEMANA[new Date(dataISO + "T00:00:00").getDay()];
+}
+
+// =========================================================
 // CAMADA SUPABASE (REST direto via fetch, sem o SDK supabase-js)
 // =========================================================
 async function sbRequest(path, session, { method = "GET", body, extraHeaders = {} } = {}) {
@@ -78,7 +172,7 @@ async function sbLogin(email, password) {
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error_description || data.msg || "Login inválido");
-  return data; // { access_token, refresh_token, user, ... }
+  return data;
 }
 
 async function sbUploadFoto(file, path, session) {
@@ -105,6 +199,13 @@ function funcionarioFromRow(r) {
 }
 function funcionarioToRow(f) {
   return { codigo: f.codigo, nome: f.nome, cargo_id: f.cargoId, gratificacao: f.gratificacao || 0, admissao: f.admissao || null, foto_url: f.fotoUrl || null };
+}
+
+function registroFromRow(r) {
+  return { id: r.id, funcionarioId: r.funcionario_id, data: r.data, entrada: (r.hora_entrada || "").slice(0,5), saida: (r.hora_saida || "").slice(0,5), feriado: !!r.feriado };
+}
+function registroToRow(r) {
+  return { funcionario_id: r.funcionarioId, data: r.data, hora_entrada: r.entrada, hora_saida: r.saida, feriado: !!r.feriado };
 }
 
 function lancamentoFromRow(r) {
@@ -270,7 +371,7 @@ export default function App() {
               />
             )}
             {tab === "relatorios" && (
-              <RelatoriosView funcionarios={funcionarios} cargos={cargos} lancamentos={lancamentos} mesRef={mesRef} setMesRef={setMesRef} />
+              <RelatoriosView funcionarios={funcionarios} cargos={cargos} lancamentos={lancamentos} mesRef={mesRef} setMesRef={setMesRef} session={session} setErro={setErro} />
             )}
           </>
         )}
@@ -626,26 +727,69 @@ function FuncionarioForm({ initial, onCancel, onSave, cargos, salvando }) {
 }
 
 // =========================================================
-// Lançamentos
+// Lançamentos — bate ponto diário + faltas/DSR/atestado mensal
 // =========================================================
 function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, mesRef, setMesRef, session, setErro }) {
   const [selId, setSelId] = useState(funcionarios[0]?.id || "");
-  const [salvando, setSalvando] = useState(false);
+  const [registros, setRegistros] = useState([]);
+  const [carregandoRegistros, setCarregandoRegistros] = useState(false);
+  const [salvandoPonto, setSalvandoPonto] = useState(false);
+  const [salvandoFaltas, setSalvandoFaltas] = useState(false);
   const funcionario = funcionarios.find((f) => f.id === selId);
 
-  const blank = { funcionarioId: selId, mes: mesRef, he50: 0, he60: 0, he100: 0, adicNot: 0, heNot50: 0, heNot60: 0, heNot100: 0, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0 };
-  const [form, setForm] = useState(blank);
+  const blankPonto = { data: `${mesRef}-01`, entrada: "", saida: "", feriado: false };
+  const [pontoForm, setPontoForm] = useState(blankPonto);
+
+  const blankFaltas = { funcionarioId: selId, mes: mesRef, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0 };
+  const [faltasForm, setFaltasForm] = useState(blankFaltas);
 
   useEffect(() => {
     const ex = lancamentos.find((l) => l.funcionarioId === selId && l.mes === mesRef);
-    setForm(ex || { ...blank, funcionarioId: selId, mes: mesRef });
+    setFaltasForm(ex || { ...blankFaltas, funcionarioId: selId, mes: mesRef });
+    setPontoForm({ ...blankPonto, data: `${mesRef}-01` });
   }, [selId, mesRef]); // eslint-disable-line
 
-  async function handleSalvar() {
-    setSalvando(true);
+  useEffect(() => {
+    if (!selId) return;
+    const { inicio, fimExclusivo } = mesRange(mesRef);
+    setCarregandoRegistros(true);
+    sbRequest(`registros_ponto?select=*&funcionario_id=eq.${selId}&data=gte.${inicio}&data=lt.${fimExclusivo}&order=data.asc`, session)
+      .then((rows) => setRegistros((rows || []).map(registroFromRow)))
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregandoRegistros(false));
+  }, [selId, mesRef, session]); // eslint-disable-line
+
+  async function handleSalvarPonto() {
+    if (!pontoForm.data || !pontoForm.entrada || !pontoForm.saida) return;
+    setSalvandoPonto(true);
     setErro("");
     try {
-      const row = lancamentoToRow(form);
+      const row = registroToRow({ ...pontoForm, funcionarioId: selId });
+      const [saved] = await sbRequest("registros_ponto?on_conflict=funcionario_id,data", session, {
+        method: "POST", body: row, extraHeaders: { Prefer: "resolution=merge-duplicates,return=representation" },
+      });
+      const novo = registroFromRow(saved);
+      setRegistros((rs) => {
+        const next = rs.some((r) => r.id === novo.id) ? rs.map((r) => (r.id === novo.id ? novo : r)) : [...rs, novo];
+        return next.sort((a, b) => a.data.localeCompare(b.data));
+      });
+      setPontoForm({ ...blankPonto, data: pontoForm.data });
+    } catch (e) { setErro(e.message); }
+    finally { setSalvandoPonto(false); }
+  }
+
+  async function handleExcluirPonto(id) {
+    try {
+      await sbRequest(`registros_ponto?id=eq.${id}`, session, { method: "DELETE" });
+      setRegistros((rs) => rs.filter((r) => r.id !== id));
+    } catch (e) { setErro(e.message); }
+  }
+
+  async function handleSalvarFaltas() {
+    setSalvandoFaltas(true);
+    setErro("");
+    try {
+      const row = lancamentoToRow(faltasForm);
       const [saved] = await sbRequest("lancamentos?on_conflict=funcionario_id,mes_referencia", session, {
         method: "POST", body: row, extraHeaders: { Prefer: "resolution=merge-duplicates,return=representation" },
       });
@@ -654,14 +798,16 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
         ? lancamentos.map((l) => (l.id === novo.id ? novo : l))
         : [...lancamentos.filter((l) => !(l.funcionarioId === selId && l.mes === mesRef)), novo];
       setLancamentos(next);
-      setForm(novo);
+      setFaltasForm(novo);
     } catch (e) { setErro(e.message); }
-    finally { setSalvando(false); }
+    finally { setSalvandoFaltas(false); }
   }
 
   if (!funcionarios.length) return <div style={{ color: MUTED }}>Cadastre um funcionário primeiro na aba "Funcionários".</div>;
 
-  const preview = funcionario ? calcularLancamento(funcionario, cargos, form) : null;
+  const agregado = agregarMes(registros);
+  const lancParaCalculo = { ...agregado, faltasDias: faltasForm.faltasDias, faltasHoras: faltasForm.faltasHoras, dsrDias: faltasForm.dsrDias };
+  const preview = funcionario ? calcularLancamento(funcionario, cargos, lancParaCalculo) : null;
 
   return (
     <div>
@@ -673,29 +819,87 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 18 }}>
-        <Card>
-          <h3 style={{ marginTop: 0, fontSize: 14, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Horas extras (hh:mm)</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 18 }}>
-            {CAMPOS_LANC.map((c) => (
-              <Field key={c.key} label={c.label}>
-                <input style={inputStyle} placeholder="0:00" defaultValue={decimalToHHMM(form[c.key])} onBlur={(e) => setForm((s) => ({ ...s, [c.key]: hhmmToDecimal(e.target.value) }))} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <Card>
+            <h3 style={{ marginTop: 0, fontSize: 14, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Bater ponto do dia</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
+              <Field label="Data">
+                <input type="date" style={inputStyle} value={pontoForm.data} onChange={(e) => setPontoForm({ ...pontoForm, data: e.target.value })} />
               </Field>
-            ))}
-          </div>
-          <h3 style={{ fontSize: 14, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Faltas / DSR / Atestado</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Faltas não just. (dias)"><input type="number" style={inputStyle} value={form.faltasDias} onChange={(e) => setForm({ ...form, faltasDias: parseFloat(e.target.value) || 0 })} /></Field>
-            <Field label="Faltas não just. (hh:mm)"><input style={inputStyle} placeholder="0:00" defaultValue={decimalToHHMM(form.faltasHoras)} onBlur={(e) => setForm((s) => ({ ...s, faltasHoras: hhmmToDecimal(e.target.value) }))} /></Field>
-            <Field label="D.S.R. perdido (dias)"><input type="number" style={inputStyle} value={form.dsrDias} onChange={(e) => setForm({ ...form, dsrDias: parseFloat(e.target.value) || 0 })} /></Field>
-            <Field label="Atestado (dias)"><input type="number" style={inputStyle} value={form.atestadoDias} onChange={(e) => setForm({ ...form, atestadoDias: parseFloat(e.target.value) || 0 })} /></Field>
-          </div>
-          <button onClick={handleSalvar} disabled={salvando} style={{ ...btnPrimary, marginTop: 18 }}><Save size={15} /> {salvando ? "Salvando..." : "Salvar lançamento"}</button>
-        </Card>
+              <Field label="Entrada">
+                <input type="time" style={inputStyle} value={pontoForm.entrada} onChange={(e) => setPontoForm({ ...pontoForm, entrada: e.target.value })} />
+              </Field>
+              <Field label="Saída">
+                <input type="time" style={inputStyle} value={pontoForm.saida} onChange={(e) => setPontoForm({ ...pontoForm, saida: e.target.value })} />
+              </Field>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: MUTED, paddingBottom: 9 }}>
+                <input type="checkbox" checked={pontoForm.feriado} onChange={(e) => setPontoForm({ ...pontoForm, feriado: e.target.checked })} />
+                Feriado
+              </label>
+            </div>
+            <button onClick={handleSalvarPonto} disabled={salvandoPonto} style={{ ...btnPrimary, marginTop: 14 }}>
+              <Plus size={15} /> {salvandoPonto ? "Salvando..." : "Adicionar / atualizar dia"}
+            </button>
+
+            <div style={{ marginTop: 18, borderTop: `1px solid ${BORDER}`, paddingTop: 14 }}>
+              {carregandoRegistros ? (
+                <div style={{ fontSize: 13, color: MUTED }}>Carregando dias batidos...</div>
+              ) : registros.length === 0 ? (
+                <div style={{ fontSize: 13, color: MUTED }}>Nenhum dia registrado neste mês ainda.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: MUTED }}>
+                      <th style={{ padding: "4px 6px" }}>Dia</th>
+                      <th style={{ padding: "4px 6px" }}>Entrada</th>
+                      <th style={{ padding: "4px 6px" }}>Saída</th>
+                      <th style={{ padding: "4px 6px" }}>Classificação</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {registros.map((r) => {
+                      const c = classificarDia(r.entrada, r.saida, r.data, r.feriado);
+                      const tags = Object.entries(c).filter(([k, v]) => k !== "normal" && v > 0);
+                      return (
+                        <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                          <td style={{ padding: "6px" }}>{r.data.slice(8,10)}/{r.data.slice(5,7)} · {diaSemanaLabel(r.data)}{r.feriado ? " 🎉" : ""}</td>
+                          <td style={{ padding: "6px", fontFamily: FONT_MONO }}>{r.entrada}</td>
+                          <td style={{ padding: "6px", fontFamily: FONT_MONO }}>{r.saida}</td>
+                          <td style={{ padding: "6px" }}>
+                            {tags.length === 0 ? <span style={{ color: MUTED }}>só horas normais</span> : tags.map(([k, v]) => (
+                              <span key={k} style={{ marginRight: 8, color: BAR_COLORS[k] || MUTED }}>{CAMPOS_LANC.find((c2) => c2.key === k)?.label.replace("H. Extras ", "").replace("Adic. ", "") || k}: {decimalToHHMM(v)}</span>
+                            ))}
+                          </td>
+                          <td style={{ padding: "6px", textAlign: "right" }}>
+                            <button onClick={() => handleExcluirPonto(r.id)} style={{ background: "none", border: "none", color: DANGER, cursor: "pointer" }}><Trash2 size={13} /></button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </Card>
+
+          <Card>
+            <h3 style={{ marginTop: 0, fontSize: 14, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Faltas / DSR / Atestado (mês)</h3>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <Field label="Faltas não just. (dias)"><input type="number" style={inputStyle} value={faltasForm.faltasDias} onChange={(e) => setFaltasForm({ ...faltasForm, faltasDias: parseFloat(e.target.value) || 0 })} /></Field>
+              <Field label="Faltas não just. (hh:mm)"><input style={inputStyle} placeholder="0:00" defaultValue={decimalToHHMM(faltasForm.faltasHoras)} onBlur={(e) => setFaltasForm((s) => ({ ...s, faltasHoras: hhmmToDecimal(e.target.value) }))} /></Field>
+              <Field label="D.S.R. perdido (dias)"><input type="number" style={inputStyle} value={faltasForm.dsrDias} onChange={(e) => setFaltasForm({ ...faltasForm, dsrDias: parseFloat(e.target.value) || 0 })} /></Field>
+              <Field label="Atestado (dias)"><input type="number" style={inputStyle} value={faltasForm.atestadoDias} onChange={(e) => setFaltasForm({ ...faltasForm, atestadoDias: parseFloat(e.target.value) || 0 })} /></Field>
+            </div>
+            <button onClick={handleSalvarFaltas} disabled={salvandoFaltas} style={{ ...btnPrimary, marginTop: 14 }}><Save size={15} /> {salvandoFaltas ? "Salvando..." : "Salvar faltas/DSR"}</button>
+          </Card>
+        </div>
 
         {preview && (
           <Card style={{ background: NAVY, color: "#fff", height: "fit-content" }}>
-            <div style={{ fontSize: 12, color: "#9FB0CC", textTransform: "uppercase", letterSpacing: 0.5 }}>Prévia do cálculo</div>
+            <div style={{ fontSize: 12, color: "#9FB0CC", textTransform: "uppercase", letterSpacing: 0.5 }}>Prévia do cálculo (mês)</div>
             <div style={{ fontSize: 13, color: "#C7CEDB", marginTop: 4, fontFamily: FONT_MONO }}>Base: {brl(preview.salario)} · Hora: {brl(preview.valorHora)}</div>
+            <div style={{ fontSize: 12, color: "#9FB0CC", marginTop: 8 }}>Horas normais batidas: {decimalToHHMM(agregado.normal)}</div>
             <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 6 }}>
               {preview.linhas.filter((l) => l.horas > 0).map((l) => (
                 <div key={l.key} style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
@@ -731,13 +935,28 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
 // =========================================================
 // Relatórios
 // =========================================================
-function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef }) {
+function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, session, setErro }) {
+  const [registrosMes, setRegistrosMes] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+
+  useEffect(() => {
+    const { inicio, fimExclusivo } = mesRange(mesRef);
+    setCarregando(true);
+    sbRequest(`registros_ponto?select=*&data=gte.${inicio}&data=lt.${fimExclusivo}`, session)
+      .then((rows) => setRegistrosMes((rows || []).map(registroFromRow)))
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }, [mesRef, session]); // eslint-disable-line
+
   const rows = useMemo(() => funcionarios.map((f) => {
-    const lanc = lancamentos.find((l) => l.funcionarioId === f.id && l.mes === mesRef) || {};
+    const lancFaltas = lancamentos.find((l) => l.funcionarioId === f.id && l.mes === mesRef) || {};
+    const registrosFunc = registrosMes.filter((r) => r.funcionarioId === f.id);
+    const agregado = agregarMes(registrosFunc);
+    const lanc = { ...agregado, faltasDias: lancFaltas.faltasDias || 0, faltasHoras: lancFaltas.faltasHoras || 0, dsrDias: lancFaltas.dsrDias || 0 };
     const calc = calcularLancamento(f, cargos, lanc);
     const cargo = cargos.find((c) => c.id === f.cargoId);
     return { f, cargo, lanc, calc };
-  }), [funcionarios, cargos, lancamentos, mesRef]);
+  }), [funcionarios, cargos, lancamentos, registrosMes, mesRef]);
 
   const totalGeral = rows.reduce((s, r) => s + r.calc.liquido, 0);
   const totalExtras = rows.reduce((s, r) => s + r.calc.totalValorExtras, 0);
