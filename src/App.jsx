@@ -983,6 +983,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
 function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, session, setErro }) {
   const [registrosMes, setRegistrosMes] = useState([]);
   const [carregando, setCarregando] = useState(false);
+  const [filtro, setFiltro] = useState("tudo"); // 'tudo' | 'normais' | 'extras'
 
   useEffect(() => {
     const { inicio, fimExclusivo } = mesRange(mesRef);
@@ -1000,18 +1001,25 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
     const lanc = { ...agregado, faltasDias: lancFaltas.faltasDias || 0, faltasHoras: lancFaltas.faltasHoras || 0, dsrDias: lancFaltas.dsrDias || 0 };
     const calc = calcularLancamento(f, cargos, lanc);
     const cargo = cargos.find((c) => c.id === f.cargoId);
-    return { f, cargo, lanc, calc };
+    return { f, cargo, lanc, calc, horasNormais: agregado.normal };
   }), [funcionarios, cargos, lancamentos, registrosMes, mesRef]);
 
   const totalGeral = rows.reduce((s, r) => s + r.calc.liquido, 0);
   const totalExtras = rows.reduce((s, r) => s + r.calc.totalValorExtras, 0);
   const totalDesc = rows.reduce((s, r) => s + r.calc.totalDescontos, 0);
   const totalExcedentes = rows.reduce((s, r) => s + r.calc.totalValorExcedentes, 0);
+  const totalHorasNormais = rows.reduce((s, r) => s + r.horasNormais, 0);
   const rowsComExcedente = rows.filter((r) => r.calc.totalHorasExcedentes > 0);
 
+  const FILTROS = [
+    { id: "tudo", label: "Tudo" },
+    { id: "normais", label: "Só normais" },
+    { id: "extras", label: "Só extras" },
+  ];
+
   function exportCSV() {
-    const header = ["Código","Nome","Função","H.Extras (até 40h)","Valor Extras","H.Excedentes","Valor Excedentes","Descontos","Líquido"];
-    const lines = rows.map((r) => [r.f.codigo, r.f.nome, r.cargo?.funcao || "", r.calc.totalHorasExtras.toFixed(2), r.calc.totalValorExtras.toFixed(2), r.calc.totalHorasExcedentes.toFixed(2), r.calc.totalValorExcedentes.toFixed(2), r.calc.totalDescontos.toFixed(2), r.calc.liquido.toFixed(2)]);
+    const header = ["Código","Nome","Função","H.Normais","H.Extras (até 40h)","Valor Extras","H.Excedentes","Valor Excedentes","Descontos","Líquido"];
+    const lines = rows.map((r) => [r.f.codigo, r.f.nome, r.cargo?.funcao || "", r.horasNormais.toFixed(2), r.calc.totalHorasExtras.toFixed(2), r.calc.totalValorExtras.toFixed(2), r.calc.totalHorasExcedentes.toFixed(2), r.calc.totalValorExcedentes.toFixed(2), r.calc.totalDescontos.toFixed(2), r.calc.liquido.toFixed(2)]);
     const csv = [header, ...lines].map((l) => l.join(";")).join("\n");
     const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -1030,11 +1038,30 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 18 }}>
-        <SummaryCard label="Extras (até 40h)" value={brl(totalExtras)} color={OK} />
-        <SummaryCard label="Pagamento de Extras (>40h)" value={brl(totalExcedentes)} color={GOLD} />
-        <SummaryCard label="Total de descontos" value={brl(totalDesc)} color={DANGER} />
-        <SummaryCard label="Líquido geral" value={brl(totalGeral)} color={GOLD} dark />
+      <div style={{ display: "flex", gap: 6, marginBottom: 18 }}>
+        {FILTROS.map((fl) => (
+          <button
+            key={fl.id}
+            onClick={() => setFiltro(fl.id)}
+            style={{
+              padding: "8px 16px", borderRadius: 8, border: `1px solid ${filtro === fl.id ? NAVY : BORDER}`,
+              background: filtro === fl.id ? NAVY : "#fff", color: filtro === fl.id ? "#fff" : TEXT,
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            {fl.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: filtro === "tudo" ? "repeat(4, 1fr)" : "repeat(2, 1fr)", gap: 14, marginBottom: 18 }}>
+        {filtro !== "extras" && <SummaryCard label="Horas normais" value={decimalToHHMM(totalHorasNormais)} color={NAVY} />}
+        {filtro !== "normais" && <SummaryCard label="Extras (até 40h)" value={brl(totalExtras)} color={OK} />}
+        {filtro === "tudo" && <SummaryCard label="Pagamento de Extras (>40h)" value={brl(totalExcedentes)} color={GOLD} />}
+        {filtro === "tudo" && <SummaryCard label="Total de descontos" value={brl(totalDesc)} color={DANGER} />}
+        {filtro === "tudo" && <SummaryCard label="Líquido geral" value={brl(totalGeral)} color={GOLD} dark />}
+        {filtro === "normais" && <SummaryCard label="Média por funcionário" value={rows.length ? decimalToHHMM(totalHorasNormais / rows.length) : "-"} color={NAVY_DARK} dark />}
+        {filtro === "extras" && <SummaryCard label="Valor total de extras" value={brl(totalExtras + totalExcedentes)} color={GOLD} dark />}
       </div>
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
@@ -1042,23 +1069,39 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
-                {["Funcionário","Distribuição","H.Extras (40h)","Extras (R$)","Descontos","Líquido"].map((h) => (
+                {[
+                  "Funcionário",
+                  ...(filtro !== "extras" ? ["H.Normais"] : []),
+                  ...(filtro !== "normais" ? ["Distribuição", "H.Extras (40h)", "Extras (R$)"] : []),
+                  ...(filtro === "tudo" ? ["Descontos", "Líquido"] : []),
+                ].map((h) => (
                   <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ f, cargo, calc }) => (
+              {rows.map(({ f, cargo, calc, horasNormais }) => (
                 <tr key={f.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                   <td style={{ padding: "12px 14px" }}>
                     <div style={{ fontWeight: 600 }}>{f.nome}</div>
                     <div style={{ fontSize: 11, color: MUTED }}>{f.codigo} · {cargo?.funcao || "sem cargo"}</div>
                   </td>
-                  <td style={{ padding: "12px 14px", width: 160 }}><StackedBar linhas={calc.linhas} /></td>
-                  <td style={{ padding: "12px 14px", fontFamily: FONT_MONO }}>{decimalToHHMM(calc.totalHorasExtras)}</td>
-                  <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, color: OK }}>{brl(calc.totalValorExtras)}</td>
-                  <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, color: calc.totalDescontos > 0 ? DANGER : MUTED }}>{calc.totalDescontos > 0 ? `- ${brl(calc.totalDescontos)}` : "-"}</td>
-                  <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(calc.liquido)}</td>
+                  {filtro !== "extras" && (
+                    <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, color: NAVY, fontWeight: 600 }}>{decimalToHHMM(horasNormais)}</td>
+                  )}
+                  {filtro !== "normais" && (
+                    <>
+                      <td style={{ padding: "12px 14px", width: 160 }}><StackedBar linhas={calc.linhas} /></td>
+                      <td style={{ padding: "12px 14px", fontFamily: FONT_MONO }}>{decimalToHHMM(calc.totalHorasExtras)}</td>
+                      <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, color: OK }}>{brl(calc.totalValorExtras)}</td>
+                    </>
+                  )}
+                  {filtro === "tudo" && (
+                    <>
+                      <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, color: calc.totalDescontos > 0 ? DANGER : MUTED }}>{calc.totalDescontos > 0 ? `- ${brl(calc.totalDescontos)}` : "-"}</td>
+                      <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(calc.liquido)}</td>
+                    </>
+                  )}
                 </tr>
               ))}
               {rows.length === 0 && <tr><td colSpan={6} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum funcionário cadastrado.</td></tr>}
@@ -1067,7 +1110,7 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
         </div>
       </Card>
 
-      {rowsComExcedente.length > 0 && (
+      {filtro === "tudo" && rowsComExcedente.length > 0 && (
         <>
           <h3 style={{ fontSize: 15, fontWeight: 700, marginTop: 26, marginBottom: 12 }}>
             Pagamento de Extras <span style={{ color: MUTED, fontWeight: 400 }}>(horas acima do teto de 40h/mês)</span>
