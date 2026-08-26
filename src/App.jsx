@@ -52,7 +52,9 @@ function brl(v) {
 //  - Segunda: 08:30–17:30, almoço 12:00–13:00 (8h normais)
 //  - Terça a sexta: 08:00–18:00, almoço 12:00–13:00 (9h normais)
 //  - Sábado: sem expediente normal, tudo é extra 60%
+//    (pode ter almoço manual descontado — ver almocoManualHoras)
 //  - Domingo ou feriado (marcado manualmente): tudo é extra 100%
+//    (pode ter almoço manual descontado — ver almocoManualHoras)
 //  - 22:00–05:00: adicional noturno de 20% (sobre hora normal ou extra)
 // =========================================================
 const HORARIOS_SEMANA = {
@@ -75,7 +77,11 @@ function diaVazio() {
   return { he50: 0, he60: 0, he100: 0, heNot50: 0, heNot60: 0, heNot100: 0, adicNot: 0, normal: 0 };
 }
 
-function classificarDia(entradaStr, saidaStr, dataISO, feriado) {
+// almocoManualHoras: usado em dias SEM horário fixo (sábado/domingo/feriado)
+// quando foi dado um intervalo de almoço que precisa ser descontado das
+// horas extras. Em dias com horário fixo, o almoço já é descontado
+// automaticamente (ALMOCO.inicio–ALMOCO.fim) e esse parâmetro é ignorado.
+function classificarDia(entradaStr, saidaStr, dataISO, feriado, almocoManualHoras = 0) {
   if (!entradaStr || !saidaStr || !dataISO) return diaVazio();
   const weekday = new Date(dataISO + "T00:00:00").getDay();
 
@@ -85,6 +91,7 @@ function classificarDia(entradaStr, saidaStr, dataISO, feriado) {
 
   let horario = null;
   let percentual;
+  const temHorarioFixo = !feriado && weekday !== 0 && weekday !== 6;
   if (feriado || weekday === 0) {
     percentual = "he100";
   } else if (weekday === 6) {
@@ -93,6 +100,13 @@ function classificarDia(entradaStr, saidaStr, dataISO, feriado) {
     const h = HORARIOS_SEMANA[weekday];
     horario = { inicio: toMin(h.inicio), fim: toMin(h.fim) };
     percentual = "he50";
+  }
+
+  // Desconta o almoço manual do total trabalhado quando o dia não tem
+  // horário fixo (sábado/domingo/feriado) e foi informado.
+  if (!temHorarioFixo && almocoManualHoras > 0) {
+    saida -= Math.round(almocoManualHoras * 60);
+    if (saida <= entrada) saida = entrada; // nunca fica negativo
   }
 
   const almocoIni = toMin(ALMOCO.inicio);
@@ -122,7 +136,7 @@ function classificarDia(entradaStr, saidaStr, dataISO, feriado) {
 function agregarMes(registros) {
   const soma = diaVazio();
   registros.forEach((r) => {
-    const c = classificarDia(r.entrada, r.saida, r.data, r.feriado);
+    const c = classificarDia(r.entrada, r.saida, r.data, r.feriado, r.almocoHoras);
     Object.keys(soma).forEach((k) => (soma[k] += c[k]));
   });
   return soma;
@@ -138,6 +152,11 @@ function mesRange(mesRef) {
 const DIAS_SEMANA = ["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
 function diaSemanaLabel(dataISO) {
   return DIAS_SEMANA[new Date(dataISO + "T00:00:00").getDay()];
+}
+function diaTemHorarioFixo(dataISO, feriado) {
+  if (!dataISO) return true;
+  const weekday = new Date(dataISO + "T00:00:00").getDay();
+  return !feriado && weekday !== 0 && weekday !== 6;
 }
 
 // =========================================================
@@ -202,10 +221,10 @@ function funcionarioToRow(f) {
 }
 
 function registroFromRow(r) {
-  return { id: r.id, funcionarioId: r.funcionario_id, data: r.data, entrada: (r.hora_entrada || "").slice(0,5), saida: (r.hora_saida || "").slice(0,5), feriado: !!r.feriado };
+  return { id: r.id, funcionarioId: r.funcionario_id, data: r.data, entrada: (r.hora_entrada || "").slice(0,5), saida: (r.hora_saida || "").slice(0,5), feriado: !!r.feriado, almocoHoras: Number(r.almoco_horas || 0) };
 }
 function registroToRow(r) {
-  return { funcionario_id: r.funcionarioId, data: r.data, hora_entrada: r.entrada, hora_saida: r.saida, feriado: !!r.feriado };
+  return { funcionario_id: r.funcionarioId, data: r.data, hora_entrada: r.entrada, hora_saida: r.saida, feriado: !!r.feriado, almoco_horas: r.almocoHoras || 0 };
 }
 
 function lancamentoFromRow(r) {
@@ -737,7 +756,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
   const [salvandoFaltas, setSalvandoFaltas] = useState(false);
   const funcionario = funcionarios.find((f) => f.id === selId);
 
-  const blankPonto = { data: `${mesRef}-01`, entrada: "", saida: "", feriado: false };
+  const blankPonto = { data: `${mesRef}-01`, entrada: "", saida: "", feriado: false, temAlmoco: false, almocoHoras: 0 };
   const [pontoForm, setPontoForm] = useState(blankPonto);
 
   const blankFaltas = { funcionarioId: selId, mes: mesRef, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0 };
@@ -764,7 +783,8 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
     setSalvandoPonto(true);
     setErro("");
     try {
-      const row = registroToRow({ ...pontoForm, funcionarioId: selId });
+      const almocoHoras = pontoForm.temAlmoco ? pontoForm.almocoHoras : 0;
+      const row = registroToRow({ ...pontoForm, almocoHoras, funcionarioId: selId });
       const [saved] = await sbRequest("registros_ponto?on_conflict=funcionario_id,data", session, {
         method: "POST", body: row, extraHeaders: { Prefer: "resolution=merge-duplicates,return=representation" },
       });
@@ -808,6 +828,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
   const agregado = agregarMes(registros);
   const lancParaCalculo = { ...agregado, faltasDias: faltasForm.faltasDias, faltasHoras: faltasForm.faltasHoras, dsrDias: faltasForm.dsrDias };
   const preview = funcionario ? calcularLancamento(funcionario, cargos, lancParaCalculo) : null;
+  const pontoFormSemHorarioFixo = !diaTemHorarioFixo(pontoForm.data, pontoForm.feriado);
 
   return (
     <div>
@@ -837,6 +858,30 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
                 Feriado
               </label>
             </div>
+
+            {pontoFormSemHorarioFixo && (
+              <div style={{ display: "flex", gap: 14, alignItems: "end", marginTop: 12, padding: 12, background: "#FBF3E3", borderRadius: 8 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#8A6A20" }}>
+                  <input
+                    type="checkbox"
+                    checked={pontoForm.temAlmoco}
+                    onChange={(e) => setPontoForm({ ...pontoForm, temAlmoco: e.target.checked, almocoHoras: e.target.checked ? (pontoForm.almocoHoras || 1) : 0 })}
+                  />
+                  Teve horário de almoço?
+                </label>
+                {pontoForm.temAlmoco && (
+                  <Field label="Duração do almoço (hh:mm)">
+                    <input
+                      style={inputStyle}
+                      placeholder="1:00"
+                      defaultValue={decimalToHHMM(pontoForm.almocoHoras || 1)}
+                      onBlur={(e) => setPontoForm((s) => ({ ...s, almocoHoras: hhmmToDecimal(e.target.value) }))}
+                    />
+                  </Field>
+                )}
+              </div>
+            )}
+
             <button onClick={handleSalvarPonto} disabled={salvandoPonto} style={{ ...btnPrimary, marginTop: 14 }}>
               <Plus size={15} /> {salvandoPonto ? "Salvando..." : "Adicionar / atualizar dia"}
             </button>
@@ -859,11 +904,11 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
                   </thead>
                   <tbody>
                     {registros.map((r) => {
-                      const c = classificarDia(r.entrada, r.saida, r.data, r.feriado);
+                      const c = classificarDia(r.entrada, r.saida, r.data, r.feriado, r.almocoHoras);
                       const tags = Object.entries(c).filter(([k, v]) => k !== "normal" && v > 0);
                       return (
                         <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
-                          <td style={{ padding: "6px" }}>{r.data.slice(8,10)}/{r.data.slice(5,7)} · {diaSemanaLabel(r.data)}{r.feriado ? " 🎉" : ""}</td>
+                          <td style={{ padding: "6px" }}>{r.data.slice(8,10)}/{r.data.slice(5,7)} · {diaSemanaLabel(r.data)}{r.feriado ? " 🎉" : ""}{r.almocoHoras > 0 ? ` 🍽️ ${decimalToHHMM(r.almocoHoras)}` : ""}</td>
                           <td style={{ padding: "6px", fontFamily: FONT_MONO }}>{r.entrada}</td>
                           <td style={{ padding: "6px", fontFamily: FONT_MONO }}>{r.saida}</td>
                           <td style={{ padding: "6px" }}>
