@@ -46,19 +46,13 @@ function brl(v) {
 
 // =========================================================
 // CLASSIFICAÇÃO AUTOMÁTICA DE PONTO DIÁRIO
-// Regras Prosign:
-//  - Segunda: 08:30–17:30, almoço 12:00–13:00 (8h normais)
-//  - Terça a sexta: 08:00–18:00, almoço 12:00–13:00 (9h normais)
-//  - Sábado: sem expediente normal, tudo é extra 60%
-//  - Domingo ou feriado (marcado manualmente): tudo é extra 100%
-//  - 22:00–05:00: adicional noturno de 20% (sobre hora normal ou extra)
 // =========================================================
 const HORARIOS_SEMANA = {
-  1: { inicio: "08:30", fim: "17:30" }, // segunda
-  2: { inicio: "08:00", fim: "18:00" }, // terça
-  3: { inicio: "08:00", fim: "18:00" }, // quarta
-  4: { inicio: "08:00", fim: "18:00" }, // quinta
-  5: { inicio: "08:00", fim: "18:00" }, // sexta
+  1: { inicio: "08:30", fim: "17:30" },
+  2: { inicio: "08:00", fim: "18:00" },
+  3: { inicio: "08:00", fim: "18:00" },
+  4: { inicio: "08:00", fim: "18:00" },
+  5: { inicio: "08:00", fim: "18:00" },
 };
 const ALMOCO = { inicio: "12:00", fim: "13:00" };
 const NOITE_INICIO = "22:00";
@@ -73,8 +67,6 @@ function diaVazio() {
   return { he50: 0, he60: 0, he100: 0, heNot50: 0, heNot60: 0, heNot100: 0, adicNot: 0, normal: 0 };
 }
 
-// Classifica UM período de trabalho (entrada/saída) dentro do dia.
-// Usado internamente por classificarDia para cada turno.
 function classificarPeriodo(entradaStr, saidaStr, dataISO, feriado) {
   if (!entradaStr || !saidaStr || !dataISO) return diaVazio();
   const weekday = new Date(dataISO + "T00:00:00").getDay();
@@ -125,12 +117,6 @@ function somarBuckets(a, b) {
   return out;
 }
 
-// Classifica o dia inteiro, somando até 3 turnos de trabalho (ex.: turno
-// normal + volta à noite para uma nova hora extra depois de ir pra casa).
-// almocoHoras: usado em dias SEM horário fixo (sábado/domingo/feriado)
-// quando foi dado um intervalo de almoço que precisa ser descontado das
-// horas extras do 1º turno. Em dias com horário fixo, o almoço já é
-// descontado automaticamente (ALMOCO.inicio–ALMOCO.fim) por turno.
 function classificarDia(registro) {
   const { entrada, saida, entrada2, saida2, entrada3, saida3, data, feriado, almocoHoras } = registro;
   const temHorarioFixo = diaTemHorarioFixo(data, feriado);
@@ -185,7 +171,7 @@ function mesRefExtenso(mesRef) {
 }
 
 // =========================================================
-// CAMADA SUPABASE (REST direto via fetch, sem o SDK supabase-js)
+// CAMADA SUPABASE
 // =========================================================
 async function sbRequest(path, session, { method = "GET", body, extraHeaders = {} } = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -872,6 +858,23 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
     finally { setSalvandoFaltas(false); }
   }
 
+  async function handleExcluirFaltas() {
+    const existente = lancamentos.find((l) => l.funcionarioId === selId && l.mes === mesRef);
+    if (!existente) {
+      setFaltasForm({ ...blankFaltas, funcionarioId: selId, mes: mesRef });
+      return;
+    }
+    if (!window.confirm("Excluir faltas/DSR/atestado deste funcionário neste mês?")) return;
+    setSalvandoFaltas(true);
+    setErro("");
+    try {
+      await sbRequest(`lancamentos?id=eq.${existente.id}`, session, { method: "DELETE" });
+      setLancamentos(lancamentos.filter((l) => l.id !== existente.id));
+      setFaltasForm({ ...blankFaltas, funcionarioId: selId, mes: mesRef });
+    } catch (e) { setErro(e.message); }
+    finally { setSalvandoFaltas(false); }
+  }
+
   if (!funcionarios.length) return <div style={{ color: MUTED }}>Cadastre um funcionário primeiro na aba "Funcionários".</div>;
 
   const agregado = agregarMes(registros);
@@ -1062,7 +1065,10 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
               <Field label="D.S.R. perdido (dias)"><input type="number" style={inputStyle} value={faltasForm.dsrDias} onChange={(e) => setFaltasForm({ ...faltasForm, dsrDias: parseFloat(e.target.value) || 0 })} /></Field>
               <Field label="Atestado (dias)"><input type="number" style={inputStyle} value={faltasForm.atestadoDias} onChange={(e) => setFaltasForm({ ...faltasForm, atestadoDias: parseFloat(e.target.value) || 0 })} /></Field>
             </div>
-            <button onClick={handleSalvarFaltas} disabled={salvandoFaltas} style={{ ...btnPrimary, marginTop: 14 }}><Save size={15} /> {salvandoFaltas ? "Salvando..." : "Salvar faltas/DSR"}</button>
+            <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+              <button onClick={handleSalvarFaltas} disabled={salvandoFaltas} style={btnPrimary}><Save size={15} /> {salvandoFaltas ? "Salvando..." : "Salvar faltas/DSR"}</button>
+              <button onClick={handleExcluirFaltas} disabled={salvandoFaltas} style={btnDangerSmall}><Trash2 size={13} /> Excluir lançamento do mês</button>
+            </div>
           </Card>
         </div>
 
