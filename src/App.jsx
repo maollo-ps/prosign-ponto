@@ -117,23 +117,59 @@ function somarBuckets(a, b) {
   return out;
 }
 
+function minToHHMM(min) {
+  const m = ((min % 1440) + 1440) % 1440;
+  const hh = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+// Classifica o dia inteiro, somando até 3 turnos de trabalho (ex.: turno
+// normal + volta à noite para uma nova hora extra depois de ir pra casa).
+// almocoHoras: usado em dias SEM horário fixo (sábado/domingo/feriado)
+// quando foi dado um intervalo de almoço que precisa ser descontado das
+// horas do 1º turno. Em dias com horário fixo, o almoço já é descontado
+// automaticamente (ALMOCO.inicio–ALMOCO.fim) por turno.
+//
+// IMPORTANTE: o desconto do almoço manual é sempre feito no trecho DIURNO
+// do turno (antes das 22h), nunca no trecho noturno — mesmo quando o
+// horário de saída informado já passa das 22h. Isso evita "comer" minutos
+// que já viraram adicional noturno (bug corrigido: um domingo 05:00–22:30
+// com 1h de almoço deve virar 16:00 diurno + 0:30 noturno, e não 16:30
+// diurno com o noturno zerado).
 function classificarDia(registro) {
   const { entrada, saida, entrada2, saida2, entrada3, saida3, data, feriado, almocoHoras } = registro;
   const temHorarioFixo = diaTemHorarioFixo(data, feriado);
 
-  let saida1Ajustada = saida;
+  let buckets;
   if (!temHorarioFixo && almocoHoras > 0 && entrada && saida) {
     let e = toMin(entrada);
     let s = toMin(saida);
     if (s <= e) s += 24 * 60;
-    s -= Math.round(almocoHoras * 60);
-    if (s <= e) s = e;
-    const hh = Math.floor((s % 1440) / 60);
-    const mm = (s % 1440) % 60;
-    saida1Ajustada = `${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+
+    // Próxima ocorrência das 22h a partir da entrada.
+    let noiteIniAbs = toMin(NOITE_INICIO);
+    while (noiteIniAbs <= e) noiteIniAbs += 24 * 60;
+
+    const almocoMin = Math.round(almocoHoras * 60);
+
+    if (s > noiteIniAbs) {
+      // O turno cruza as 22h: desconta o almoço só do trecho diurno,
+      // mantendo o trecho noturno (das 22h em diante) intacto.
+      let fimDiurnoAjustado = noiteIniAbs - almocoMin;
+      if (fimDiurnoAjustado < e) fimDiurnoAjustado = e;
+      buckets = classificarPeriodo(minToHHMM(e), minToHHMM(fimDiurnoAjustado), data, feriado);
+      buckets = somarBuckets(buckets, classificarPeriodo(minToHHMM(noiteIniAbs), minToHHMM(s), data, feriado));
+    } else {
+      // Turno não alcança as 22h: desconta normalmente do fim.
+      let sAjustada = s - almocoMin;
+      if (sAjustada <= e) sAjustada = e;
+      buckets = classificarPeriodo(entrada, minToHHMM(sAjustada), data, feriado);
+    }
+  } else {
+    buckets = classificarPeriodo(entrada, saida, data, feriado);
   }
 
-  let buckets = classificarPeriodo(entrada, saida1Ajustada, data, feriado);
   if (entrada2 && saida2) buckets = somarBuckets(buckets, classificarPeriodo(entrada2, saida2, data, feriado));
   if (entrada3 && saida3) buckets = somarBuckets(buckets, classificarPeriodo(entrada3, saida3, data, feriado));
   return buckets;
@@ -1249,7 +1285,7 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
                 {[
                   "Funcionário",
                   ...(filtro !== "extras" ? ["H.Normais"] : []),
-                  ...(filtro !== "normais" ? ["Distribuição", "H.Extras (40H)", "Extras (R$)"] : []),
+                  ...(filtro !== "normais" ? ["Distribuição", "H.Extras (40h)", "Extras (R$)"] : []),
                   ...(filtro === "tudo" ? ["Descontos", "Líquido"] : []),
                 ].map((h) => (
                   <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
