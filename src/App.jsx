@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, LogOut, Loader2 } from "lucide-react";
+import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, LogOut, Loader2, Search } from "lucide-react";
 
 // =========================================================
 // CONFIGURAÇÃO DO SUPABASE — preencha com os dados do seu projeto
@@ -134,9 +134,7 @@ function minToHHMM(min) {
 // IMPORTANTE: o desconto do almoço manual é sempre feito no trecho DIURNO
 // do turno (antes das 22h), nunca no trecho noturno — mesmo quando o
 // horário de saída informado já passa das 22h. Isso evita "comer" minutos
-// que já viraram adicional noturno (bug corrigido: um domingo 05:00–22:30
-// com 1h de almoço deve virar 16:00 diurno + 0:30 noturno, e não 16:30
-// diurno com o noturno zerado).
+// que já viraram adicional noturno.
 function classificarDia(registro) {
   const { entrada, saida, entrada2, saida2, entrada3, saida3, data, feriado, almocoHoras } = registro;
   const temHorarioFixo = diaTemHorarioFixo(data, feriado);
@@ -147,21 +145,17 @@ function classificarDia(registro) {
     let s = toMin(saida);
     if (s <= e) s += 24 * 60;
 
-    // Próxima ocorrência das 22h a partir da entrada.
     let noiteIniAbs = toMin(NOITE_INICIO);
     while (noiteIniAbs <= e) noiteIniAbs += 24 * 60;
 
     const almocoMin = Math.round(almocoHoras * 60);
 
     if (s > noiteIniAbs) {
-      // O turno cruza as 22h: desconta o almoço só do trecho diurno,
-      // mantendo o trecho noturno (das 22h em diante) intacto.
       let fimDiurnoAjustado = noiteIniAbs - almocoMin;
       if (fimDiurnoAjustado < e) fimDiurnoAjustado = e;
       buckets = classificarPeriodo(minToHHMM(e), minToHHMM(fimDiurnoAjustado), data, feriado);
       buckets = somarBuckets(buckets, classificarPeriodo(minToHHMM(noiteIniAbs), minToHHMM(s), data, feriado));
     } else {
-      // Turno não alcança as 22h: desconta normalmente do fim.
       let sAjustada = s - almocoMin;
       if (sAjustada <= e) sAjustada = e;
       buckets = classificarPeriodo(entrada, minToHHMM(sAjustada), data, feriado);
@@ -453,6 +447,9 @@ export default function App() {
             {tab === "relatorios" && (
               <RelatoriosView funcionarios={funcionarios} cargos={cargos} lancamentos={lancamentos} mesRef={mesRef} setMesRef={setMesRef} session={session} setErro={setErro} />
             )}
+            {tab === "consulta" && (
+              <ConsultaView funcionarios={funcionarios} cargos={cargos} session={session} setErro={setErro} />
+            )}
           </>
         )}
       </main>
@@ -515,6 +512,7 @@ function Header({ tab, setTab, onLogout }) {
     { id: "funcionarios", label: "Funcionários", icon: Users },
     { id: "lancamentos", label: "Lançamentos", icon: Clock },
     { id: "relatorios", label: "Relatórios", icon: FileBarChart },
+    { id: "consulta", label: "Consulta", icon: Search },
   ];
   return (
     <header style={{ background: NAVY, borderBottom: `3px solid ${GOLD}` }}>
@@ -1353,6 +1351,139 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
           </Card>
         </>
       )}
+    </div>
+  );
+}
+
+// =========================================================
+// Consulta — filtro livre por funcionário + intervalo de datas,
+// pra conferir/bater com cálculos manuais (planilha, etc.)
+// =========================================================
+function ConsultaView({ funcionarios, cargos, session, setErro }) {
+  const hoje = new Date().toISOString().slice(0, 10);
+  const inicioMesAtual = hoje.slice(0, 8) + "01";
+
+  const [selId, setSelId] = useState(funcionarios[0]?.id || "");
+  const [dataInicio, setDataInicio] = useState(inicioMesAtual);
+  const [dataFim, setDataFim] = useState(hoje);
+  const [registros, setRegistros] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+
+  const funcionario = funcionarios.find((f) => String(f.id) === String(selId));
+
+  useEffect(() => {
+    if (!selId || !dataInicio || !dataFim) return;
+    setCarregando(true);
+    sbRequest(`registros_ponto?select=*&funcionario_id=eq.${selId}&data=gte.${dataInicio}&data=lte.${dataFim}&order=data.asc`, session)
+      .then((rows) => setRegistros((rows || []).map(registroFromRow)))
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }, [selId, dataInicio, dataFim, session]); // eslint-disable-line
+
+  if (!funcionarios.length) return <div style={{ color: MUTED }}>Cadastre um funcionário primeiro na aba "Funcionários".</div>;
+
+  const salario = funcionario ? salarioBase(funcionario, cargos) : 0;
+  const valorHora = salario / DIVISOR_HORA;
+
+  const linhasDias = registros.map((r) => ({ r, c: classificarDia(r) }));
+
+  const totalPeriodo = diaVazio();
+  linhasDias.forEach(({ c }) => { Object.keys(totalPeriodo).forEach((k) => (totalPeriodo[k] += c[k])); });
+
+  const resumoExtras = CAMPOS_LANC.map((cfg) => {
+    const horas = totalPeriodo[cfg.key] || 0;
+    const valor = valorLinha(horas, valorHora, cfg);
+    return { ...cfg, horas, valor };
+  });
+  const valorNormal = totalPeriodo.normal * valorHora;
+  const totalValorGeral = resumoExtras.reduce((s, l) => s + l.valor, 0) + valorNormal;
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap", alignItems: "end" }}>
+        <Field label="Funcionário">
+          <select value={selId} onChange={(e) => setSelId(e.target.value)} style={{ ...selStyle, minWidth: 240 }}>
+            {funcionarios.map((f) => <option key={f.id} value={f.id}>{f.codigo} — {f.nome}</option>)}
+          </select>
+        </Field>
+        <Field label="De">
+          <input type="date" style={inputStyle} value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} />
+        </Field>
+        <Field label="Até">
+          <input type="date" style={inputStyle} value={dataFim} onChange={(e) => setDataFim(e.target.value)} />
+        </Field>
+      </div>
+
+      {funcionario && (
+        <Card style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, color: MUTED, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Resumo do período</div>
+          <div style={{ fontSize: 13, color: MUTED, fontFamily: FONT_MONO, marginBottom: 14 }}>
+            Base: {brl(salario)} · Hora: {brl(valorHora)} · Horas normais: {decimalToHHMM(totalPeriodo.normal)}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
+            {resumoExtras.filter((l) => l.horas > 0).map((l) => (
+              <div key={l.key} style={{ padding: 10, background: "#F0F2F6", borderRadius: 8 }}>
+                <div style={{ fontSize: 11, color: MUTED }}>{l.label}</div>
+                <div style={{ fontFamily: FONT_MONO, fontWeight: 700 }}>{decimalToHHMM(l.horas)}</div>
+                <div style={{ fontFamily: FONT_MONO, color: GOLD, fontSize: 13 }}>{brl(l.valor)}</div>
+              </div>
+            ))}
+            {resumoExtras.every((l) => l.horas === 0) && (
+              <div style={{ color: MUTED, fontSize: 13 }}>Nenhuma hora extra/adicional no período.</div>
+            )}
+          </div>
+          <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: 14, paddingTop: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+            <span>Valor total do período (sem teto de 40h)</span>
+            <span style={{ fontFamily: FONT_MONO, color: GOLD }}>{brl(totalValorGeral)}</span>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          {carregando ? (
+            <div style={{ padding: 20, color: MUTED, fontSize: 13 }}>Carregando...</div>
+          ) : linhasDias.length === 0 ? (
+            <div style={{ padding: 20, color: MUTED, fontSize: 13 }}>Nenhum dia registrado nesse período.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
+                  {["Dia", "Entrada/Saída", "Classificação", "Valor do dia"].map((h) => (
+                    <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {linhasDias.map(({ r, c }) => {
+                  const tags = Object.entries(c).filter(([k, v]) => k !== "normal" && v > 0);
+                  const valorDia = CAMPOS_LANC.reduce((s, cfg) => s + valorLinha(c[cfg.key] || 0, valorHora, cfg), 0) + c.normal * valorHora;
+                  return (
+                    <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td style={{ padding: "10px 14px" }}>
+                        <div style={{ fontWeight: 600 }}>{r.data.slice(8,10)}/{r.data.slice(5,7)} · {diaSemanaLabel(r.data)}{r.feriado ? " 🎉" : ""}</div>
+                        {r.observacao && <div style={{ fontSize: 11, color: MUTED, fontStyle: "italic", marginTop: 2 }}>{r.observacao}</div>}
+                      </td>
+                      <td style={{ padding: "10px 14px", fontFamily: FONT_MONO }}>
+                        {r.entrada}–{r.saida}
+                        {r.entrada2 && <><br />{r.entrada2}–{r.saida2}</>}
+                        {r.entrada3 && <><br />{r.entrada3}–{r.saida3}</>}
+                        {r.almocoHoras > 0 && <div style={{ fontSize: 11, color: MUTED }}>🍽️ {decimalToHHMM(r.almocoHoras)}</div>}
+                      </td>
+                      <td style={{ padding: "10px 14px" }}>
+                        {tags.length === 0 ? <span style={{ color: MUTED }}>só horas normais ({decimalToHHMM(c.normal)})</span> : tags.map(([k, v]) => (
+                          <div key={k} style={{ color: BAR_COLORS[k] || MUTED }}>{CAMPOS_LANC.find((c2) => c2.key === k)?.label || k}: {decimalToHHMM(v)}</div>
+                        ))}
+                      </td>
+                      <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 600, color: GOLD }}>{brl(valorDia)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </Card>
     </div>
   );
 }
