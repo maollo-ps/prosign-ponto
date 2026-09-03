@@ -11,9 +11,11 @@ const FOTOS_BUCKET = "funcionarios-fotos";
 
 // ---------- constants ----------
 const DIVISOR_HORA = 220;
-const TETO_HORA_EXTRA = 40;
+const TETO_HORA_EXTRA = 40; // limite mensal de horas extras (regra Prosign)
 const MESES = ["01","02","03","04","05","06","07","08","09","10","11","12"];
 
+// Ordem = prioridade de preenchimento do teto de 40h. adicNot é "soAdicional"
+// (adicional noturno puro sobre hora normal) e NÃO consome o teto.
 const CAMPOS_LANC = [
   { key: "he50", col: "he_50", label: "H. Extras 50%", mult: 1.5, noturno: false },
   { key: "he60", col: "he_60", label: "H. Extras 60% (sáb.)", mult: 1.6, noturno: false },
@@ -46,13 +48,21 @@ function brl(v) {
 
 // =========================================================
 // CLASSIFICAÇÃO AUTOMÁTICA DE PONTO DIÁRIO
+// Regras Prosign:
+//  - Segunda: 08:30–17:30, almoço 12:00–13:00 (8h normais)
+//  - Terça a sexta: 08:00–18:00, almoço 12:00–13:00 (9h normais)
+//  - Sábado: sem expediente normal, tudo é extra 60%
+//    (pode ter almoço manual descontado — ver almocoManualHoras)
+//  - Domingo ou feriado (marcado manualmente): tudo é extra 100%
+//    (pode ter almoço manual descontado — ver almocoManualHoras)
+//  - 22:00–05:00: adicional noturno de 20% (sobre hora normal ou extra)
 // =========================================================
 const HORARIOS_SEMANA = {
-  1: { inicio: "08:30", fim: "17:30" },
-  2: { inicio: "08:00", fim: "18:00" },
-  3: { inicio: "08:00", fim: "18:00" },
-  4: { inicio: "08:00", fim: "18:00" },
-  5: { inicio: "08:00", fim: "18:00" },
+  1: { inicio: "08:30", fim: "17:30" }, // segunda
+  2: { inicio: "08:00", fim: "18:00" }, // terça
+  3: { inicio: "08:00", fim: "18:00" }, // quarta
+  4: { inicio: "08:00", fim: "18:00" }, // quinta
+  5: { inicio: "08:00", fim: "18:00" }, // sexta
 };
 const ALMOCO = { inicio: "12:00", fim: "13:00" };
 const NOITE_INICIO = "22:00";
@@ -67,6 +77,8 @@ function diaVazio() {
   return { he50: 0, he60: 0, he100: 0, heNot50: 0, heNot60: 0, heNot100: 0, adicNot: 0, normal: 0 };
 }
 
+// Classifica UM período de trabalho (entrada/saída) dentro do dia.
+// Usado internamente por classificarDia para cada turno.
 function classificarPeriodo(entradaStr, saidaStr, dataISO, feriado) {
   if (!entradaStr || !saidaStr || !dataISO) return diaVazio();
   const weekday = new Date(dataISO + "T00:00:00").getDay();
@@ -201,7 +213,7 @@ function mesRefExtenso(mesRef) {
 }
 
 // =========================================================
-// CAMADA SUPABASE
+// CAMADA SUPABASE (REST direto via fetch, sem o SDK supabase-js)
 // =========================================================
 async function sbRequest(path, session, { method = "GET", body, extraHeaders = {} } = {}) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
@@ -895,6 +907,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
   async function handleExcluirFaltas() {
     const existente = lancamentos.find((l) => String(l.funcionarioId) === String(selId) && l.mes === mesRef);
     if (!existente) {
+      // nada salvo no banco ainda, só limpa o formulário
       setFaltasForm({ ...blankFaltas, funcionarioId: selId, mes: mesRef });
       return;
     }
@@ -1151,6 +1164,7 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
   const [carregando, setCarregando] = useState(false);
   const [filtro, setFiltro] = useState("tudo"); // 'tudo' | 'normais' | 'extras'
   const [funcSelId, setFuncSelId] = useState("todos");
+  const [modo, setModo] = useState("resumo"); // 'resumo' | 'detalhado'
 
   useEffect(() => {
     const { inicio, fimExclusivo } = mesRange(mesRef);
@@ -1175,6 +1189,24 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
     () => (funcSelId === "todos" ? rowsTodas : rowsTodas.filter((r) => String(r.f.id) === String(funcSelId))),
     [rowsTodas, funcSelId]
   );
+
+  // Linhas dia a dia (para o modo "Detalhado") — mesma lógica da aba Consulta,
+  // uma linha por dia batido de cada funcionário dentro do filtro selecionado.
+  const linhasDetalhadas = useMemo(() => {
+    const alvo = funcSelId === "todos" ? funcionarios : funcionarios.filter((f) => String(f.id) === String(funcSelId));
+    const linhas = [];
+    alvo.forEach((f) => {
+      const valorHora = salarioBase(f, cargos) / DIVISOR_HORA;
+      const registrosFunc = registrosMes.filter((r) => r.funcionarioId === f.id);
+      registrosFunc.forEach((r) => {
+        const c = classificarDia(r);
+        linhas.push({ f, r, c, valorHora });
+      });
+    });
+    linhas.sort((a, b) => a.r.data.localeCompare(b.r.data) || a.f.nome.localeCompare(b.f.nome));
+    return linhas;
+  }, [funcionarios, cargos, registrosMes, funcSelId]);
+
 
   const totalGeral = rows.reduce((s, r) => s + r.calc.liquido, 0);
   const totalExtras = rows.reduce((s, r) => s + r.calc.totalValorExtras, 0);
@@ -1244,11 +1276,29 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
           <span><strong>Empresa:</strong> PROSIGN</span>
           <span><strong>Período de abrangência:</strong> {mesRefExtenso(mesRef)}</span>
           <span><strong>Funcionário(s):</strong> {funcSelId === "todos" ? "Todos" : rows[0]?.f.nome || "-"}</span>
-          <span><strong>Visão:</strong> {FILTROS.find((fl) => fl.id === filtro)?.label}</span>
+          <span><strong>Visão:</strong> {modo === "resumo" ? FILTROS.find((fl) => fl.id === filtro)?.label : "Detalhado (dia a dia)"}</span>
           <span style={{ color: MUTED }}><strong>Gerado em:</strong> {new Date().toLocaleString("pt-BR")}</span>
         </div>
       </Card>
 
+      <div className="no-print" style={{ display: "flex", gap: 6, marginBottom: 18 }}>
+        {[{ id: "resumo", label: "Resumo" }, { id: "detalhado", label: "Detalhado (dia a dia)" }].map((m) => (
+          <button
+            key={m.id}
+            onClick={() => setModo(m.id)}
+            style={{
+              padding: "8px 16px", borderRadius: 8, border: `1px solid ${modo === m.id ? GOLD : BORDER}`,
+              background: modo === m.id ? GOLD : "#fff", color: modo === m.id ? "#fff" : TEXT,
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {modo === "resumo" ? (
+      <>
       <div className="no-print" style={{ display: "flex", gap: 6, marginBottom: 18 }}>
         {FILTROS.map((fl) => (
           <button
@@ -1351,6 +1401,63 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
           </Card>
         </>
       )}
+      </>
+      ) : (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            {carregando ? (
+              <div style={{ padding: 20, color: MUTED, fontSize: 13 }}>Carregando...</div>
+            ) : linhasDetalhadas.length === 0 ? (
+              <div style={{ padding: 20, color: MUTED, fontSize: 13 }}>Nenhum dia registrado nesse mês.</div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
+                    {[
+                      ...(funcSelId === "todos" ? ["Funcionário"] : []),
+                      "Dia", "Entrada/Saída", "Classificação", "Valor do dia",
+                    ].map((h) => (
+                      <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {linhasDetalhadas.map(({ f, r, c, valorHora }) => {
+                    const tags = Object.entries(c).filter(([k, v]) => k !== "normal" && v > 0);
+                    const valorDia = CAMPOS_LANC.reduce((s, cfg) => s + valorLinha(c[cfg.key] || 0, valorHora, cfg), 0); // não soma horas normais (já pagas no salário-base)
+                    return (
+                      <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                        {funcSelId === "todos" && (
+                          <td style={{ padding: "10px 14px" }}>
+                            <div style={{ fontWeight: 600 }}>{f.nome}</div>
+                            <div style={{ fontSize: 11, color: MUTED }}>{f.codigo}</div>
+                          </td>
+                        )}
+                        <td style={{ padding: "10px 14px" }}>
+                          <div style={{ fontWeight: 600 }}>{r.data.slice(8,10)}/{r.data.slice(5,7)} · {diaSemanaLabel(r.data)}{r.feriado ? " 🎉" : ""}</div>
+                          {r.observacao && <div style={{ fontSize: 11, color: MUTED, fontStyle: "italic", marginTop: 2 }}>{r.observacao}</div>}
+                        </td>
+                        <td style={{ padding: "10px 14px", fontFamily: FONT_MONO }}>
+                          {r.entrada}–{r.saida}
+                          {r.entrada2 && <><br />{r.entrada2}–{r.saida2}</>}
+                          {r.entrada3 && <><br />{r.entrada3}–{r.saida3}</>}
+                          {r.almocoHoras > 0 && <div style={{ fontSize: 11, color: MUTED }}>🍽️ {decimalToHHMM(r.almocoHoras)}</div>}
+                        </td>
+                        <td style={{ padding: "10px 14px" }}>
+                          {tags.length === 0 ? <span style={{ color: MUTED }}>só horas normais ({decimalToHHMM(c.normal)})</span> : tags.map(([k, v]) => (
+                            <div key={k} style={{ color: BAR_COLORS[k] || MUTED }}>{CAMPOS_LANC.find((c2) => c2.key === k)?.label || k}: {decimalToHHMM(v)}</div>
+                          ))}
+                        </td>
+                        <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 600, color: GOLD }}>{brl(valorDia)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -1395,8 +1502,9 @@ function ConsultaView({ funcionarios, cargos, session, setErro }) {
     const valor = valorLinha(horas, valorHora, cfg);
     return { ...cfg, horas, valor };
   });
-  const valorNormal = totalPeriodo.normal * valorHora;
-  const totalValorGeral = resumoExtras.reduce((s, l) => s + l.valor, 0) + valorNormal;
+  // NÃO soma horas normais aqui: elas já são pagas pelo salário-base fixo.
+  // O total aqui é só o valor de horas extras/adicionais do período.
+  const totalValorGeral = resumoExtras.reduce((s, l) => s + l.valor, 0);
 
   return (
     <div>
@@ -1433,7 +1541,7 @@ function ConsultaView({ funcionarios, cargos, session, setErro }) {
             )}
           </div>
           <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: 14, paddingTop: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
-            <span>Valor total do período (sem teto de 40h)</span>
+            <span>Valor total de extras/adicionais do período — sem separar dentro/fora do teto de 40h (equivale à soma de "Total extras até 40h" + "Pagamento de Extras &gt;40h" de Lançamentos)</span>
             <span style={{ fontFamily: FONT_MONO, color: GOLD }}>{brl(totalValorGeral)}</span>
           </div>
         </Card>
@@ -1457,7 +1565,7 @@ function ConsultaView({ funcionarios, cargos, session, setErro }) {
               <tbody>
                 {linhasDias.map(({ r, c }) => {
                   const tags = Object.entries(c).filter(([k, v]) => k !== "normal" && v > 0);
-                  const valorDia = CAMPOS_LANC.reduce((s, cfg) => s + valorLinha(c[cfg.key] || 0, valorHora, cfg), 0) + c.normal * valorHora;
+                  const valorDia = CAMPOS_LANC.reduce((s, cfg) => s + valorLinha(c[cfg.key] || 0, valorHora, cfg), 0); // não soma horas normais (já pagas no salário-base)
                   return (
                     <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                       <td style={{ padding: "10px 14px" }}>
