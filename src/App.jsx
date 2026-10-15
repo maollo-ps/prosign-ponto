@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, LogOut, Loader2, Search } from "lucide-react";
+import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, LogOut, Loader2, Search, TrendingUp, UserCog } from "lucide-react";
 
 // =========================================================
 // CONFIGURAÇÃO DO SUPABASE — preencha com os dados do seu projeto
@@ -371,7 +371,7 @@ function calcularLancamento(funcionario, cargos, lanc) {
     totalHorasExtras, totalValorExtras,
     totalHorasExcedentes, totalValorExcedentes,
     descFaltasHoras, descFaltasDias, descDsr, totalDescontos,
-    liquido: totalValorExtras - totalDescontos,
+    liquido: totalValorExtras + totalValorExcedentes - totalDescontos,
   };
 }
 
@@ -398,9 +398,16 @@ const btnDangerSmall = { padding: "7px 10px", borderRadius: 7, border: `1px soli
 // =========================================================
 // APP
 // =========================================================
+// Áreas existentes no app e quais abas pertencem a cada uma.
+// "usuarios" não é uma área — é liberada só pra quem é admin.
+const AREA_DAS_ABAS = {
+  cargos: "ponto", funcionarios: "ponto", lancamentos: "ponto", relatorios: "ponto", consulta: "ponto",
+  comercial: "comercial",
+};
+
 export default function App() {
   const [session, setSession] = useState(null);
-  const [tab, setTab] = useState("cargos");
+  const [tab, setTab] = useState(null);
   const [cargos, setCargos] = useState([]);
   const [funcionarios, setFuncionarios] = useState([]);
   const [lancamentos, setLancamentos] = useState([]);
@@ -411,8 +418,40 @@ export default function App() {
     return `${d.getFullYear()}-${MESES[d.getMonth()]}`;
   });
 
+  const [perfil, setPerfil] = useState(null);
+  const [areasPermitidas, setAreasPermitidas] = useState([]);
+  const [carregandoAcesso, setCarregandoAcesso] = useState(false);
+
+  const isAdmin = !!perfil?.is_admin;
+  const temAcessoArea = (area) => isAdmin || areasPermitidas.includes(area);
+  const podeVerAba = (abaId) => (abaId === "usuarios" ? isAdmin : temAcessoArea(AREA_DAS_ABAS[abaId]));
+
+  // Carrega o perfil (nome, admin?) e as áreas liberadas pro usuário logado.
   useEffect(() => {
-    if (!session) return;
+    if (!session?.user?.id) return;
+    setCarregandoAcesso(true);
+    Promise.all([
+      sbRequest(`perfis?select=*&id=eq.${session.user.id}`, session),
+      sbRequest(`usuarios_areas?select=area&user_id=eq.${session.user.id}`, session),
+    ])
+      .then(([p, ua]) => {
+        setPerfil((p && p[0]) || null);
+        setAreasPermitidas((ua || []).map((a) => a.area));
+      })
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregandoAcesso(false));
+  }, [session]); // eslint-disable-line
+
+  // Assim que soubermos as permissões, manda pra primeira aba acessível.
+  useEffect(() => {
+    if (!session || carregandoAcesso || tab) return;
+    if (podeVerAba("cargos")) setTab("cargos");
+    else if (podeVerAba("comercial")) setTab("comercial");
+    else if (podeVerAba("usuarios")) setTab("usuarios");
+  }, [session, carregandoAcesso, perfil, areasPermitidas]); // eslint-disable-line
+
+  useEffect(() => {
+    if (!session || !temAcessoArea("ponto")) return;
     setLoading(true);
     setErro("");
     Promise.all([
@@ -427,7 +466,7 @@ export default function App() {
       })
       .catch((e) => setErro(e.message))
       .finally(() => setLoading(false));
-  }, [session]);
+  }, [session, isAdmin, areasPermitidas]); // eslint-disable-line
 
   if (!session) {
     return <LoginScreen onLogin={setSession} />;
@@ -435,17 +474,21 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: TEXT, fontFamily: FONT_BODY }}>
-      <Header tab={tab} setTab={setTab} onLogout={() => setSession(null)} />
+      <Header tab={tab} setTab={setTab} onLogout={() => setSession(null)} podeVerAba={podeVerAba} />
       <main style={{ maxWidth: 1180, margin: "0 auto", padding: "28px 20px 80px" }}>
         {erro && (
           <div style={{ background: "#FDECEC", color: DANGER, padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
             Erro ao falar com o Supabase: {erro}
           </div>
         )}
-        {loading ? (
+        {carregandoAcesso || (loading && temAcessoArea("ponto")) ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8, color: MUTED }}>
             <Loader2 size={16} className="animate-spin" /> Carregando dados...
           </div>
+        ) : !tab ? (
+          <div style={{ color: MUTED }}>Seu usuário ainda não tem acesso a nenhuma área. Peça pra um administrador liberar na aba Usuários.</div>
+        ) : !podeVerAba(tab) ? (
+          <div style={{ color: MUTED }}>Você não tem acesso a essa área.</div>
         ) : (
           <>
             {tab === "cargos" && (
@@ -467,6 +510,12 @@ export default function App() {
             )}
             {tab === "consulta" && (
               <ConsultaView funcionarios={funcionarios} cargos={cargos} session={session} setErro={setErro} />
+            )}
+            {tab === "comercial" && (
+              <ComercialView session={session} setErro={setErro} />
+            )}
+            {tab === "usuarios" && (
+              <UsuariosView session={session} setErro={setErro} meuId={session?.user?.id} />
             )}
           </>
         )}
@@ -524,14 +573,16 @@ function LoginScreen({ onLogin }) {
 }
 
 // ---------- Header ----------
-function Header({ tab, setTab, onLogout }) {
+function Header({ tab, setTab, onLogout, podeVerAba }) {
   const items = [
     { id: "cargos", label: "Cargos e Salários", icon: Briefcase },
     { id: "funcionarios", label: "Funcionários", icon: Users },
     { id: "lancamentos", label: "Lançamentos", icon: Clock },
     { id: "relatorios", label: "Relatórios", icon: FileBarChart },
     { id: "consulta", label: "Consulta", icon: Search },
-  ];
+    { id: "comercial", label: "Comercial", icon: TrendingUp },
+    { id: "usuarios", label: "Usuários", icon: UserCog },
+  ].filter((it) => podeVerAba(it.id));
   return (
     <header style={{ background: NAVY, borderBottom: `3px solid ${GOLD}` }}>
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "18px 20px 0" }}>
@@ -1153,7 +1204,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
               </div>
             )}
             <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, fontSize: 15, fontWeight: 700, color: GOLD }}>
-              <span>Líquido (folha normal)</span><span style={{ fontFamily: FONT_MONO }}>{brl(preview.liquido)}</span>
+              <span>Líquido (extras + excedente &gt;40h)</span><span style={{ fontFamily: FONT_MONO }}>{brl(preview.liquido)}</span>
             </div>
           </Card>
         )}
@@ -1168,4 +1219,617 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
 function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, session, setErro }) {
   const [registrosMes, setRegistrosMes] = useState([]);
   const [carregando, setCarregando] = useState(false);
-  const [filtro, setFiltro] = useState
+  const [filtro, setFiltro] = useState("tudo"); // 'tudo' | 'normais' | 'extras'
+  const [funcSelId, setFuncSelId] = useState("todos");
+  const [modo, setModo] = useState("resumo"); // 'resumo' | 'detalhado'
+
+  useEffect(() => {
+    const { inicio, fimExclusivo } = mesRange(mesRef);
+    setCarregando(true);
+    sbRequest(`registros_ponto?select=*&data=gte.${inicio}&data=lt.${fimExclusivo}`, session)
+      .then((rows) => setRegistrosMes((rows || []).map(registroFromRow)))
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }, [mesRef, session]); // eslint-disable-line
+
+  const rowsTodas = useMemo(() => funcionarios.map((f) => {
+    const lancFaltas = lancamentos.find((l) => String(l.funcionarioId) === String(f.id) && l.mes === mesRef) || {};
+    const registrosFunc = registrosMes.filter((r) => r.funcionarioId === f.id);
+    const agregado = agregarMes(registrosFunc);
+    const lanc = { ...agregado, faltasDias: lancFaltas.faltasDias || 0, faltasHoras: lancFaltas.faltasHoras || 0, dsrDias: lancFaltas.dsrDias || 0 };
+    const calc = calcularLancamento(f, cargos, lanc);
+    const cargo = cargos.find((c) => c.id === f.cargoId);
+    return { f, cargo, lanc, calc, horasNormais: agregado.normal };
+  }), [funcionarios, cargos, lancamentos, registrosMes, mesRef]);
+
+  const rows = useMemo(
+    () => (funcSelId === "todos" ? rowsTodas : rowsTodas.filter((r) => String(r.f.id) === String(funcSelId))),
+    [rowsTodas, funcSelId]
+  );
+
+  // Linhas dia a dia (para o modo "Detalhado") — mesma lógica da aba Consulta,
+  // uma linha por dia batido de cada funcionário dentro do filtro selecionado.
+  const linhasDetalhadas = useMemo(() => {
+    const alvo = funcSelId === "todos" ? funcionarios : funcionarios.filter((f) => String(f.id) === String(funcSelId));
+    const linhas = [];
+    alvo.forEach((f) => {
+      const valorHora = salarioBase(f, cargos) / DIVISOR_HORA;
+      const registrosFunc = registrosMes.filter((r) => r.funcionarioId === f.id);
+      registrosFunc.forEach((r) => {
+        const c = classificarDia(r);
+        linhas.push({ f, r, c, valorHora });
+      });
+    });
+    linhas.sort((a, b) => a.r.data.localeCompare(b.r.data) || a.f.nome.localeCompare(b.f.nome));
+    return linhas;
+  }, [funcionarios, cargos, registrosMes, funcSelId]);
+
+
+  const totalGeral = rows.reduce((s, r) => s + r.calc.liquido, 0);
+  const totalExtras = rows.reduce((s, r) => s + r.calc.totalValorExtras, 0);
+  const totalDesc = rows.reduce((s, r) => s + r.calc.totalDescontos, 0);
+  const totalExcedentes = rows.reduce((s, r) => s + r.calc.totalValorExcedentes, 0);
+  const totalHorasNormais = rows.reduce((s, r) => s + r.horasNormais, 0);
+  const rowsComExcedente = rows.filter((r) => r.calc.totalHorasExcedentes > 0);
+
+  const FILTROS = [
+    { id: "tudo", label: "Tudo" },
+    { id: "normais", label: "Só normais" },
+    { id: "extras", label: "Só extras" },
+  ];
+
+  function imprimir() {
+    window.print();
+  }
+
+  function exportCSV() {
+    const meta = [
+      ["Empresa", "PROSIGN"],
+      ["Período de abrangência", mesRefExtenso(mesRef)],
+      ["Funcionário(s)", funcSelId === "todos" ? "Todos" : rows[0]?.f.nome || ""],
+      ["Funcionários no relatório", String(rows.length)],
+      ["Visão", FILTROS.find((fl) => fl.id === filtro)?.label || ""],
+      ["Gerado em", new Date().toLocaleString("pt-BR")],
+      [],
+    ];
+    const header = ["Código","Nome","Função","H.Normais","H.Extras (até 40h)","Valor Extras","H.Excedentes","Valor Excedentes","Descontos","Líquido"];
+    const lines = rows.map((r) => [r.f.codigo, r.f.nome, r.cargo?.funcao || "", r.horasNormais.toFixed(2), r.calc.totalHorasExtras.toFixed(2), r.calc.totalValorExtras.toFixed(2), r.calc.totalHorasExcedentes.toFixed(2), r.calc.totalValorExcedentes.toFixed(2), r.calc.totalDescontos.toFixed(2), r.calc.liquido.toFixed(2)]);
+    const csv = [...meta, header, ...lines].map((l) => l.join(";")).join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = funcSelId === "todos" ? `prosign_ponto_${mesRef}.csv` : `prosign_ponto_${mesRef}_${(rows[0]?.f.codigo || rows[0]?.f.nome || "func").replace(/\s+/g, "_")}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div>
+      <style>{`
+        @media print {
+          .print-safe, .print-safe > * { display: block !important; }
+          .print-safe-row > * { display: inline-block !important; margin-right: 18px !important; }
+          .no-print { display: none !important; }
+          body { background: #fff !important; }
+        }
+      `}</style>
+
+      <div className="print-safe" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 12 }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Relatório mensal</h2>
+        <div className="no-print" style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <select value={funcSelId} onChange={(e) => setFuncSelId(e.target.value)} style={selStyle}>
+            <option value="todos">Todos os funcionários</option>
+            {funcionarios.map((f) => <option key={f.id} value={f.id}>{f.codigo} — {f.nome}</option>)}
+          </select>
+          <MesPicker mesRef={mesRef} setMesRef={setMesRef} />
+          <button onClick={imprimir} style={btnGhostSmall}>Imprimir</button>
+          <button onClick={exportCSV} style={btnPrimary}>Exportar CSV</button>
+        </div>
+      </div>
+
+      <Card style={{ padding: "16px 22px", marginBottom: 18, background: "#F8F6F0", border: `1px solid ${BORDER}` }}>
+        <div className="print-safe-row" style={{ display: "flex", flexWrap: "wrap", gap: "6px 28px", fontSize: 13 }}>
+          <span><strong>Empresa:</strong> PROSIGN</span>
+          <span><strong>Período de abrangência:</strong> {mesRefExtenso(mesRef)}</span>
+          <span><strong>Funcionário(s):</strong> {funcSelId === "todos" ? "Todos" : rows[0]?.f.nome || "-"}</span>
+          <span><strong>Visão:</strong> {modo === "resumo" ? FILTROS.find((fl) => fl.id === filtro)?.label : "Detalhado (dia a dia)"}</span>
+          <span style={{ color: MUTED }}><strong>Gerado em:</strong> {new Date().toLocaleString("pt-BR")}</span>
+        </div>
+      </Card>
+
+      <div className="no-print" style={{ display: "flex", gap: 6, marginBottom: 18 }}>
+        {[{ id: "resumo", label: "Resumo" }, { id: "detalhado", label: "Detalhado (dia a dia)" }].map((m) => (
+          <button
+            key={m.id}
+            onClick={() => setModo(m.id)}
+            style={{
+              padding: "8px 16px", borderRadius: 8, border: `1px solid ${modo === m.id ? GOLD : BORDER}`,
+              background: modo === m.id ? GOLD : "#fff", color: modo === m.id ? "#fff" : TEXT,
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+
+      {modo === "resumo" ? (
+      <>
+      <div className="no-print" style={{ display: "flex", gap: 6, marginBottom: 18 }}>
+        {FILTROS.map((fl) => (
+          <button
+            key={fl.id}
+            onClick={() => setFiltro(fl.id)}
+            style={{
+              padding: "8px 16px", borderRadius: 8, border: `1px solid ${filtro === fl.id ? NAVY : BORDER}`,
+              background: filtro === fl.id ? NAVY : "#fff", color: filtro === fl.id ? "#fff" : TEXT,
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            {fl.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="print-safe" style={{ display: "grid", gridTemplateColumns: filtro === "tudo" ? "repeat(4, 1fr)" : "repeat(2, 1fr)", gap: 14, marginBottom: 18 }}>
+        {filtro !== "extras" && <SummaryCard label="Horas normais" value={decimalToHHMM(totalHorasNormais)} color={NAVY} />}
+        {filtro !== "normais" && <SummaryCard label="Extras (até 40h)" value={brl(totalExtras)} color={OK} />}
+        {filtro === "tudo" && <SummaryCard label="Pagamento de Extras (>40h)" value={brl(totalExcedentes)} color={GOLD} />}
+        {filtro === "tudo" && <SummaryCard label="Total de descontos" value={brl(totalDesc)} color={DANGER} />}
+        {filtro === "tudo" && <SummaryCard label="Líquido geral" value={brl(totalGeral)} color={GOLD} dark />}
+        {filtro === "normais" && <SummaryCard label="Média por funcionário" value={rows.length ? decimalToHHMM(totalHorasNormais / rows.length) : "-"} color={NAVY_DARK} dark />}
+        {filtro === "extras" && <SummaryCard label="Valor total de extras" value={brl(totalExtras + totalExcedentes)} color={GOLD} dark />}
+      </div>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
+                {[
+                  "Funcionário",
+                  ...(filtro !== "extras" ? ["H.Normais"] : []),
+                  ...(filtro !== "normais" ? ["Distribuição", "H.Extras (40h)", "Extras (R$)"] : []),
+                  ...(filtro === "tudo" ? ["Descontos", "Líquido"] : []),
+                ].map((h) => (
+                  <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ f, cargo, calc, horasNormais }) => (
+                <tr key={f.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "12px 14px" }}>
+                    <div style={{ fontWeight: 600 }}>{f.nome}</div>
+                    <div style={{ fontSize: 11, color: MUTED }}>{f.codigo} · {cargo?.funcao || "sem cargo"}</div>
+                  </td>
+                  {filtro !== "extras" && (
+                    <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, color: NAVY, fontWeight: 600 }}>{decimalToHHMM(horasNormais)}</td>
+                  )}
+                  {filtro !== "normais" && (
+                    <>
+                      <td style={{ padding: "12px 14px", width: 160 }}><StackedBar linhas={calc.linhas} /></td>
+                      <td style={{ padding: "12px 14px", fontFamily: FONT_MONO }}>{decimalToHHMM(calc.totalHorasExtras)}</td>
+                      <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, color: OK }}>{brl(calc.totalValorExtras)}</td>
+                    </>
+                  )}
+                  {filtro === "tudo" && (
+                    <>
+                      <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, color: calc.totalDescontos > 0 ? DANGER : MUTED }}>{calc.totalDescontos > 0 ? `- ${brl(calc.totalDescontos)}` : "-"}</td>
+                      <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(calc.liquido)}</td>
+                    </>
+                  )}
+                </tr>
+              ))}
+              {rows.length === 0 && <tr><td colSpan={6} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum funcionário cadastrado.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {filtro === "tudo" && rowsComExcedente.length > 0 && (
+        <>
+          <h3 style={{ fontSize: 15, fontWeight: 700, marginTop: 26, marginBottom: 12 }}>
+            Pagamento de Extras <span style={{ color: MUTED, fontWeight: 400 }}>(horas acima do teto de 40h/mês)</span>
+          </h3>
+          <Card style={{ padding: 0, overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "#FBF3E3", textAlign: "left" }}>
+                  {["Funcionário","H.Excedentes","Valor Excedente"].map((h) => (
+                    <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: "#8A6A20", fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rowsComExcedente.map(({ f, cargo, calc }) => (
+                  <tr key={f.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={{ padding: "12px 14px" }}>
+                      <div style={{ fontWeight: 600 }}>{f.nome}</div>
+                      <div style={{ fontSize: 11, color: MUTED }}>{f.codigo} · {cargo?.funcao || "sem cargo"}</div>
+                    </td>
+                    <td style={{ padding: "12px 14px", fontFamily: FONT_MONO }}>{decimalToHHMM(calc.totalHorasExcedentes)}</td>
+                    <td style={{ padding: "12px 14px", fontFamily: FONT_MONO, color: GOLD, fontWeight: 700 }}>{brl(calc.totalValorExcedentes)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+        </>
+      )}
+      </>
+      ) : (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            {carregando ? (
+              <div style={{ padding: 20, color: MUTED, fontSize: 13 }}>Carregando...</div>
+            ) : linhasDetalhadas.length === 0 ? (
+              <div style={{ padding: 20, color: MUTED, fontSize: 13 }}>Nenhum dia registrado nesse mês.</div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
+                    {[
+                      ...(funcSelId === "todos" ? ["Funcionário"] : []),
+                      "Dia", "Entrada/Saída", "Classificação", "Valor do dia",
+                    ].map((h) => (
+                      <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {linhasDetalhadas.map(({ f, r, c, valorHora }) => {
+                    const tags = Object.entries(c).filter(([k, v]) => k !== "normal" && v > 0);
+                    const valorDia = CAMPOS_LANC.reduce((s, cfg) => s + valorLinha(c[cfg.key] || 0, valorHora, cfg), 0); // não soma horas normais (já pagas no salário-base)
+                    return (
+                      <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                        {funcSelId === "todos" && (
+                          <td style={{ padding: "10px 14px" }}>
+                            <div style={{ fontWeight: 600 }}>{f.nome}</div>
+                            <div style={{ fontSize: 11, color: MUTED }}>{f.codigo}</div>
+                          </td>
+                        )}
+                        <td style={{ padding: "10px 14px" }}>
+                          <div style={{ fontWeight: 600 }}>{r.data.slice(8,10)}/{r.data.slice(5,7)} · {diaSemanaLabel(r.data)}{r.feriado ? " 🎉" : ""}</div>
+                          {r.observacao && <div style={{ fontSize: 11, color: MUTED, fontStyle: "italic", marginTop: 2 }}>{r.observacao}</div>}
+                        </td>
+                        <td style={{ padding: "10px 14px", fontFamily: FONT_MONO }}>
+                          {r.entrada}–{r.saida}
+                          {r.entrada2 && <><br />{r.entrada2}–{r.saida2}</>}
+                          {r.entrada3 && <><br />{r.entrada3}–{r.saida3}</>}
+                          {r.almocoHoras > 0 && <div style={{ fontSize: 11, color: MUTED }}>🍽️ {decimalToHHMM(r.almocoHoras)}</div>}
+                        </td>
+                        <td style={{ padding: "10px 14px" }}>
+                          {tags.length === 0 ? <span style={{ color: MUTED }}>só horas normais ({decimalToHHMM(c.normal)})</span> : tags.map(([k, v]) => (
+                            <div key={k} style={{ color: BAR_COLORS[k] || MUTED }}>{CAMPOS_LANC.find((c2) => c2.key === k)?.label || k}: {decimalToHHMM(v)}</div>
+                          ))}
+                        </td>
+                        <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 600, color: GOLD }}>{brl(valorDia)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// =========================================================
+// Consulta — filtro livre por funcionário + intervalo de datas,
+// pra conferir/bater com cálculos manuais (planilha, etc.)
+// =========================================================
+function ConsultaView({ funcionarios, cargos, session, setErro }) {
+  const hoje = new Date().toISOString().slice(0, 10);
+  const inicioMesAtual = hoje.slice(0, 8) + "01";
+
+  const [selId, setSelId] = useState(funcionarios[0]?.id || "");
+  const [dataInicio, setDataInicio] = useState(inicioMesAtual);
+  const [dataFim, setDataFim] = useState(hoje);
+  const [registros, setRegistros] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+
+  const funcionario = funcionarios.find((f) => String(f.id) === String(selId));
+
+  useEffect(() => {
+    if (!selId || !dataInicio || !dataFim) return;
+    setCarregando(true);
+    sbRequest(`registros_ponto?select=*&funcionario_id=eq.${selId}&data=gte.${dataInicio}&data=lte.${dataFim}&order=data.asc`, session)
+      .then((rows) => setRegistros((rows || []).map(registroFromRow)))
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }, [selId, dataInicio, dataFim, session]); // eslint-disable-line
+
+  if (!funcionarios.length) return <div style={{ color: MUTED }}>Cadastre um funcionário primeiro na aba "Funcionários".</div>;
+
+  const salario = funcionario ? salarioBase(funcionario, cargos) : 0;
+  const valorHora = salario / DIVISOR_HORA;
+
+  const linhasDias = registros.map((r) => ({ r, c: classificarDia(r) }));
+
+  const totalPeriodo = diaVazio();
+  linhasDias.forEach(({ c }) => { Object.keys(totalPeriodo).forEach((k) => (totalPeriodo[k] += c[k])); });
+
+  const resumoExtras = CAMPOS_LANC.map((cfg) => {
+    const horas = totalPeriodo[cfg.key] || 0;
+    const valor = valorLinha(horas, valorHora, cfg);
+    return { ...cfg, horas, valor };
+  });
+  // NÃO soma horas normais aqui: elas já são pagas pelo salário-base fixo.
+  // O total aqui é só o valor de horas extras/adicionais do período.
+  const totalValorGeral = resumoExtras.reduce((s, l) => s + l.valor, 0);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap", alignItems: "end" }}>
+        <Field label="Funcionário">
+          <select value={selId} onChange={(e) => setSelId(e.target.value)} style={{ ...selStyle, minWidth: 240 }}>
+            {funcionarios.map((f) => <option key={f.id} value={f.id}>{f.codigo} — {f.nome}</option>)}
+          </select>
+        </Field>
+        <Field label="De">
+          <input type="date" style={inputStyle} value={dataInicio} onChange={(e) => setDataInicio(e.target.value)} />
+        </Field>
+        <Field label="Até">
+          <input type="date" style={inputStyle} value={dataFim} onChange={(e) => setDataFim(e.target.value)} />
+        </Field>
+      </div>
+
+      {funcionario && (
+        <Card style={{ marginBottom: 18 }}>
+          <div style={{ fontSize: 12, color: MUTED, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>Resumo do período</div>
+          <div style={{ fontSize: 13, color: MUTED, fontFamily: FONT_MONO, marginBottom: 14 }}>
+            Base: {brl(salario)} · Hora: {brl(valorHora)} · Horas normais: {decimalToHHMM(totalPeriodo.normal)}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))", gap: 10 }}>
+            {resumoExtras.filter((l) => l.horas > 0).map((l) => (
+              <div key={l.key} style={{ padding: 10, background: "#F0F2F6", borderRadius: 8 }}>
+                <div style={{ fontSize: 11, color: MUTED }}>{l.label}</div>
+                <div style={{ fontFamily: FONT_MONO, fontWeight: 700 }}>{decimalToHHMM(l.horas)}</div>
+                <div style={{ fontFamily: FONT_MONO, color: GOLD, fontSize: 13 }}>{brl(l.valor)}</div>
+              </div>
+            ))}
+            {resumoExtras.every((l) => l.horas === 0) && (
+              <div style={{ color: MUTED, fontSize: 13 }}>Nenhuma hora extra/adicional no período.</div>
+            )}
+          </div>
+          <div style={{ borderTop: `1px solid ${BORDER}`, marginTop: 14, paddingTop: 12, display: "flex", justifyContent: "space-between", fontWeight: 700 }}>
+            <span>Valor total de extras/adicionais do período — sem separar dentro/fora do teto de 40h (equivale à soma de "Total extras até 40h" + "Pagamento de Extras &gt;40h" de Lançamentos)</span>
+            <span style={{ fontFamily: FONT_MONO, color: GOLD }}>{brl(totalValorGeral)}</span>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          {carregando ? (
+            <div style={{ padding: 20, color: MUTED, fontSize: 13 }}>Carregando...</div>
+          ) : linhasDias.length === 0 ? (
+            <div style={{ padding: 20, color: MUTED, fontSize: 13 }}>Nenhum dia registrado nesse período.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
+                  {["Dia", "Entrada/Saída", "Classificação", "Valor do dia"].map((h) => (
+                    <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {linhasDias.map(({ r, c }) => {
+                  const tags = Object.entries(c).filter(([k, v]) => k !== "normal" && v > 0);
+                  const valorDia = CAMPOS_LANC.reduce((s, cfg) => s + valorLinha(c[cfg.key] || 0, valorHora, cfg), 0); // não soma horas normais (já pagas no salário-base)
+                  return (
+                    <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td style={{ padding: "10px 14px" }}>
+                        <div style={{ fontWeight: 600 }}>{r.data.slice(8,10)}/{r.data.slice(5,7)} · {diaSemanaLabel(r.data)}{r.feriado ? " 🎉" : ""}</div>
+                        {r.observacao && <div style={{ fontSize: 11, color: MUTED, fontStyle: "italic", marginTop: 2 }}>{r.observacao}</div>}
+                      </td>
+                      <td style={{ padding: "10px 14px", fontFamily: FONT_MONO }}>
+                        {r.entrada}–{r.saida}
+                        {r.entrada2 && <><br />{r.entrada2}–{r.saida2}</>}
+                        {r.entrada3 && <><br />{r.entrada3}–{r.saida3}</>}
+                        {r.almocoHoras > 0 && <div style={{ fontSize: 11, color: MUTED }}>🍽️ {decimalToHHMM(r.almocoHoras)}</div>}
+                      </td>
+                      <td style={{ padding: "10px 14px" }}>
+                        {tags.length === 0 ? <span style={{ color: MUTED }}>só horas normais ({decimalToHHMM(c.normal)})</span> : tags.map(([k, v]) => (
+                          <div key={k} style={{ color: BAR_COLORS[k] || MUTED }}>{CAMPOS_LANC.find((c2) => c2.key === k)?.label || k}: {decimalToHHMM(v)}</div>
+                        ))}
+                      </td>
+                      <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 600, color: GOLD }}>{brl(valorDia)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// =========================================================
+// Usuários — só admin vê. Gerencia nome/admin de cada perfil
+// e quais áreas (ponto/comercial) cada um pode acessar.
+// =========================================================
+const AREAS_DISPONIVEIS = [
+  { id: "ponto", label: "Controle de Ponto" },
+  { id: "comercial", label: "Comercial" },
+];
+
+function UsuariosView({ session, setErro, meuId }) {
+  const [perfis, setPerfis] = useState([]);
+  const [areasPorUsuario, setAreasPorUsuario] = useState({}); // { user_id: Set(['ponto','comercial']) }
+  const [carregando, setCarregando] = useState(false);
+  const [salvandoId, setSalvandoId] = useState(null);
+
+  function carregar() {
+    setCarregando(true);
+    Promise.all([
+      sbRequest("perfis?select=*&order=email.asc", session),
+      sbRequest("usuarios_areas?select=*", session),
+    ])
+      .then(([p, ua]) => {
+        setPerfis(p || []);
+        const mapa = {};
+        (ua || []).forEach((row) => {
+          if (!mapa[row.user_id]) mapa[row.user_id] = new Set();
+          mapa[row.user_id].add(row.area);
+        });
+        setAreasPorUsuario(mapa);
+      })
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }
+
+  useEffect(() => { carregar(); }, []); // eslint-disable-line
+
+  async function handleSalvarPerfil(p, campos) {
+    setSalvandoId(p.id);
+    setErro("");
+    try {
+      await sbRequest(`perfis?id=eq.${p.id}`, session, { method: "PATCH", body: campos });
+      setPerfis((ps) => ps.map((x) => (x.id === p.id ? { ...x, ...campos } : x)));
+    } catch (e) { setErro(e.message); }
+    finally { setSalvandoId(null); }
+  }
+
+  async function handleToggleArea(userId, area, marcado) {
+    setSalvandoId(userId);
+    setErro("");
+    try {
+      if (marcado) {
+        await sbRequest("usuarios_areas", session, { method: "POST", body: { user_id: userId, area } });
+      } else {
+        await sbRequest(`usuarios_areas?user_id=eq.${userId}&area=eq.${area}`, session, { method: "DELETE" });
+      }
+      setAreasPorUsuario((mapa) => {
+        const novo = { ...mapa };
+        const atual = new Set(novo[userId] || []);
+        if (marcado) atual.add(area); else atual.delete(area);
+        novo[userId] = atual;
+        return novo;
+      });
+    } catch (e) { setErro(e.message); }
+    finally { setSalvandoId(null); }
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Usuários ({perfis.length})</h2>
+      </div>
+      <div style={{ color: MUTED, fontSize: 13, marginBottom: 14 }}>
+        Novos usuários são criados no painel do Supabase (Authentication → Users) — eles aparecem aqui automaticamente depois disso. Aqui você só define nome, se é administrador (acesso total) e quais áreas cada um pode ver.
+      </div>
+
+      {carregando ? (
+        <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>
+      ) : (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
+                  {["E-mail", "Nome", "Admin (acesso total)", ...AREAS_DISPONIVEIS.map((a) => a.label)].map((h) => (
+                    <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {perfis.map((p) => {
+                  const areas = areasPorUsuario[p.id] || new Set();
+                  const salvando = salvandoId === p.id;
+                  return (
+                    <tr key={p.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td style={{ padding: "10px 14px" }}>
+                        {p.email}{p.id === meuId && <span style={{ color: MUTED, fontSize: 11 }}> (você)</span>}
+                      </td>
+                      <td style={{ padding: "10px 14px" }}>
+                        <input
+                          style={{ ...inputStyle, width: 160 }}
+                          defaultValue={p.nome || ""}
+                          placeholder="Nome"
+                          onBlur={(e) => {
+                            if (e.target.value !== (p.nome || "")) handleSalvarPerfil(p, { nome: e.target.value || null });
+                          }}
+                        />
+                      </td>
+                      <td style={{ padding: "10px 14px" }}>
+                        <input
+                          type="checkbox"
+                          checked={!!p.is_admin}
+                          disabled={salvando}
+                          onChange={(e) => handleSalvarPerfil(p, { is_admin: e.target.checked })}
+                        />
+                      </td>
+                      {AREAS_DISPONIVEIS.map((a) => (
+                        <td key={a.id} style={{ padding: "10px 14px" }}>
+                          <input
+                            type="checkbox"
+                            checked={p.is_admin || areas.has(a.id)}
+                            disabled={salvando || p.is_admin}
+                            onChange={(e) => handleToggleArea(p.id, a.id, e.target.checked)}
+                          />
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+                {perfis.length === 0 && (
+                  <tr><td colSpan={3 + AREAS_DISPONIVEIS.length} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum usuário encontrado.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// =========================================================
+// Comercial — ainda em construção. Próximos passos: Clientes,
+// Previsão Orçamentária, Orçamentos, Faturamento e Dashboard.
+// =========================================================
+function ComercialView({ session, setErro }) {
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 18px", fontSize: 18, fontWeight: 700 }}>Comercial</h2>
+      <Card>
+        <div style={{ color: MUTED, fontSize: 14 }}>
+          Módulo em construção. Os dados de 2026 (clientes, orçamentos e faturamento) já estão
+          importados no banco — as telas de Clientes, Previsão Orçamentária, Orçamentos, Faturamento
+          e Dashboard entram nas próximas atualizações.
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function SummaryCard({ label, value, color, dark }) {
+  return (
+    <Card style={dark ? { background: NAVY_DARK, color: "#fff" } : {}}>
+      <div style={{ fontSize: 11, color: dark ? "#9FB0CC" : MUTED, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, fontFamily: FONT_MONO, color, marginTop: 4 }}>{value}</div>
+    </Card>
+  );
+}
+
+const BAR_COLORS = { he50: "#8FA6C9", he60: "#5D7FAE", he100: "#2F4E7D", adicNot: "#B8902E", heNot50: "#C79A4B", heNot60: "#A6394A", heNot100: "#6B2530" };
+function StackedBar({ linhas }) {
+  const total = linhas.reduce((s, l) => s + (l.soAdicional ? 0 : l.dentro), 0);
+  if (total === 0) return <div style={{ fontSize: 11, color: MUTED }}>—</div>;
+  return (
+    <div style={{ display: "flex", height: 10, borderRadius: 4, overflow: "hidden", width: "100%" }} title="Distribuição de horas extras (até 40h)">
+      {linhas.filter((l) => !l.soAdicional && l.dentro > 0).map((l) => (
+        <div key={l.key} style={{ width: `${(l.dentro / total) * 100}%`, background: BAR_COLORS[l.key] }} />
+      ))}
+    </div>
+  );
+}
