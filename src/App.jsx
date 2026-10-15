@@ -415,7 +415,7 @@ const btnDangerSmall = { padding: "7px 10px", borderRadius: 7, border: `1px soli
 // Áreas existentes no app e quais abas pertencem a cada uma.
 // "usuarios" não é uma área — é liberada só pra quem é admin.
 const AREA_DAS_ABAS = {
-  cargos: "ponto", funcionarios: "ponto", lancamentos: "ponto", relatorios: "ponto", consulta: "ponto",
+  rh: "ponto",
   comercial: "comercial",
 };
 
@@ -459,7 +459,7 @@ export default function App() {
   // Assim que soubermos as permissões, manda pra primeira aba acessível.
   useEffect(() => {
     if (!session || carregandoAcesso || tab) return;
-    if (podeVerAba("cargos")) setTab("cargos");
+    if (podeVerAba("rh")) setTab("rh");
     else if (podeVerAba("comercial")) setTab("comercial");
     else if (podeVerAba("usuarios")) setTab("usuarios");
   }, [session, carregandoAcesso, perfil, areasPermitidas]); // eslint-disable-line
@@ -505,25 +505,14 @@ export default function App() {
           <div style={{ color: MUTED }}>Você não tem acesso a essa área.</div>
         ) : (
           <>
-            {tab === "cargos" && (
-              <CargosView cargos={cargos} setCargos={setCargos} session={session} setErro={setErro} />
-            )}
-            {tab === "funcionarios" && (
-              <FuncionariosView funcionarios={funcionarios} setFuncionarios={setFuncionarios} cargos={cargos} session={session} setErro={setErro} />
-            )}
-            {tab === "lancamentos" && (
-              <LancamentosView
-                funcionarios={funcionarios} cargos={cargos}
+            {tab === "rh" && (
+              <RecursosHumanosView
+                cargos={cargos} setCargos={setCargos}
+                funcionarios={funcionarios} setFuncionarios={setFuncionarios}
                 lancamentos={lancamentos} setLancamentos={setLancamentos}
                 mesRef={mesRef} setMesRef={setMesRef}
                 session={session} setErro={setErro}
               />
-            )}
-            {tab === "relatorios" && (
-              <RelatoriosView funcionarios={funcionarios} cargos={cargos} lancamentos={lancamentos} mesRef={mesRef} setMesRef={setMesRef} session={session} setErro={setErro} />
-            )}
-            {tab === "consulta" && (
-              <ConsultaView funcionarios={funcionarios} cargos={cargos} session={session} setErro={setErro} />
             )}
             {tab === "comercial" && (
               <ComercialView session={session} setErro={setErro} />
@@ -589,11 +578,7 @@ function LoginScreen({ onLogin }) {
 // ---------- Header ----------
 function Header({ tab, setTab, onLogout, podeVerAba }) {
   const items = [
-    { id: "cargos", label: "Cargos e Salários", icon: Briefcase },
-    { id: "funcionarios", label: "Funcionários", icon: Users },
-    { id: "lancamentos", label: "Lançamentos", icon: Clock },
-    { id: "relatorios", label: "Relatórios", icon: FileBarChart },
-    { id: "consulta", label: "Consulta", icon: Search },
+    { id: "rh", label: "Recursos Humanos", icon: Users },
     { id: "comercial", label: "Comercial", icon: TrendingUp },
     { id: "usuarios", label: "Usuários", icon: UserCog },
   ].filter((it) => podeVerAba(it.id));
@@ -601,11 +586,14 @@ function Header({ tab, setTab, onLogout, podeVerAba }) {
     <header style={{ background: NAVY, borderBottom: `3px solid ${GOLD}` }}>
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "18px 20px 0" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
-            <span style={{ fontFamily: FONT_MONO, fontSize: 12, letterSpacing: 2, color: GOLD }}>1385</span>
-            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#fff", letterSpacing: 0.3 }}>
-              PROSIGN <span style={{ fontWeight: 400, color: "#C7CEDB" }}>· Controle de Ponto</span>
-            </h1>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <img src="/logo-psview.png" alt="PSView" style={{ height: 34, width: "auto" }} />
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+              <span style={{ fontFamily: FONT_MONO, fontSize: 12, letterSpacing: 2, color: GOLD }}>1385</span>
+              <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#fff", letterSpacing: 0.3 }}>
+                PROSIGN <span style={{ fontWeight: 400, color: "#C7CEDB" }}>· Controle de Ponto</span>
+              </h1>
+            </div>
           </div>
           <button onClick={onLogout} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: "#C7CEDB", cursor: "pointer", fontSize: 13 }}>
             <LogOut size={15} /> Sair
@@ -635,6 +623,70 @@ function Header({ tab, setTab, onLogout, podeVerAba }) {
         </nav>
       </div>
     </header>
+  );
+}
+
+// =========================================================
+// Recursos Humanos — agrupa Cargos e Salários, Funcionários,
+// Lançamentos, Relatórios e Consulta numa única aba com sub-abas.
+// =========================================================
+function RecursosHumanosView({
+  cargos, setCargos,
+  funcionarios, setFuncionarios,
+  lancamentos, setLancamentos,
+  mesRef, setMesRef,
+  session, setErro,
+}) {
+  const [subtab, setSubtab] = useState("cargos");
+
+  const SUBABAS = [
+    { id: "cargos", label: "Cargos e Salários" },
+    { id: "funcionarios", label: "Funcionários" },
+    { id: "lancamentos", label: "Lançamentos" },
+    { id: "relatorios", label: "Relatórios" },
+    { id: "consulta", label: "Consulta" },
+  ];
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 18px", fontSize: 18, fontWeight: 700 }}>Recursos Humanos</h2>
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap" }}>
+        {SUBABAS.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => setSubtab(s.id)}
+            style={{
+              padding: "8px 16px", borderRadius: 8, border: `1px solid ${subtab === s.id ? GOLD : BORDER}`,
+              background: subtab === s.id ? GOLD : "#fff", color: subtab === s.id ? "#fff" : TEXT,
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {subtab === "cargos" && (
+        <CargosView cargos={cargos} setCargos={setCargos} session={session} setErro={setErro} />
+      )}
+      {subtab === "funcionarios" && (
+        <FuncionariosView funcionarios={funcionarios} setFuncionarios={setFuncionarios} cargos={cargos} session={session} setErro={setErro} />
+      )}
+      {subtab === "lancamentos" && (
+        <LancamentosView
+          funcionarios={funcionarios} cargos={cargos}
+          lancamentos={lancamentos} setLancamentos={setLancamentos}
+          mesRef={mesRef} setMesRef={setMesRef}
+          session={session} setErro={setErro}
+        />
+      )}
+      {subtab === "relatorios" && (
+        <RelatoriosView funcionarios={funcionarios} cargos={cargos} lancamentos={lancamentos} mesRef={mesRef} setMesRef={setMesRef} session={session} setErro={setErro} />
+      )}
+      {subtab === "consulta" && (
+        <ConsultaView funcionarios={funcionarios} cargos={cargos} session={session} setErro={setErro} />
+      )}
+    </div>
   );
 }
 
@@ -1322,8 +1374,14 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
     <div>
       <style>{`
         @media print {
+          /* Safari/WebKit tem um bug conhecido: elementos com
+             display:flex ou display:grid às vezes não aparecem
+             na impressão. Forçamos esses containers para block
+             só no momento de imprimir. */
           .print-safe, .print-safe > * { display: block !important; }
           .print-safe-row > * { display: inline-block !important; margin-right: 18px !important; }
+          /* Esta regra fica por último para vencer qualquer conflito
+             de especificidade com as regras acima. */
           .no-print { display: none !important; }
           body { background: #fff !important; }
         }
@@ -1738,6 +1796,24 @@ function UsuariosView({ session, setErro, meuId }) {
     finally { setSalvandoId(null); }
   }
 
+  async function handleExcluirUsuario(p) {
+    if (p.id === meuId) return;
+    if (!window.confirm(`Remover o acesso de "${p.email}"? Ele(a) não vai mais conseguir ver nenhuma área do sistema.\n\n(O login continua existindo no Supabase — pra apagar de vez a conta, isso só pode ser feito no painel do Supabase em Authentication → Users.)`)) return;
+    setSalvandoId(p.id);
+    setErro("");
+    try {
+      await sbRequest(`usuarios_areas?user_id=eq.${p.id}`, session, { method: "DELETE" });
+      await sbRequest(`perfis?id=eq.${p.id}`, session, { method: "DELETE" });
+      setPerfis((ps) => ps.filter((x) => x.id !== p.id));
+      setAreasPorUsuario((mapa) => {
+        const novo = { ...mapa };
+        delete novo[p.id];
+        return novo;
+      });
+    } catch (e) { setErro(e.message); }
+    finally { setSalvandoId(null); }
+  }
+
   async function handleCriarUsuario() {
     if (!novoEmail || novaSenha.length < 6) {
       setErro("Preencha o e-mail e uma senha com pelo menos 6 caracteres.");
@@ -1810,7 +1886,7 @@ function UsuariosView({ session, setErro, meuId }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
-                  {["E-mail", "Nome", "Admin (acesso total)", ...AREAS_DISPONIVEIS.map((a) => a.label)].map((h) => (
+                  {["E-mail", "Nome", "Admin (acesso total)", ...AREAS_DISPONIVEIS.map((a) => a.label), "Ações"].map((h) => (
                     <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
                   ))}
                 </tr>
@@ -1852,11 +1928,23 @@ function UsuariosView({ session, setErro, meuId }) {
                           />
                         </td>
                       ))}
+                      <td style={{ padding: "10px 14px" }}>
+                        {p.id !== meuId && (
+                          <button
+                            onClick={() => handleExcluirUsuario(p)}
+                            disabled={salvando}
+                            title="Remover acesso deste usuário"
+                            style={{ ...btnDangerSmall, display: "flex", alignItems: "center", gap: 6 }}
+                          >
+                            <Trash2 size={14} /> Excluir
+                          </button>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
                 {perfis.length === 0 && (
-                  <tr><td colSpan={3 + AREAS_DISPONIVEIS.length} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum usuário encontrado.</td></tr>
+                  <tr><td colSpan={4 + AREAS_DISPONIVEIS.length} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum usuário encontrado.</td></tr>
                 )}
               </tbody>
             </table>
