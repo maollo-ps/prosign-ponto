@@ -2623,6 +2623,7 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
 // Comercial · Dashboard
 // =========================================================
 function DashboardComercialView({ session, setErro, clientes }) {
+  const [visao, setVisao] = useState("mes"); // "mes" | "ano"
   const [mesRef, setMesRef] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${MESES[d.getMonth()]}`;
@@ -2634,6 +2635,7 @@ function DashboardComercialView({ session, setErro, clientes }) {
   const [acumuladoAno, setAcumuladoAno] = useState([]);
 
   useEffect(() => {
+    if (visao !== "mes") return;
     const [ano, mes] = mesRef.split("-").map(Number);
     const anoAnterior = ano - 1;
     const inicioAno = `${ano}-01-01`;
@@ -2653,7 +2655,7 @@ function DashboardComercialView({ session, setErro, clientes }) {
       })
       .catch((e) => setErro(e.message))
       .finally(() => setCarregando(false));
-  }, [mesRef]); // eslint-disable-line
+  }, [mesRef, visao]); // eslint-disable-line
 
   const vendidoMes = orcMes.filter((o) => o.status === "aprovado").reduce((s, o) => s + o.valor, 0);
   const variacao = vendidoMesAnoAnterior > 0 ? (vendidoMes - vendidoMesAnoAnterior) / vendidoMesAnoAnterior : null;
@@ -2677,11 +2679,35 @@ function DashboardComercialView({ session, setErro, clientes }) {
 
   return (
     <div>
-      <div style={{ marginBottom: 18 }}>
-        <MesPicker mesRef={mesRef} setMesRef={setMesRef} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, flexWrap: "wrap", gap: 12 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button
+            onClick={() => setVisao("mes")}
+            style={{
+              padding: "8px 16px", borderRadius: 8, border: `1px solid ${visao === "mes" ? GOLD : BORDER}`,
+              background: visao === "mes" ? GOLD : "#fff", color: visao === "mes" ? "#fff" : TEXT,
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            Mensal
+          </button>
+          <button
+            onClick={() => setVisao("ano")}
+            style={{
+              padding: "8px 16px", borderRadius: 8, border: `1px solid ${visao === "ano" ? GOLD : BORDER}`,
+              background: visao === "ano" ? GOLD : "#fff", color: visao === "ano" ? "#fff" : TEXT,
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            Anual
+          </button>
+        </div>
+        {visao === "mes" && <MesPicker mesRef={mesRef} setMesRef={setMesRef} />}
       </div>
 
-      {carregando ? (
+      {visao === "ano" ? (
+        <DashboardAnualComercial session={session} setErro={setErro} />
+      ) : carregando ? (
         <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>
       ) : (
         <>
@@ -2742,6 +2768,174 @@ function DashboardComercialView({ session, setErro, clientes }) {
               </Card>
             </div>
           </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// =========================================================
+// Comercial — Dashboard anual
+// =========================================================
+function DashboardAnualComercial({ session, setErro }) {
+  const anoAtual = new Date().getFullYear();
+  const [ano, setAno] = useState(anoAtual);
+  const [carregando, setCarregando] = useState(false);
+  const [orcAno, setOrcAno] = useState([]);
+  const [faturamentoAno, setFaturamentoAno] = useState([]);
+  const [previsaoAno, setPrevisaoAno] = useState(Array(12).fill(0));
+  const [vendidoAnoAnterior, setVendidoAnoAnterior] = useState(0);
+
+  useEffect(() => {
+    setCarregando(true);
+    setErro("");
+    Promise.all([
+      sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=gte.${ano}-01-01&mes_ref=lt.${ano + 1}-01-01`, session),
+      sbRequest(`faturamento?select=valor,mes_ref&mes_ref=gte.${ano}-01-01&mes_ref=lt.${ano + 1}-01-01`, session),
+      sbRequest(`previsao_orcamentaria?select=*&ano=eq.${ano}`, session),
+      sbRequest(`orcamentos?select=valor&status=eq.aprovado&mes_ref=gte.${ano - 1}-01-01&mes_ref=lt.${ano}-01-01`, session),
+    ])
+      .then(([o, f, p, oAnt]) => {
+        setOrcAno((o || []).map(orcamentoFromRow));
+        setFaturamentoAno(f || []);
+        const novaPrevisao = Array(12).fill(0);
+        (p || []).map(previsaoFromRow).forEach((pr) => { novaPrevisao[pr.mes - 1] = pr.valor; });
+        setPrevisaoAno(novaPrevisao);
+        setVendidoAnoAnterior((oAnt || []).reduce((s, r) => s + Number(r.valor || 0), 0));
+      })
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }, [ano]); // eslint-disable-line
+
+  const aprovados = orcAno.filter((o) => o.status === "aprovado");
+  const vendidoAno = aprovados.reduce((s, o) => s + o.valor, 0);
+  const faturadoAno = faturamentoAno.reduce((s, r) => s + Number(r.valor || 0), 0);
+  const previstoAno = previsaoAno.reduce((s, v) => s + v, 0);
+  const variacaoAno = vendidoAnoAnterior > 0 ? (vendidoAno - vendidoAnoAnterior) / vendidoAnoAnterior : null;
+
+  const porStatus = STATUS_ORCAMENTO.map((s) => {
+    const itens = orcAno.filter((o) => o.status === s.id);
+    return { ...s, count: itens.length, soma: itens.reduce((acc, o) => acc + o.valor, 0) };
+  });
+
+  // Quebra mês a mês: previsto x vendido (aprovado) x faturado
+  const porMes = MESES.map((m, i) => {
+    const mesRefStr = `${ano}-${m}`;
+    const vendidoMes = aprovados.filter((o) => o.mesRef === `${mesRefStr}-01`).reduce((s, o) => s + o.valor, 0);
+    const faturadoMes = faturamentoAno.filter((r) => (r.mes_ref || "").slice(0, 7) === mesRefStr).reduce((s, r) => s + Number(r.valor || 0), 0);
+    return { mes: MESES_ABREV[i], previsto: previsaoAno[i] || 0, vendido: vendidoMes, faturado: faturadoMes };
+  });
+  const trimestres = [0, 1, 2, 3].map((t) => {
+    const fatia = porMes.slice(t * 3, t * 3 + 3);
+    return {
+      previsto: fatia.reduce((s, m) => s + m.previsto, 0),
+      vendido: fatia.reduce((s, m) => s + m.vendido, 0),
+      faturado: fatia.reduce((s, m) => s + m.faturado, 0),
+    };
+  });
+
+  function agruparPorCliente(lista) {
+    const mapa = {};
+    lista.forEach((item) => {
+      const nome = item.clienteNome || "Sem cliente";
+      mapa[nome] = (mapa[nome] || 0) + item.valor;
+    });
+    return Object.entries(mapa).sort((a, b) => b[1] - a[1]);
+  }
+  const vendasPorClienteAno = agruparPorCliente(aprovados);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 18 }}>
+        <Field label="Ano">
+          <select style={selStyle} value={ano} onChange={(e) => setAno(Number(e.target.value))}>
+            {[anoAtual - 2, anoAtual - 1, anoAtual, anoAtual + 1].map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      {carregando ? (
+        <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 18 }}>
+            <SummaryCard label={`Vendido em ${ano} (resultado)`} value={brl(vendidoAno)} color={GOLD} dark />
+            <SummaryCard label="Faturado no ano" value={brl(faturadoAno)} color={OK} />
+            <SummaryCard label="Previsto no ano" value={brl(previstoAno)} color={NAVY} />
+            <SummaryCard
+              label={`Vs. ${ano - 1} (${brl(vendidoAnoAnterior)})`}
+              value={variacaoAno === null ? "-" : `${variacaoAno >= 0 ? "+" : ""}${(variacaoAno * 100).toFixed(1)}%`}
+              color={variacaoAno === null ? MUTED : variacaoAno >= 0 ? OK : DANGER}
+            />
+          </div>
+
+          <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Orçamentos do ano por status</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 24 }}>
+            {porStatus.map((s) => (
+              <Card key={s.id}>
+                <div style={{ fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.5 }}>{s.label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO, color: s.color, marginTop: 4 }}>{s.count}</div>
+                <div style={{ fontSize: 12, color: MUTED, fontFamily: FONT_MONO, marginTop: 2 }}>{brl(s.soma)}</div>
+              </Card>
+            ))}
+          </div>
+
+          <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Previsto × Vendido × Faturado, mês a mês</h3>
+          <Card style={{ padding: 0, overflow: "hidden", marginBottom: 18 }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
+                    {["Mês", "Previsto", "Vendido", "Faturado"].map((h) => (
+                      <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {porMes.map((m, i) => (
+                    <tr key={m.mes} style={{ borderTop: `1px solid ${BORDER}`, background: i % 3 === 2 ? "#FAFAF7" : "transparent" }}>
+                      <td style={{ padding: "8px 14px", fontWeight: 600 }}>{m.mes}</td>
+                      <td style={{ padding: "8px 14px", fontFamily: FONT_MONO }}>{brl(m.previsto)}</td>
+                      <td style={{ padding: "8px 14px", fontFamily: FONT_MONO, color: GOLD }}>{brl(m.vendido)}</td>
+                      <td style={{ padding: "8px 14px", fontFamily: FONT_MONO, color: OK }}>{brl(m.faturado)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  {trimestres.map((t, i) => (
+                    <tr key={i} style={{ borderTop: `2px solid ${BORDER}`, background: "#F0F2F6" }}>
+                      <td style={{ padding: "8px 14px", fontWeight: 700 }}>{i + 1}º trimestre</td>
+                      <td style={{ padding: "8px 14px", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(t.previsto)}</td>
+                      <td style={{ padding: "8px 14px", fontFamily: FONT_MONO, fontWeight: 700, color: GOLD }}>{brl(t.vendido)}</td>
+                      <td style={{ padding: "8px 14px", fontFamily: FONT_MONO, fontWeight: 700, color: OK }}>{brl(t.faturado)}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ borderTop: `2px solid ${NAVY}`, background: "#152A4A" }}>
+                    <td style={{ padding: "10px 14px", fontWeight: 700, color: "#fff" }}>Total {ano}</td>
+                    <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 700, color: "#fff" }}>{brl(previstoAno)}</td>
+                    <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 700, color: GOLD }}>{brl(vendidoAno)}</td>
+                    <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 700, color: "#6FCF97" }}>{brl(faturadoAno)}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </Card>
+
+          <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Vendas por cliente no ano</h3>
+          <Card style={{ padding: 0, overflow: "hidden" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <tbody>
+                {vendasPorClienteAno.length === 0 ? (
+                  <tr><td style={{ padding: 16, color: MUTED, textAlign: "center" }}>Sem vendas aprovadas no ano.</td></tr>
+                ) : vendasPorClienteAno.map(([nome, valor]) => (
+                  <tr key={nome} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={{ padding: "8px 14px" }}>{nome}</td>
+                    <td style={{ padding: "8px 14px", fontFamily: FONT_MONO, textAlign: "right" }}>{brl(valor)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
         </>
       )}
     </div>
