@@ -587,7 +587,12 @@ function Header({ tab, setTab, onLogout, podeVerAba }) {
       <div style={{ maxWidth: 1180, margin: "0 auto", padding: "18px 20px 0" }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <img src="/logo-psview.png" alt="PSView" style={{ height: 34, width: "auto" }} />
+            <svg width="34" height="34" viewBox="0 0 64 64" aria-label="PSView" role="img">
+              <rect x="2" y="2" width="60" height="60" rx="14" fill="#152A4A" stroke="#B8902E" strokeWidth="3" />
+              <path d="M14 46 Q32 34 50 46 Q32 58 14 46 Z" fill="none" stroke="#B8902E" strokeWidth="3" strokeLinejoin="round" />
+              <circle cx="32" cy="46" r="4" fill="#B8902E" />
+              <text x="32" y="29" textAnchor="middle" fontFamily="Inter, Arial, sans-serif" fontSize="22" fontWeight="800" fill="#fff" letterSpacing="1">PS</text>
+            </svg>
             <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
               <span style={{ fontFamily: FONT_MONO, fontSize: 12, letterSpacing: 2, color: GOLD }}>1385</span>
               <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700, color: "#fff", letterSpacing: 0.3 }}>
