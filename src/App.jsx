@@ -253,6 +253,20 @@ async function sbLogin(email, password) {
   return data;
 }
 
+// Cria um novo usuário direto do app (sem precisar do painel do Supabase).
+// Usa o endpoint público de cadastro — NÃO afeta a sessão de quem está
+// logado (o retorno é da conta nova, que simplesmente ignoramos).
+async function sbSignup(email, password) {
+  const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error_description || data.msg || "Não foi possível criar o usuário.");
+  return data;
+}
+
 async function sbUploadFoto(file, path, session) {
   const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${FOTOS_BUCKET}/${path}`, {
     method: "POST",
@@ -1667,6 +1681,11 @@ function UsuariosView({ session, setErro, meuId }) {
   const [areasPorUsuario, setAreasPorUsuario] = useState({}); // { user_id: Set(['ponto','comercial']) }
   const [carregando, setCarregando] = useState(false);
   const [salvandoId, setSalvandoId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [novoEmail, setNovoEmail] = useState("");
+  const [novaSenha, setNovaSenha] = useState("");
+  const [criando, setCriando] = useState(false);
+  const [avisoCriacao, setAvisoCriacao] = useState("");
 
   function carregar() {
     setCarregando(true);
@@ -1719,13 +1738,68 @@ function UsuariosView({ session, setErro, meuId }) {
     finally { setSalvandoId(null); }
   }
 
+  async function handleCriarUsuario() {
+    if (!novoEmail || novaSenha.length < 6) {
+      setErro("Preencha o e-mail e uma senha com pelo menos 6 caracteres.");
+      return;
+    }
+    setCriando(true);
+    setErro("");
+    setAvisoCriacao("");
+    try {
+      const data = await sbSignup(novoEmail, novaSenha);
+      // Se o Supabase exigir confirmação por e-mail, não vem access_token
+      // ainda — o usuário só consegue logar depois de clicar no link.
+      if (!data.access_token) {
+        setAvisoCriacao(`Usuário "${novoEmail}" criado. Como a confirmação por e-mail está ativada no Supabase, ele só vai conseguir entrar depois de confirmar o e-mail recebido.`);
+      } else {
+        setAvisoCriacao(`Usuário "${novoEmail}" criado e já pode fazer login.`);
+      }
+      setNovoEmail("");
+      setNovaSenha("");
+      setShowForm(false);
+      carregar();
+    } catch (e) { setErro(e.message); }
+    finally { setCriando(false); }
+  }
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
         <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Usuários ({perfis.length})</h2>
+        <button onClick={() => { setShowForm(true); setAvisoCriacao(""); }} style={btnPrimary}><Plus size={16} /> Novo usuário</button>
       </div>
+
+      {avisoCriacao && (
+        <div style={{ background: "#EAF4EE", color: OK, padding: 12, borderRadius: 8, marginBottom: 14, fontSize: 13 }}>{avisoCriacao}</div>
+      )}
+
+      {showForm && (
+        <Card style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
+            <h3 style={{ margin: 0, fontSize: 15 }}>Novo usuário</h3>
+            <button onClick={() => setShowForm(false)} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED }}><X size={18} /></button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="E-mail">
+              <input type="email" style={inputStyle} value={novoEmail} onChange={(e) => setNovoEmail(e.target.value)} />
+            </Field>
+            <Field label="Senha provisória (mín. 6 caracteres)">
+              <input type="text" style={inputStyle} value={novaSenha} onChange={(e) => setNovaSenha(e.target.value)} />
+            </Field>
+          </div>
+          <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
+            Depois de criado, defina aqui embaixo se é admin e quais áreas ele acessa. Avise a senha provisória pra pessoa — ela pode trocar depois fazendo login.
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <button onClick={() => setShowForm(false)} style={btnGhostSmall}>Cancelar</button>
+            <button onClick={handleCriarUsuario} disabled={criando} style={btnPrimary}><Save size={15} /> {criando ? "Criando..." : "Criar usuário"}</button>
+          </div>
+        </Card>
+      )}
+
       <div style={{ color: MUTED, fontSize: 13, marginBottom: 14 }}>
-        Novos usuários são criados no painel do Supabase (Authentication → Users) — eles aparecem aqui automaticamente depois disso. Aqui você só define nome, se é administrador (acesso total) e quais áreas cada um pode ver.
+        Aqui você define nome, se é administrador (acesso total) e quais áreas cada um pode ver.
       </div>
 
       {carregando ? (
@@ -1794,20 +1868,795 @@ function UsuariosView({ session, setErro, meuId }) {
 }
 
 // =========================================================
-// Comercial — ainda em construção. Próximos passos: Clientes,
-// Previsão Orçamentária, Orçamentos, Faturamento e Dashboard.
+// Comercial — mapeamento JS <-> colunas do banco
+// =========================================================
+function clienteFromRow(r) { return { id: r.id, nome: r.nome }; }
+
+function orcamentoFromRow(r) {
+  return {
+    id: r.id, evento: r.evento, clienteId: r.cliente_id, clienteNome: r.clientes?.nome || null,
+    local: r.local, dataEvento: r.data_evento, valor: Number(r.valor || 0),
+    status: r.status, mesRef: r.mes_ref,
+  };
+}
+
+function faturamentoFromRow(r) {
+  return {
+    id: r.id, orcamentoId: r.orcamento_id, clienteId: r.cliente_id,
+    clienteNome: r.clientes?.nome || null, orcamentoEvento: r.orcamentos?.evento || null,
+    valor: Number(r.valor || 0), dataFaturamento: r.data_faturamento, mesRef: r.mes_ref,
+  };
+}
+
+function previsaoFromRow(r) { return { id: r.id, ano: r.ano, mes: r.mes, valor: Number(r.valor_previsto || 0) }; }
+
+const STATUS_ORCAMENTO = [
+  { id: "orcado", label: "Orçado", color: MUTED },
+  { id: "em_analise", label: "Em análise", color: GOLD },
+  { id: "aprovado", label: "Aprovado", color: OK },
+  { id: "nao_aprovado", label: "Não aprovado", color: DANGER },
+];
+function statusInfo(id) { return STATUS_ORCAMENTO.find((s) => s.id === id) || STATUS_ORCAMENTO[0]; }
+
+// Garante que um orçamento aprovado tenha um lançamento de faturamento
+// vinculado (não duplica se já existir). Chamado sempre que um orçamento
+// é salvo com status "aprovado".
+async function garantirFaturamento(session, orcamentoRow) {
+  const existentes = await sbRequest(`faturamento?select=id&orcamento_id=eq.${orcamentoRow.id}`, session);
+  if (existentes && existentes.length > 0) return;
+  await sbRequest("faturamento", session, {
+    method: "POST",
+    body: {
+      orcamento_id: orcamentoRow.id,
+      cliente_id: orcamentoRow.cliente_id,
+      valor: orcamentoRow.valor,
+      data_faturamento: orcamentoRow.data_evento || new Date().toISOString().slice(0, 10),
+      mes_ref: orcamentoRow.mes_ref,
+    },
+  });
+}
+
+const MESES_ABREV = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+
+// =========================================================
+// Comercial — container com navegação interna
 // =========================================================
 function ComercialView({ session, setErro }) {
+  const [subtab, setSubtab] = useState("dashboard");
+  const [clientes, setClientes] = useState([]);
+  const [carregandoClientes, setCarregandoClientes] = useState(false);
+
+  function carregarClientes() {
+    setCarregandoClientes(true);
+    sbRequest("clientes?select=*&order=nome.asc", session)
+      .then((rows) => setClientes((rows || []).map(clienteFromRow)))
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregandoClientes(false));
+  }
+
+  useEffect(() => { carregarClientes(); }, []); // eslint-disable-line
+
+  const SUBABAS = [
+    { id: "dashboard", label: "Dashboard" },
+    { id: "orcamentos", label: "Orçamentos" },
+    { id: "clientes", label: "Clientes" },
+    { id: "previsao", label: "Previsão Orçamentária" },
+    { id: "faturamento", label: "Faturamento" },
+  ];
+
   return (
     <div>
       <h2 style={{ margin: "0 0 18px", fontSize: 18, fontWeight: 700 }}>Comercial</h2>
-      <Card>
-        <div style={{ color: MUTED, fontSize: 14 }}>
-          Módulo em construção. Os dados de 2026 (clientes, orçamentos e faturamento) já estão
-          importados no banco — as telas de Clientes, Previsão Orçamentária, Orçamentos, Faturamento
-          e Dashboard entram nas próximas atualizações.
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap" }}>
+        {SUBABAS.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => setSubtab(s.id)}
+            style={{
+              padding: "8px 16px", borderRadius: 8, border: `1px solid ${subtab === s.id ? GOLD : BORDER}`,
+              background: subtab === s.id ? GOLD : "#fff", color: subtab === s.id ? "#fff" : TEXT,
+              fontSize: 13, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+
+      {carregandoClientes ? (
+        <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>
+      ) : (
+        <>
+          {subtab === "dashboard" && <DashboardComercialView session={session} setErro={setErro} clientes={clientes} />}
+          {subtab === "orcamentos" && <OrcamentosComercialView session={session} setErro={setErro} clientes={clientes} />}
+          {subtab === "clientes" && <ClientesComercialView session={session} setErro={setErro} clientes={clientes} setClientes={setClientes} />}
+          {subtab === "previsao" && <PrevisaoComercialView session={session} setErro={setErro} />}
+          {subtab === "faturamento" && <FaturamentoComercialView session={session} setErro={setErro} clientes={clientes} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+// =========================================================
+// Comercial · Clientes
+// =========================================================
+function ClientesComercialView({ session, setErro, clientes, setClientes }) {
+  const [editing, setEditing] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [nome, setNome] = useState("");
+  const [salvando, setSalvando] = useState(false);
+
+  async function handleSave() {
+    if (!nome.trim()) return;
+    setSalvando(true);
+    setErro("");
+    try {
+      if (editing) {
+        const [row] = await sbRequest(`clientes?id=eq.${editing.id}`, session, { method: "PATCH", body: { nome: nome.trim() } });
+        setClientes(clientes.map((c) => (c.id === editing.id ? clienteFromRow(row) : c)).sort((a, b) => a.nome.localeCompare(b.nome)));
+      } else {
+        const [row] = await sbRequest("clientes", session, { method: "POST", body: { nome: nome.trim() } });
+        setClientes([...clientes, clienteFromRow(row)].sort((a, b) => a.nome.localeCompare(b.nome)));
+      }
+      setShowForm(false);
+      setEditing(null);
+      setNome("");
+    } catch (e) { setErro(e.message); }
+    finally { setSalvando(false); }
+  }
+
+  async function handleDelete(id) {
+    setErro("");
+    try {
+      await sbRequest(`clientes?id=eq.${id}`, session, { method: "DELETE" });
+      setClientes(clientes.filter((c) => c.id !== id));
+    } catch (e) {
+      setErro("Não foi possível excluir — esse cliente já tem orçamentos vinculados.");
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+        <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Clientes ({clientes.length})</h3>
+        <button onClick={() => { setEditing(null); setNome(""); setShowForm(true); }} style={btnPrimary}><Plus size={16} /> Novo cliente</button>
+      </div>
+
+      {showForm && (
+        <Card style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+            <h4 style={{ margin: 0, fontSize: 14 }}>{editing ? "Editar cliente" : "Novo cliente"}</h4>
+            <button onClick={() => setShowForm(false)} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED }}><X size={18} /></button>
+          </div>
+          <Field label="Nome">
+            <input style={inputStyle} value={nome} onChange={(e) => setNome(e.target.value)} />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+            <button onClick={() => setShowForm(false)} style={btnGhostSmall}>Cancelar</button>
+            <button onClick={handleSave} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <tbody>
+            {clientes.map((c) => (
+              <tr key={c.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "10px 14px", fontWeight: 600 }}>{c.nome}</td>
+                <td style={{ padding: "10px 14px", textAlign: "right" }}>
+                  <button onClick={() => { setEditing(c); setNome(c.nome); setShowForm(true); }} style={btnGhostSmall}>Editar</button>{" "}
+                  <button onClick={() => handleDelete(c.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
+                </td>
+              </tr>
+            ))}
+            {clientes.length === 0 && <tr><td style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum cliente cadastrado.</td></tr>}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// =========================================================
+// Comercial · Orçamentos
+// =========================================================
+function OrcamentosComercialView({ session, setErro, clientes }) {
+  const [mesRef, setMesRef] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${MESES[d.getMonth()]}`;
+  });
+  const [registros, setRegistros] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+  const [filtroStatus, setFiltroStatus] = useState("todos");
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [salvando, setSalvando] = useState(false);
+
+  const blankForm = { evento: "", clienteId: "", local: "", dataEvento: "", valor: 0, status: "orcado" };
+  const [form, setForm] = useState(blankForm);
+
+  function carregar() {
+    setCarregando(true);
+    sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${mesRef}-01&order=data_evento.asc`, session)
+      .then((rows) => setRegistros((rows || []).map(orcamentoFromRow)))
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }
+  useEffect(() => { carregar(); }, [mesRef]); // eslint-disable-line
+
+  function abrirNovo() {
+    setEditing(null);
+    setForm({ ...blankForm, clienteId: clientes[0]?.id || "" });
+    setShowForm(true);
+  }
+  function abrirEditar(o) {
+    setEditing(o);
+    setForm({ evento: o.evento, clienteId: o.clienteId || "", local: o.local || "", dataEvento: o.dataEvento || "", valor: o.valor, status: o.status });
+    setShowForm(true);
+  }
+
+  async function handleSalvar() {
+    if (!form.evento || !form.valor) return;
+    setSalvando(true);
+    setErro("");
+    try {
+      const mesRefCalc = form.dataEvento ? `${form.dataEvento.slice(0, 7)}-01` : `${mesRef}-01`;
+      const body = {
+        evento: form.evento, cliente_id: form.clienteId || null, local: form.local || null,
+        data_evento: form.dataEvento || null, valor: form.valor, status: form.status, mes_ref: mesRefCalc,
+      };
+      let saved;
+      if (editing) {
+        [saved] = await sbRequest(`orcamentos?id=eq.${editing.id}`, session, { method: "PATCH", body });
+      } else {
+        [saved] = await sbRequest("orcamentos", session, { method: "POST", body });
+      }
+      if (saved.status === "aprovado") await garantirFaturamento(session, saved);
+      setShowForm(false);
+      setEditing(null);
+      carregar();
+    } catch (e) { setErro(e.message); }
+    finally { setSalvando(false); }
+  }
+
+  async function handleExcluir(id) {
+    setErro("");
+    try {
+      await sbRequest(`orcamentos?id=eq.${id}`, session, { method: "DELETE" });
+      setRegistros((rs) => rs.filter((r) => r.id !== id));
+    } catch (e) { setErro(e.message); }
+  }
+
+  async function handleMudarStatus(o, novoStatus) {
+    setErro("");
+    try {
+      const [saved] = await sbRequest(`orcamentos?id=eq.${o.id}`, session, { method: "PATCH", body: { status: novoStatus } });
+      if (novoStatus === "aprovado") await garantirFaturamento(session, saved);
+      setRegistros((rs) => rs.map((r) => (r.id === o.id ? { ...r, status: novoStatus } : r)));
+    } catch (e) { setErro(e.message); }
+  }
+
+  const rowsFiltradas = filtroStatus === "todos" ? registros : registros.filter((r) => r.status === filtroStatus);
+  const totalFiltrado = rowsFiltradas.reduce((s, r) => s + r.valor, 0);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <MesPicker mesRef={mesRef} setMesRef={setMesRef} />
+          <select value={filtroStatus} onChange={(e) => setFiltroStatus(e.target.value)} style={selStyle}>
+            <option value="todos">Todos os status</option>
+            {STATUS_ORCAMENTO.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+        </div>
+        <button onClick={abrirNovo} style={btnPrimary}><Plus size={16} /> Novo orçamento</button>
+      </div>
+
+      {showForm && (
+        <Card style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 16 }}>
+            <h4 style={{ margin: 0, fontSize: 14 }}>{editing ? "Editar orçamento" : "Novo orçamento"}</h4>
+            <button onClick={() => setShowForm(false)} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED }}><X size={18} /></button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
+            <Field label="Nome do evento"><input style={inputStyle} value={form.evento} onChange={(e) => setForm({ ...form, evento: e.target.value })} /></Field>
+            <Field label="Cliente">
+              <select style={inputStyle} value={form.clienteId} onChange={(e) => setForm({ ...form, clienteId: e.target.value })}>
+                <option value="">Selecione...</option>
+                {clientes.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+              </select>
+            </Field>
+            <Field label="Local"><input style={inputStyle} value={form.local} onChange={(e) => setForm({ ...form, local: e.target.value })} /></Field>
+            <Field label="Data do evento"><input type="date" style={inputStyle} value={form.dataEvento} onChange={(e) => setForm({ ...form, dataEvento: e.target.value })} /></Field>
+            <Field label="Valor (R$)"><input type="number" step="0.01" style={inputStyle} value={form.valor} onChange={(e) => setForm({ ...form, valor: parseFloat(e.target.value) || 0 })} /></Field>
+            <Field label="Status">
+              <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+                {STATUS_ORCAMENTO.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+            </Field>
+          </div>
+          {form.status === "aprovado" && (
+            <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
+              Ao salvar como "Aprovado", um lançamento de faturamento é gerado automaticamente (se ainda não existir).
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <button onClick={() => setShowForm(false)} style={btnGhostSmall}>Cancelar</button>
+            <button onClick={handleSalvar} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
+                {["Data", "Evento", "Cliente", "Local", "Valor", "Status", ""].map((h) => (
+                  <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {carregando ? (
+                <tr><td colSpan={7} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Carregando...</td></tr>
+              ) : rowsFiltradas.length === 0 ? (
+                <tr><td colSpan={7} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum orçamento nesse filtro.</td></tr>
+              ) : rowsFiltradas.map((r) => {
+                const st = statusInfo(r.status);
+                return (
+                  <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>{r.dataEvento ? r.dataEvento.slice(8,10)+"/"+r.dataEvento.slice(5,7) : "-"}</td>
+                    <td style={{ padding: "10px 14px", fontWeight: 600 }}>{r.evento}</td>
+                    <td style={{ padding: "10px 14px" }}>{r.clienteNome || "-"}</td>
+                    <td style={{ padding: "10px 14px", color: MUTED }}>{r.local || "-"}</td>
+                    <td style={{ padding: "10px 14px", fontFamily: FONT_MONO }}>{brl(r.valor)}</td>
+                    <td style={{ padding: "10px 14px" }}>
+                      <select
+                        value={r.status}
+                        onChange={(e) => handleMudarStatus(r, e.target.value)}
+                        style={{ ...selStyle, padding: "5px 8px", fontSize: 12, color: st.color, fontWeight: 600 }}
+                      >
+                        {STATUS_ORCAMENTO.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                      </select>
+                    </td>
+                    <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button onClick={() => abrirEditar(r)} style={btnGhostSmall}>Editar</button>{" "}
+                      <button onClick={() => handleExcluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            {rowsFiltradas.length > 0 && (
+              <tfoot>
+                <tr style={{ borderTop: `2px solid ${BORDER}` }}>
+                  <td colSpan={4} style={{ padding: "10px 14px", fontWeight: 700 }}>Total ({rowsFiltradas.length})</td>
+                  <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(totalFiltrado)}</td>
+                  <td colSpan={2}></td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
         </div>
       </Card>
+    </div>
+  );
+}
+
+// =========================================================
+// Comercial · Previsão Orçamentária
+// =========================================================
+function PrevisaoComercialView({ session, setErro }) {
+  const anoAtual = new Date().getFullYear();
+  const [ano, setAno] = useState(anoAtual + 1);
+  const [valores, setValores] = useState(() => Array(12).fill(0));
+  const [carregando, setCarregando] = useState(false);
+  const [salvando, setSalvando] = useState(false);
+  const [anoBase, setAnoBase] = useState(anoAtual);
+  const [percentual, setPercentual] = useState(10);
+  const [aplicando, setAplicando] = useState(false);
+
+  function carregar() {
+    setCarregando(true);
+    sbRequest(`previsao_orcamentaria?select=*&ano=eq.${ano}`, session)
+      .then((rows) => {
+        const novos = Array(12).fill(0);
+        (rows || []).map(previsaoFromRow).forEach((p) => { novos[p.mes - 1] = p.valor; });
+        setValores(novos);
+      })
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }
+  useEffect(() => { carregar(); }, [ano]); // eslint-disable-line
+
+  async function handleAplicarPercentual() {
+    setAplicando(true);
+    setErro("");
+    try {
+      const rows = await sbRequest(
+        `orcamentos?select=valor,mes_ref&status=eq.aprovado&mes_ref=gte.${anoBase}-01-01&mes_ref=lt.${anoBase + 1}-01-01`,
+        session
+      );
+      const somaPorMes = Array(12).fill(0);
+      (rows || []).forEach((r) => {
+        const mes = Number(r.mes_ref.slice(5, 7)) - 1;
+        somaPorMes[mes] += Number(r.valor || 0);
+      });
+      const fator = 1 + (percentual || 0) / 100;
+      setValores(somaPorMes.map((v) => Math.round(v * fator * 100) / 100));
+    } catch (e) { setErro(e.message); }
+    finally { setAplicando(false); }
+  }
+
+  async function handleSalvar() {
+    setSalvando(true);
+    setErro("");
+    try {
+      const body = valores.map((v, i) => ({ ano, mes: i + 1, valor_previsto: v }));
+      await sbRequest("previsao_orcamentaria?on_conflict=ano,mes", session, {
+        method: "POST", body, extraHeaders: { Prefer: "resolution=merge-duplicates,return=representation" },
+      });
+    } catch (e) { setErro(e.message); }
+    finally { setSalvando(false); }
+  }
+
+  const trimestres = [0, 1, 2, 3].map((t) => valores.slice(t * 3, t * 3 + 3).reduce((s, v) => s + v, 0));
+  const totalAno = valores.reduce((s, v) => s + v, 0);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap", alignItems: "center" }}>
+        <Field label="Ano da previsão">
+          <select style={selStyle} value={ano} onChange={(e) => setAno(Number(e.target.value))}>
+            {[anoAtual, anoAtual + 1, anoAtual + 2].map((a) => <option key={a} value={a}>{a}</option>)}
+          </select>
+        </Field>
+      </div>
+
+      <Card style={{ marginBottom: 18, background: "#F8F6F0" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>Preencher automaticamente a partir do realizado</div>
+        <div style={{ display: "flex", gap: 12, alignItems: "end", flexWrap: "wrap" }}>
+          <Field label="Ano base (realizado)">
+            <select style={selStyle} value={anoBase} onChange={(e) => setAnoBase(Number(e.target.value))}>
+              {[anoAtual - 1, anoAtual].map((a) => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </Field>
+          <Field label="Reajuste (%)">
+            <input type="number" step="0.1" style={inputStyle} value={percentual} onChange={(e) => setPercentual(parseFloat(e.target.value) || 0)} />
+          </Field>
+          <button onClick={handleAplicarPercentual} disabled={aplicando} style={btnGhostSmall}>
+            {aplicando ? "Calculando..." : `Aplicar: cada mês = mesmo mês de ${anoBase} × (1 + ${percentual}%)`}
+          </button>
+        </div>
+      </Card>
+
+      {carregando ? (
+        <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>
+      ) : (
+        <Card style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
+                  {MESES_ABREV.map((m) => (
+                    <th key={m} style={{ padding: "10px 12px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase" }}>{m}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  {valores.map((v, i) => (
+                    <td key={i} style={{ padding: "8px 10px" }}>
+                      <input
+                        type="number" step="0.01" style={{ ...inputStyle, width: 100, fontFamily: FONT_MONO, fontSize: 12 }}
+                        value={v}
+                        onChange={(e) => {
+                          const novos = [...valores];
+                          novos[i] = parseFloat(e.target.value) || 0;
+                          setValores(novos);
+                        }}
+                      />
+                    </td>
+                  ))}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginTop: 18 }}>
+        {trimestres.map((t, i) => (
+          <SummaryCard key={i} label={`${i + 1}º trimestre`} value={brl(t)} color={NAVY} />
+        ))}
+      </div>
+      <div style={{ marginTop: 14 }}>
+        <SummaryCard label={`Total previsto ${ano}`} value={brl(totalAno)} color={GOLD} dark />
+      </div>
+
+      <button onClick={handleSalvar} disabled={salvando} style={{ ...btnPrimary, marginTop: 18 }}>
+        <Save size={15} /> {salvando ? "Salvando..." : "Salvar previsão"}
+      </button>
+    </div>
+  );
+}
+
+// =========================================================
+// Comercial · Faturamento
+// =========================================================
+function FaturamentoComercialView({ session, setErro, clientes }) {
+  const [mesRef, setMesRef] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${MESES[d.getMonth()]}`;
+  });
+  const [registros, setRegistros] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [salvando, setSalvando] = useState(false);
+  const blankForm = { clienteId: "", valor: 0, dataFaturamento: "" };
+  const [form, setForm] = useState(blankForm);
+
+  function carregar() {
+    setCarregando(true);
+    sbRequest(`faturamento?select=*,clientes(nome),orcamentos(evento)&mes_ref=eq.${mesRef}-01&order=data_faturamento.asc`, session)
+      .then((rows) => setRegistros((rows || []).map(faturamentoFromRow)))
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }
+  useEffect(() => { carregar(); }, [mesRef]); // eslint-disable-line
+
+  async function handleSalvarValor(r, novoValor) {
+    setErro("");
+    try {
+      await sbRequest(`faturamento?id=eq.${r.id}`, session, { method: "PATCH", body: { valor: novoValor } });
+      setRegistros((rs) => rs.map((x) => (x.id === r.id ? { ...x, valor: novoValor } : x)));
+    } catch (e) { setErro(e.message); }
+  }
+
+  async function handleSalvarData(r, novaData) {
+    setErro("");
+    try {
+      await sbRequest(`faturamento?id=eq.${r.id}`, session, { method: "PATCH", body: { data_faturamento: novaData || null } });
+      setRegistros((rs) => rs.map((x) => (x.id === r.id ? { ...x, dataFaturamento: novaData } : x)));
+    } catch (e) { setErro(e.message); }
+  }
+
+  async function handleExcluir(id) {
+    setErro("");
+    try {
+      await sbRequest(`faturamento?id=eq.${id}`, session, { method: "DELETE" });
+      setRegistros((rs) => rs.filter((r) => r.id !== id));
+    } catch (e) { setErro(e.message); }
+  }
+
+  async function handleNovoManual() {
+    setSalvando(true);
+    setErro("");
+    try {
+      const body = {
+        cliente_id: form.clienteId || null, orcamento_id: null, valor: form.valor,
+        data_faturamento: form.dataFaturamento || null,
+        mes_ref: form.dataFaturamento ? `${form.dataFaturamento.slice(0, 7)}-01` : `${mesRef}-01`,
+      };
+      await sbRequest("faturamento", session, { method: "POST", body });
+      setShowForm(false);
+      setForm(blankForm);
+      carregar();
+    } catch (e) { setErro(e.message); }
+    finally { setSalvando(false); }
+  }
+
+  const total = registros.reduce((s, r) => s + r.valor, 0);
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
+        <MesPicker mesRef={mesRef} setMesRef={setMesRef} />
+        <button onClick={() => { setForm(blankForm); setShowForm(true); }} style={btnPrimary}><Plus size={16} /> Lançamento manual</button>
+      </div>
+
+      {showForm && (
+        <Card style={{ marginBottom: 18 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+            <h4 style={{ margin: 0, fontSize: 14 }}>Novo lançamento de faturamento</h4>
+            <button onClick={() => setShowForm(false)} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED }}><X size={18} /></button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}>
+            <Field label="Cliente">
+              <select style={inputStyle} value={form.clienteId} onChange={(e) => setForm({ ...form, clienteId: e.target.value })}>
+                <option value="">Selecione...</option>
+                {clientes.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+              </select>
+            </Field>
+            <Field label="Valor (R$)"><input type="number" step="0.01" style={inputStyle} value={form.valor} onChange={(e) => setForm({ ...form, valor: parseFloat(e.target.value) || 0 })} /></Field>
+            <Field label="Data"><input type="date" style={inputStyle} value={form.dataFaturamento} onChange={(e) => setForm({ ...form, dataFaturamento: e.target.value })} /></Field>
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <button onClick={() => setShowForm(false)} style={btnGhostSmall}>Cancelar</button>
+            <button onClick={handleNovoManual} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
+                {["Data", "Cliente", "Origem", "Valor", ""].map((h) => (
+                  <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {carregando ? (
+                <tr><td colSpan={5} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Carregando...</td></tr>
+              ) : registros.length === 0 ? (
+                <tr><td colSpan={5} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum faturamento nesse mês.</td></tr>
+              ) : registros.map((r) => (
+                <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ padding: "8px 14px" }}>
+                    <input type="date" style={{ ...inputStyle, fontSize: 12 }} defaultValue={r.dataFaturamento || ""} onBlur={(e) => { if (e.target.value !== (r.dataFaturamento || "")) handleSalvarData(r, e.target.value); }} />
+                  </td>
+                  <td style={{ padding: "8px 14px" }}>{r.clienteNome || "-"}</td>
+                  <td style={{ padding: "8px 14px", color: MUTED, fontSize: 12 }}>{r.orcamentoEvento || "Lançamento manual"}</td>
+                  <td style={{ padding: "8px 14px" }}>
+                    <input
+                      type="number" step="0.01" style={{ ...inputStyle, width: 120, fontFamily: FONT_MONO }}
+                      defaultValue={r.valor}
+                      onBlur={(e) => { const v = parseFloat(e.target.value) || 0; if (v !== r.valor) handleSalvarValor(r, v); }}
+                    />
+                  </td>
+                  <td style={{ padding: "8px 14px", textAlign: "right" }}>
+                    <button onClick={() => handleExcluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            {registros.length > 0 && (
+              <tfoot>
+                <tr style={{ borderTop: `2px solid ${BORDER}` }}>
+                  <td colSpan={3} style={{ padding: "10px 14px", fontWeight: 700 }}>Total do mês</td>
+                  <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(total)}</td>
+                  <td></td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// =========================================================
+// Comercial · Dashboard
+// =========================================================
+function DashboardComercialView({ session, setErro, clientes }) {
+  const [mesRef, setMesRef] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${MESES[d.getMonth()]}`;
+  });
+  const [carregando, setCarregando] = useState(false);
+  const [orcMes, setOrcMes] = useState([]);
+  const [faturadoMes, setFaturadoMes] = useState(0);
+  const [vendidoMesAnoAnterior, setVendidoMesAnoAnterior] = useState(0);
+  const [acumuladoAno, setAcumuladoAno] = useState([]);
+
+  useEffect(() => {
+    const [ano, mes] = mesRef.split("-").map(Number);
+    const anoAnterior = ano - 1;
+    const inicioAno = `${ano}-01-01`;
+    setCarregando(true);
+    setErro("");
+    Promise.all([
+      sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${mesRef}-01`, session),
+      sbRequest(`faturamento?select=valor&mes_ref=eq.${mesRef}-01`, session),
+      sbRequest(`orcamentos?select=valor&status=eq.aprovado&mes_ref=eq.${anoAnterior}-${MESES[mes - 1]}-01`, session),
+      sbRequest(`orcamentos?select=valor,clientes(nome)&status=eq.aprovado&mes_ref=gte.${inicioAno}&mes_ref=lte.${mesRef}-01`, session),
+    ])
+      .then(([oMes, fMes, oAnoAnt, oAcum]) => {
+        setOrcMes((oMes || []).map(orcamentoFromRow));
+        setFaturadoMes((fMes || []).reduce((s, r) => s + Number(r.valor || 0), 0));
+        setVendidoMesAnoAnterior((oAnoAnt || []).reduce((s, r) => s + Number(r.valor || 0), 0));
+        setAcumuladoAno((oAcum || []).map((r) => ({ valor: Number(r.valor || 0), clienteNome: r.clientes?.nome || "Sem cliente" })));
+      })
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }, [mesRef]); // eslint-disable-line
+
+  const vendidoMes = orcMes.filter((o) => o.status === "aprovado").reduce((s, o) => s + o.valor, 0);
+  const variacao = vendidoMesAnoAnterior > 0 ? (vendidoMes - vendidoMesAnoAnterior) / vendidoMesAnoAnterior : null;
+
+  const porStatus = STATUS_ORCAMENTO.map((s) => {
+    const itens = orcMes.filter((o) => o.status === s.id);
+    return { ...s, count: itens.length, soma: itens.reduce((acc, o) => acc + o.valor, 0) };
+  });
+
+  function agruparPorCliente(lista) {
+    const mapa = {};
+    lista.forEach((item) => {
+      const nome = item.clienteNome || "Sem cliente";
+      mapa[nome] = (mapa[nome] || 0) + item.valor;
+    });
+    return Object.entries(mapa).sort((a, b) => b[1] - a[1]);
+  }
+
+  const vendasPorClienteMes = agruparPorCliente(orcMes.filter((o) => o.status === "aprovado").map((o) => ({ clienteNome: o.clienteNome, valor: o.valor })));
+  const vendasPorClienteAcumulado = agruparPorCliente(acumuladoAno);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 18 }}>
+        <MesPicker mesRef={mesRef} setMesRef={setMesRef} />
+      </div>
+
+      {carregando ? (
+        <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>
+      ) : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14, marginBottom: 18 }}>
+            <SummaryCard label="Vendido no mês (resultado)" value={brl(vendidoMes)} color={GOLD} dark />
+            <SummaryCard label="Faturado no mês" value={brl(faturadoMes)} color={OK} />
+            <SummaryCard
+              label={`Vs. mesmo mês ano anterior (${brl(vendidoMesAnoAnterior)})`}
+              value={variacao === null ? "-" : `${variacao >= 0 ? "+" : ""}${(variacao * 100).toFixed(1)}%`}
+              color={variacao === null ? MUTED : variacao >= 0 ? OK : DANGER}
+            />
+          </div>
+
+          <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Orçamentos do mês por status</h3>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 24 }}>
+            {porStatus.map((s) => (
+              <Card key={s.id}>
+                <div style={{ fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.5 }}>{s.label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO, color: s.color, marginTop: 4 }}>{s.count}</div>
+                <div style={{ fontSize: 12, color: MUTED, fontFamily: FONT_MONO, marginTop: 2 }}>{brl(s.soma)}</div>
+              </Card>
+            ))}
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+            <div>
+              <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Vendas por cliente (mês)</h3>
+              <Card style={{ padding: 0, overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <tbody>
+                    {vendasPorClienteMes.length === 0 ? (
+                      <tr><td style={{ padding: 16, color: MUTED, textAlign: "center" }}>Sem vendas aprovadas no mês.</td></tr>
+                    ) : vendasPorClienteMes.map(([nome, valor]) => (
+                      <tr key={nome} style={{ borderTop: `1px solid ${BORDER}` }}>
+                        <td style={{ padding: "8px 14px" }}>{nome}</td>
+                        <td style={{ padding: "8px 14px", fontFamily: FONT_MONO, textAlign: "right" }}>{brl(valor)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            </div>
+            <div>
+              <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Vendas por cliente (acumulado no ano)</h3>
+              <Card style={{ padding: 0, overflow: "hidden" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <tbody>
+                    {vendasPorClienteAcumulado.length === 0 ? (
+                      <tr><td style={{ padding: 16, color: MUTED, textAlign: "center" }}>Sem dados.</td></tr>
+                    ) : vendasPorClienteAcumulado.map(([nome, valor]) => (
+                      <tr key={nome} style={{ borderTop: `1px solid ${BORDER}` }}>
+                        <td style={{ padding: "8px 14px" }}>{nome}</td>
+                        <td style={{ padding: "8px 14px", fontFamily: FONT_MONO, textAlign: "right" }}>{brl(valor)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </Card>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
