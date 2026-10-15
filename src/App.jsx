@@ -1964,6 +1964,7 @@ function orcamentoFromRow(r) {
     id: r.id, evento: r.evento, clienteId: r.cliente_id, clienteNome: r.clientes?.nome || null,
     local: r.local, dataEvento: r.data_evento, valor: Number(r.valor || 0),
     status: r.status, mesRef: r.mes_ref,
+    faturado: Array.isArray(r.faturamento) ? r.faturamento.length > 0 : false,
   };
 }
 
@@ -1985,23 +1986,8 @@ const STATUS_ORCAMENTO = [
 ];
 function statusInfo(id) { return STATUS_ORCAMENTO.find((s) => s.id === id) || STATUS_ORCAMENTO[0]; }
 
-// Garante que um orçamento aprovado tenha um lançamento de faturamento
-// vinculado (não duplica se já existir). Chamado sempre que um orçamento
-// é salvo com status "aprovado".
-async function garantirFaturamento(session, orcamentoRow) {
-  const existentes = await sbRequest(`faturamento?select=id&orcamento_id=eq.${orcamentoRow.id}`, session);
-  if (existentes && existentes.length > 0) return;
-  await sbRequest("faturamento", session, {
-    method: "POST",
-    body: {
-      orcamento_id: orcamentoRow.id,
-      cliente_id: orcamentoRow.cliente_id,
-      valor: orcamentoRow.valor,
-      data_faturamento: orcamentoRow.data_evento || new Date().toISOString().slice(0, 10),
-      mes_ref: orcamentoRow.mes_ref,
-    },
-  });
-}
+// Faturamento é lançado manualmente na aba Faturamento: lá aparecem só os
+// orçamentos com status "aprovado" que ainda não têm lançamento vinculado.
 
 const MESES_ABREV = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
@@ -2166,7 +2152,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
 
   function carregar() {
     setCarregando(true);
-    sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${mesRef}-01&order=data_evento.asc`, session)
+    sbRequest(`orcamentos?select=*,clientes(nome),faturamento(id)&mes_ref=eq.${mesRef}-01&order=data_evento.asc`, session)
       .then((rows) => setRegistros((rows || []).map(orcamentoFromRow)))
       .catch((e) => setErro(e.message))
       .finally(() => setCarregando(false));
@@ -2200,7 +2186,6 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
       } else {
         [saved] = await sbRequest("orcamentos", session, { method: "POST", body });
       }
-      if (saved.status === "aprovado") await garantirFaturamento(session, saved);
       setShowForm(false);
       setEditing(null);
       carregar();
@@ -2219,8 +2204,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   async function handleMudarStatus(o, novoStatus) {
     setErro("");
     try {
-      const [saved] = await sbRequest(`orcamentos?id=eq.${o.id}`, session, { method: "PATCH", body: { status: novoStatus } });
-      if (novoStatus === "aprovado") await garantirFaturamento(session, saved);
+      await sbRequest(`orcamentos?id=eq.${o.id}`, session, { method: "PATCH", body: { status: novoStatus } });
       setRegistros((rs) => rs.map((r) => (r.id === o.id ? { ...r, status: novoStatus } : r)));
     } catch (e) { setErro(e.message); }
   }
@@ -2266,7 +2250,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
           </div>
           {form.status === "aprovado" && (
             <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
-              Ao salvar como "Aprovado", um lançamento de faturamento é gerado automaticamente (se ainda não existir).
+              Orçamentos aprovados ficam disponíveis no lançamento manual da aba Faturamento.
             </div>
           )}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
@@ -2308,6 +2292,9 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
                       >
                         {STATUS_ORCAMENTO.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                       </select>
+                      {r.faturado && (
+                        <span style={{ marginLeft: 8, padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, background: OK, color: "#fff", whiteSpace: "nowrap" }}>Faturado</span>
+                      )}
                     </td>
                     <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                       <button onClick={() => abrirEditar(r)} style={btnGhostSmall}>Editar</button>{" "}
@@ -2483,8 +2470,10 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
   const [carregando, setCarregando] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [salvando, setSalvando] = useState(false);
-  const blankForm = { clienteId: "", valor: 0, dataFaturamento: "" };
+  const blankForm = { orcamentoId: "", clienteId: "", valor: 0, dataFaturamento: "" };
   const [form, setForm] = useState(blankForm);
+  const [pendentes, setPendentes] = useState([]); // orçamentos aprovados ainda não faturados
+  const [buscaOrc, setBuscaOrc] = useState("");
 
   function carregar() {
     setCarregando(true);
@@ -2494,6 +2483,37 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
       .finally(() => setCarregando(false));
   }
   useEffect(() => { carregar(); }, [mesRef]); // eslint-disable-line
+
+  // Orçamentos aprovados que ainda não têm lançamento de faturamento vinculado
+  async function carregarPendentes() {
+    try {
+      const rows = await sbRequest(`orcamentos?select=*,clientes(nome),faturamento(id)&status=eq.aprovado&order=data_evento.asc`, session);
+      setPendentes((rows || []).map(orcamentoFromRow).filter((o) => !o.faturado));
+    } catch (e) { setErro(e.message); }
+  }
+
+  function abrirLancamento() {
+    setForm(blankForm);
+    setBuscaOrc("");
+    setShowForm(true);
+    carregarPendentes();
+  }
+
+  function selecionarOrcamento(id) {
+    const o = pendentes.find((p) => p.id === id);
+    if (!o) { setForm({ ...form, orcamentoId: "" }); return; }
+    setForm({
+      orcamentoId: o.id,
+      clienteId: o.clienteId || "",
+      valor: o.valor,
+      dataFaturamento: new Date().toISOString().slice(0, 10),
+    });
+  }
+
+  const termo = buscaOrc.trim().toLowerCase();
+  const pendentesFiltrados = termo
+    ? pendentes.filter((o) => `${o.evento} ${o.clienteNome || ""} ${o.local || ""}`.toLowerCase().includes(termo) || o.id === form.orcamentoId)
+    : pendentes;
 
   async function handleSalvarValor(r, novoValor) {
     setErro("");
@@ -2523,8 +2543,16 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
     setSalvando(true);
     setErro("");
     try {
+      if (!form.orcamentoId) { setErro("Selecione um orçamento aprovado para faturar."); return; }
+      // Evita faturar o mesmo orçamento duas vezes
+      const jaFaturado = await sbRequest(`faturamento?select=id&orcamento_id=eq.${form.orcamentoId}`, session);
+      if (jaFaturado && jaFaturado.length > 0) {
+        setErro("Esse orçamento já foi faturado.");
+        carregarPendentes();
+        return;
+      }
       const body = {
-        cliente_id: form.clienteId || null, orcamento_id: null, valor: form.valor,
+        cliente_id: form.clienteId || null, orcamento_id: form.orcamentoId, valor: form.valor,
         data_faturamento: form.dataFaturamento || null,
         mes_ref: form.dataFaturamento ? `${form.dataFaturamento.slice(0, 7)}-01` : `${mesRef}-01`,
       };
@@ -2542,7 +2570,7 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
     <div>
       <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
         <MesPicker mesRef={mesRef} setMesRef={setMesRef} />
-        <button onClick={() => { setForm(blankForm); setShowForm(true); }} style={btnPrimary}><Plus size={16} /> Lançamento manual</button>
+        <button onClick={abrirLancamento} style={btnPrimary}><Plus size={16} /> Lançamento manual</button>
       </div>
 
       {showForm && (
@@ -2550,6 +2578,21 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
             <h4 style={{ margin: 0, fontSize: 14 }}>Novo lançamento de faturamento</h4>
             <button onClick={() => setShowForm(false)} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED }}><X size={18} /></button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12, marginBottom: 12 }}>
+            <Field label="Buscar orçamento">
+              <input style={inputStyle} placeholder="Evento, cliente ou local" value={buscaOrc} onChange={(e) => setBuscaOrc(e.target.value)} />
+            </Field>
+            <Field label={`Orçamento aprovado a faturar (${pendentes.length} pendente${pendentes.length === 1 ? "" : "s"})`}>
+              <select style={inputStyle} value={form.orcamentoId} onChange={(e) => selecionarOrcamento(e.target.value)}>
+                <option value="">{pendentes.length === 0 ? "Nenhum orçamento aprovado pendente" : "Selecione..."}</option>
+                {pendentesFiltrados.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {(o.dataEvento ? o.dataEvento.slice(8, 10) + "/" + o.dataEvento.slice(5, 7) + "/" + o.dataEvento.slice(0, 4) : "s/ data")} · {o.clienteNome || "Sem cliente"} · {o.evento} · {brl(o.valor)}
+                  </option>
+                ))}
+              </select>
+            </Field>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}>
             <Field label="Cliente">
@@ -2563,7 +2606,7 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
             <button onClick={() => setShowForm(false)} style={btnGhostSmall}>Cancelar</button>
-            <button onClick={handleNovoManual} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
+            <button onClick={handleNovoManual} disabled={salvando || !form.orcamentoId} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
           </div>
         </Card>
       )}
