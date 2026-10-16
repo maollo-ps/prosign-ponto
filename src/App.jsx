@@ -2186,7 +2186,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   }
 
   async function handleSalvar() {
-    if (!form.evento || !form.valor) return;
+    if (!form.evento) return;
     setSalvando(true);
     setErro("");
     try {
@@ -2202,9 +2202,12 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
         [saved] = await sbRequest("orcamentos", session, { method: "POST", body });
       }
       if (saved.status === "aprovado") await garantirFaturamento(session, saved);
+      const eraNovo = !editing;
       setShowForm(false);
       setEditing(null);
       carregar();
+      // orçamento novo: já abre a composição pra montar o valor
+      if (eraNovo) setComposicaoDe(saved.id);
     } catch (e) { setErro(e.message); }
     finally { setSalvando(false); }
   }
@@ -2270,7 +2273,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
             <Field label="Local"><input style={inputStyle} value={form.local} onChange={(e) => setForm({ ...form, local: e.target.value })} /></Field>
             <Field label="Data do evento"><input type="date" style={inputStyle} value={form.dataEvento} onChange={(e) => setForm({ ...form, dataEvento: e.target.value })} /></Field>
             <Field label="OR (nº)"><input style={inputStyle} value={form.numeroOr} onChange={(e) => setForm({ ...form, numeroOr: e.target.value })} placeholder="839/26" /></Field>
-            <Field label={editing?.temComposicao ? "Valor (R$) — vem da composição" : "Valor (R$)"}><input type="number" step="0.01" style={inputStyle} disabled={!!editing?.temComposicao} value={form.valor} onChange={(e) => setForm({ ...form, valor: parseFloat(e.target.value) || 0 })} /></Field>
+            <Field label={editing?.temComposicao ? "Valor (R$) — vem da composição" : "Valor (R$) — opcional, a composição calcula"}><input type="number" step="0.01" style={inputStyle} disabled={!!editing?.temComposicao} value={form.valor} onChange={(e) => setForm({ ...form, valor: parseFloat(e.target.value) || 0 })} /></Field>
             <Field label="Status">
               <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
                 {STATUS_ORCAMENTO.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
@@ -2284,7 +2287,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
           )}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
             <button onClick={() => setShowForm(false)} style={btnGhostSmall}>Cancelar</button>
-            <button onClick={handleSalvar} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
+            <button onClick={handleSalvar} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : editing ? "Salvar" : "Salvar e montar composição"}</button>
           </div>
         </Card>
       )}
