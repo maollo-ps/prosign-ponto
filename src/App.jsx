@@ -2448,6 +2448,140 @@ function LinhaPct({ rotulo, valor, setValor, valorR, verde, onEdit }) {
   );
 }
 
+// Gera o PDF da composição numa janela de impressão (o navegador salva como PDF).
+// modo "cliente": só itens + valor final (sem custos, margem, impostos ou fornecedores).
+// modo "interno": layout da planilha, com custos e margem.
+function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo }) {
+  const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const num = (v, casas = 2) => numBR(v).toLocaleString("pt-BR", { maximumFractionDigits: casas });
+  const dataBR = (d) => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : "-");
+  const hoje = new Date().toLocaleDateString("pt-BR");
+  const interno = modo === "interno";
+
+  const secao = (cat) => {
+    const lista = itens.filter((i) => i.categoria === cat.id);
+    if (lista.length === 0) return "";
+    const lona = cat.id === "lona_adesivo", serv = cat.id === "servico_nao_gera_lucro";
+    let cab, linhas;
+    if (interno) {
+      if (lona) {
+        cab = ["Item", "Largura", "Altura", "Qtd.", "m²/ml", "Custo m²", "Vlr custo", "Status", "Fornecedor"];
+        linhas = lista.map((i) => [i.descricao, num(i.largura), num(i.altura), num(i.qtd), num(numBR(i.largura) * numBR(i.altura)), brl(numBR(i.valorCusto)), brl(custoDoItem(i)), i.status, i.fornecedor]);
+      } else if (serv) {
+        cab = ["Item", "Qtd", "Diária", "Unit", "Contratado", "Ordem pagto", "Vlr custo", "Status", "Fornecedor"];
+        linhas = lista.map((i) => [i.descricao, num(i.qtd), num(i.diaria), brl(numBR(i.valorCusto)), i.contratado, i.ordemPagto, brl(custoDoItem(i)), i.status, i.fornecedor]);
+      } else {
+        cab = ["Descrição", "Qtd.", "Diária", "Valor custo", "Vlr custo", "Status", "Fornecedor"];
+        linhas = lista.map((i) => [i.descricao, num(i.qtd), num(i.diaria), brl(numBR(i.valorCusto)), brl(custoDoItem(i)), i.status, i.fornecedor]);
+      }
+    } else {
+      if (serv) return ""; // serviços internos não aparecem pro cliente
+      if (lona) {
+        cab = ["Item", "Medidas (L × A)", "Qtd."];
+        linhas = lista.map((i) => [i.descricao, `${num(i.largura)} × ${num(i.altura)} m`, num(i.qtd)]);
+      } else {
+        cab = ["Descrição", "Qtd."];
+        linhas = lista.map((i) => [i.descricao, num(i.qtd)]);
+      }
+    }
+    const nomeSecao = interno ? cat.label.toUpperCase() : (lona ? "LONAS / ADESIVOS" : "ESTRUTURAS E MATERIAIS");
+    return `<div class="faixa" style="background:${serv ? "#F58220" : "#ED1C24"}">${esc(nomeSecao)}</div>
+      <table><thead><tr>${cab.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead>
+      <tbody>${linhas.map((l) => `<tr>${l.map((c, idx) => `<td class="${idx === 0 ? "txt" : ""}">${esc(c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  };
+
+  // No PDF do cliente, "outros custos" e "sublocação" saem juntos na mesma lista.
+  let corpo;
+  if (interno) {
+    corpo = CATEGORIAS_ITEM.map(secao).join("");
+  } else {
+    const lonas = secao(CATEGORIAS_ITEM[0]);
+    const outros = itens.filter((i) => i.categoria === "outros_gera_lucro" || i.categoria === "sublocacao_gera_lucro");
+    const blocoOutros = outros.length === 0 ? "" : `<div class="faixa" style="background:#ED1C24">ESTRUTURAS E MATERIAIS</div>
+      <table><thead><tr><th>Descrição</th><th>Qtd.</th></tr></thead>
+      <tbody>${outros.map((i) => `<tr><td class="txt">${esc(i.descricao)}</td><td>${esc(num(i.qtd))}</td></tr>`).join("")}</tbody></table>`;
+    corpo = lonas + blocoOutros;
+  }
+
+  const linhaR = (rot, val, forte) => `<tr><td class="rot">${esc(rot)}</td><td class="val ${forte ? "forte" : ""}">${esc(val)}</td></tr>`;
+  const totaisInternos = `
+    <div class="faixa" style="background:#ED1C24">TOTAIS</div>
+    <table class="resumo"><tbody>
+      ${linhaR("Total custo lonas / adesivos", brl(calc.totalLona))}
+      ${linhaR("Total custo outros", brl(calc.totalOutros))}
+      ${linhaR("Total custo sublocação", brl(calc.totalSub))}
+      ${linhaR("Total 3", brl(calc.total3), true)}
+      ${linhaR("Total 4 (outros serviços)", brl(calc.total4), true)}
+      ${linhaR("Total 6 CUSTOS (Total 3 + Total 4)", brl(calc.total6), true)}
+    </tbody></table>
+    <div class="faixa" style="background:#ED1C24">IMPOSTOS</div>
+    <table class="resumo"><tbody>
+      ${linhaR(`BV (${num(params.bv * 100)}%)`, brl(calc.bvR))}
+      ${linhaR(`Simples (${num(params.simples * 100)}%)`, brl(calc.simplesR))}
+      ${linhaR(`Comissão (${num(params.comissao * 100)}%)`, brl(calc.comissaoR))}
+      ${linhaR(`Margem (${num(params.margem * 100)}%)`, brl(calc.margemR))}
+    </tbody></table>
+    <div class="faixa" style="background:#ED1C24">VALOR FINAL</div>
+    <table class="resumo"><tbody>
+      ${linhaR("PREÇO DE VENDA", brl(calc.precoVenda), true)}
+      ${linhaR("Desconto / Acréscimo", brl(numBR(ajuste)))}
+      ${linhaR("PREÇO DE VENDA FINAL", brl(calc.precoFinal), true)}
+      ${linhaR("% LUCRO TOTAL", `${(calc.lucroPct * 100).toFixed(2).replace(".", ",")}%`, true)}
+    </tbody></table>`;
+
+  const totalCliente = `<div class="total-cliente"><span>VALOR TOTAL</span><b>${esc(brl(calc.precoFinal))}</b></div>`;
+
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+  <title>${esc(interno ? "Composição (interno)" : "Orçamento")} ${esc(numeroOr || "")} - ${esc(orc.evento)}</title>
+  <style>
+    @page { size: A4; margin: 14mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; margin: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .topo { display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #B8902E; padding-bottom: 8px; margin-bottom: 10px; }
+    .topo img { height: 42px; }
+    .topo .titulo { text-align: right; }
+    .topo .titulo b { font-size: 16px; display: block; }
+    .interno-tag { color: #A6394A; font-weight: 700; font-size: 11px; }
+    .dados { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; background: #FFFBCC; border: 1px solid #E6DFA0; padding: 8px 10px; margin-bottom: 12px; }
+    .dados span { color: #555; }
+    .faixa { color: #fff; text-align: center; font-weight: 700; padding: 4px 0; margin-top: 10px; letter-spacing: .5px; }
+    table { width: 100%; border-collapse: collapse; }
+    th { background: #F3F4F6; border: 1px solid #D1D5DB; padding: 4px 6px; font-size: 10px; }
+    td { border: 1px solid #D1D5DB; padding: 4px 6px; text-align: right; }
+    td.txt { text-align: left; }
+    table.resumo td.rot { text-align: right; font-weight: 600; border: none; }
+    table.resumo td.val { width: 160px; background: #E5E7EB; font-weight: 600; }
+    table.resumo td.val.forte { font-weight: 700; }
+    .total-cliente { display: flex; justify-content: space-between; align-items: center; background: #152A4A; color: #fff; padding: 12px 16px; margin-top: 16px; font-size: 14px; }
+    .total-cliente b { font-size: 22px; color: #E2C26A; }
+    .rodape { margin-top: 18px; font-size: 10px; color: #666; }
+    tr { page-break-inside: avoid; }
+  </style></head><body>
+    <div class="topo">
+      <img src="${LOGO_PSVIEW_ESCURA}" alt="PSView">
+      <div class="titulo"><b>${interno ? "PREVISÃO DE CUSTO" : "ORÇAMENTO"}${numeroOr ? ` · OR ${esc(numeroOr)}` : ""}</b>
+        ${interno ? '<span class="interno-tag">USO INTERNO — NÃO ENVIAR AO CLIENTE</span>' : `<span>Emitido em ${hoje}</span>`}</div>
+    </div>
+    <div class="dados">
+      <div><span>Cliente: </span><b>${esc(orc.clientes?.nome || "-")}</b></div>
+      <div><span>Evento: </span><b>${esc(orc.evento)}</b></div>
+      <div><span>Local: </span>${esc(orc.local || "-")}</div>
+      <div><span>Data do evento: </span>${esc(dataBR(orc.data_evento))}</div>
+    </div>
+    ${corpo}
+    ${interno ? totaisInternos : totalCliente}
+    ${interno ? "" : '<div class="rodape">Valores sujeitos a confirmação. Proposta válida conforme condições combinadas.</div>'}
+    <script>window.onload = function () { setTimeout(function () { window.print(); }, 300); };<\/script>
+  </body></html>`;
+
+  const w = window.open("", "_blank");
+  if (!w) return false;
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  return true;
+}
+
 function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
@@ -2534,6 +2668,11 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     finally { setSalvando(false); }
   }
 
+  function abrirPdf(modo) {
+    const ok = gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo });
+    if (!ok) setErro("O navegador bloqueou a janela do PDF. Libere pop-ups para este site e tente de novo.");
+  }
+
   if (carregando) return <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>;
   if (!orc) return <div style={{ color: MUTED, fontSize: 13 }}>Orçamento não encontrado. <button onClick={onVoltar} style={btnGhostSmall}>Voltar</button></div>;
 
@@ -2608,9 +2747,13 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
         <button onClick={onVoltar} style={btnGhostSmall}>← Voltar aos orçamentos</button>
-        <button onClick={handleSalvar} disabled={salvando} style={btnPrimary}>
-          <Save size={15} /> {salvando ? "Salvando..." : salvo ? "Salvo ✓" : "Salvar composição"}
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={() => abrirPdf("interno")} style={btnGhostSmall} title="Layout da planilha, com custos e margem">PDF interno (custos)</button>
+          <button onClick={() => abrirPdf("cliente")} style={{ ...btnGhostSmall, borderColor: GOLD, color: GOLD, fontWeight: 600 }} title="Itens e valor total, sem custos nem margem">PDF para o cliente</button>
+          <button onClick={handleSalvar} disabled={salvando} style={btnPrimary}>
+            <Save size={15} /> {salvando ? "Salvando..." : salvo ? "Salvo ✓" : "Salvar composição"}
+          </button>
+        </div>
       </div>
 
       <Card style={{ marginBottom: 18, background: "#FFFBCC" }}>
