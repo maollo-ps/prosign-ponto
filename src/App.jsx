@@ -1963,8 +1963,7 @@ function orcamentoFromRow(r) {
   return {
     id: r.id, evento: r.evento, clienteId: r.cliente_id, clienteNome: r.clientes?.nome || null,
     local: r.local, dataEvento: r.data_evento, valor: Number(r.valor || 0),
-    status: r.status, mesRef: r.mes_ref,
-    faturado: Array.isArray(r.faturamento) ? r.faturamento.length > 0 : false,
+    status: r.status, mesRef: r.mes_ref, numeroOr: r.numero_or || "", temComposicao: !!r.tem_composicao,
   };
 }
 
@@ -1986,8 +1985,23 @@ const STATUS_ORCAMENTO = [
 ];
 function statusInfo(id) { return STATUS_ORCAMENTO.find((s) => s.id === id) || STATUS_ORCAMENTO[0]; }
 
-// Faturamento é lançado manualmente na aba Faturamento: lá aparecem só os
-// orçamentos com status "aprovado" que ainda não têm lançamento vinculado.
+// Garante que um orçamento aprovado tenha um lançamento de faturamento
+// vinculado (não duplica se já existir). Chamado sempre que um orçamento
+// é salvo com status "aprovado".
+async function garantirFaturamento(session, orcamentoRow) {
+  const existentes = await sbRequest(`faturamento?select=id&orcamento_id=eq.${orcamentoRow.id}`, session);
+  if (existentes && existentes.length > 0) return;
+  await sbRequest("faturamento", session, {
+    method: "POST",
+    body: {
+      orcamento_id: orcamentoRow.id,
+      cliente_id: orcamentoRow.cliente_id,
+      valor: orcamentoRow.valor,
+      data_faturamento: orcamentoRow.data_evento || new Date().toISOString().slice(0, 10),
+      mes_ref: orcamentoRow.mes_ref,
+    },
+  });
+}
 
 const MESES_ABREV = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
@@ -2146,13 +2160,14 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [salvando, setSalvando] = useState(false);
+  const [composicaoDe, setComposicaoDe] = useState(null);
 
-  const blankForm = { evento: "", clienteId: "", local: "", dataEvento: "", valor: 0, status: "orcado" };
+  const blankForm = { evento: "", clienteId: "", local: "", dataEvento: "", valor: 0, status: "orcado", numeroOr: "" };
   const [form, setForm] = useState(blankForm);
 
   function carregar() {
     setCarregando(true);
-    sbRequest(`orcamentos?select=*,clientes(nome),faturamento(id)&mes_ref=eq.${mesRef}-01&order=data_evento.asc`, session)
+    sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${mesRef}-01&order=data_evento.asc`, session)
       .then((rows) => setRegistros((rows || []).map(orcamentoFromRow)))
       .catch((e) => setErro(e.message))
       .finally(() => setCarregando(false));
@@ -2166,7 +2181,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   }
   function abrirEditar(o) {
     setEditing(o);
-    setForm({ evento: o.evento, clienteId: o.clienteId || "", local: o.local || "", dataEvento: o.dataEvento || "", valor: o.valor, status: o.status });
+    setForm({ evento: o.evento, clienteId: o.clienteId || "", local: o.local || "", dataEvento: o.dataEvento || "", valor: o.valor, status: o.status, numeroOr: o.numeroOr || "" });
     setShowForm(true);
   }
 
@@ -2178,7 +2193,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
       const mesRefCalc = form.dataEvento ? `${form.dataEvento.slice(0, 7)}-01` : `${mesRef}-01`;
       const body = {
         evento: form.evento, cliente_id: form.clienteId || null, local: form.local || null,
-        data_evento: form.dataEvento || null, valor: form.valor, status: form.status, mes_ref: mesRefCalc,
+        data_evento: form.dataEvento || null, valor: form.valor, status: form.status, mes_ref: mesRefCalc, numero_or: form.numeroOr || null,
       };
       let saved;
       if (editing) {
@@ -2186,6 +2201,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
       } else {
         [saved] = await sbRequest("orcamentos", session, { method: "POST", body });
       }
+      if (saved.status === "aprovado") await garantirFaturamento(session, saved);
       setShowForm(false);
       setEditing(null);
       carregar();
@@ -2204,13 +2220,25 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   async function handleMudarStatus(o, novoStatus) {
     setErro("");
     try {
-      await sbRequest(`orcamentos?id=eq.${o.id}`, session, { method: "PATCH", body: { status: novoStatus } });
+      const [saved] = await sbRequest(`orcamentos?id=eq.${o.id}`, session, { method: "PATCH", body: { status: novoStatus } });
+      if (novoStatus === "aprovado") await garantirFaturamento(session, saved);
       setRegistros((rs) => rs.map((r) => (r.id === o.id ? { ...r, status: novoStatus } : r)));
     } catch (e) { setErro(e.message); }
   }
 
   const rowsFiltradas = filtroStatus === "todos" ? registros : registros.filter((r) => r.status === filtroStatus);
   const totalFiltrado = rowsFiltradas.reduce((s, r) => s + r.valor, 0);
+
+  if (composicaoDe) {
+    return (
+      <ComposicaoOrcamentoView
+        orcamentoId={composicaoDe}
+        session={session}
+        setErro={setErro}
+        onVoltar={() => { setComposicaoDe(null); carregar(); }}
+      />
+    );
+  }
 
   return (
     <div>
@@ -2241,7 +2269,8 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
             </Field>
             <Field label="Local"><input style={inputStyle} value={form.local} onChange={(e) => setForm({ ...form, local: e.target.value })} /></Field>
             <Field label="Data do evento"><input type="date" style={inputStyle} value={form.dataEvento} onChange={(e) => setForm({ ...form, dataEvento: e.target.value })} /></Field>
-            <Field label="Valor (R$)"><input type="number" step="0.01" style={inputStyle} value={form.valor} onChange={(e) => setForm({ ...form, valor: parseFloat(e.target.value) || 0 })} /></Field>
+            <Field label="OR (nº)"><input style={inputStyle} value={form.numeroOr} onChange={(e) => setForm({ ...form, numeroOr: e.target.value })} placeholder="839/26" /></Field>
+            <Field label={editing?.temComposicao ? "Valor (R$) — vem da composição" : "Valor (R$)"}><input type="number" step="0.01" style={inputStyle} disabled={!!editing?.temComposicao} value={form.valor} onChange={(e) => setForm({ ...form, valor: parseFloat(e.target.value) || 0 })} /></Field>
             <Field label="Status">
               <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
                 {STATUS_ORCAMENTO.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
@@ -2250,7 +2279,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
           </div>
           {form.status === "aprovado" && (
             <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
-              Orçamentos aprovados ficam disponíveis no lançamento manual da aba Faturamento.
+              Ao salvar como "Aprovado", um lançamento de faturamento é gerado automaticamente (se ainda não existir).
             </div>
           )}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
@@ -2265,21 +2294,22 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
-                {["Data", "Evento", "Cliente", "Local", "Valor", "Status", ""].map((h) => (
+                {["Data", "OR", "Evento", "Cliente", "Local", "Valor", "Status", ""].map((h) => (
                   <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {carregando ? (
-                <tr><td colSpan={7} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Carregando...</td></tr>
+                <tr><td colSpan={8} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Carregando...</td></tr>
               ) : rowsFiltradas.length === 0 ? (
-                <tr><td colSpan={7} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum orçamento nesse filtro.</td></tr>
+                <tr><td colSpan={8} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum orçamento nesse filtro.</td></tr>
               ) : rowsFiltradas.map((r) => {
                 const st = statusInfo(r.status);
                 return (
                   <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                     <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>{r.dataEvento ? r.dataEvento.slice(8,10)+"/"+r.dataEvento.slice(5,7) : "-"}</td>
+                    <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, whiteSpace: "nowrap", color: MUTED }}>{r.numeroOr || "-"}</td>
                     <td style={{ padding: "10px 14px", fontWeight: 600 }}>{r.evento}</td>
                     <td style={{ padding: "10px 14px" }}>{r.clienteNome || "-"}</td>
                     <td style={{ padding: "10px 14px", color: MUTED }}>{r.local || "-"}</td>
@@ -2292,11 +2322,9 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
                       >
                         {STATUS_ORCAMENTO.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                       </select>
-                      {r.faturado && (
-                        <span style={{ marginLeft: 8, padding: "2px 8px", borderRadius: 10, fontSize: 11, fontWeight: 700, background: OK, color: "#fff", whiteSpace: "nowrap" }}>Faturado</span>
-                      )}
                     </td>
                     <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button onClick={() => setComposicaoDe(r.id)} style={{ ...btnGhostSmall, borderColor: GOLD, color: GOLD, fontWeight: 600 }}>{r.temComposicao ? "Composição ✓" : "Composição"}</button>{" "}
                       <button onClick={() => abrirEditar(r)} style={btnGhostSmall}>Editar</button>{" "}
                       <button onClick={() => handleExcluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
                     </td>
@@ -2307,7 +2335,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
             {rowsFiltradas.length > 0 && (
               <tfoot>
                 <tr style={{ borderTop: `2px solid ${BORDER}` }}>
-                  <td colSpan={4} style={{ padding: "10px 14px", fontWeight: 700 }}>Total ({rowsFiltradas.length})</td>
+                  <td colSpan={5} style={{ padding: "10px 14px", fontWeight: 700 }}>Total ({rowsFiltradas.length})</td>
                   <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(totalFiltrado)}</td>
                   <td colSpan={2}></td>
                 </tr>
@@ -2316,6 +2344,344 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
           </table>
         </div>
       </Card>
+    </div>
+  );
+}
+
+// =========================================================
+// Comercial · Composição de custo do orçamento
+// (mesma lógica da planilha "Previsão de custo")
+// =========================================================
+const CATEGORIAS_ITEM = [
+  { id: "lona_adesivo", label: "Lonas / Adesivos", cor: "#ED1C24" },
+  { id: "outros_gera_lucro", label: "Outros custos (gera lucro)", cor: "#ED1C24" },
+  { id: "sublocacao_gera_lucro", label: "Outros custos sublocação (gera lucro)", cor: "#DD0806" },
+  { id: "servico_nao_gera_lucro", label: "Outros serviços (não gera lucro)", cor: "#F58220" },
+];
+
+// aceita "1,5" ou "1.5"
+function numBR(v) {
+  if (typeof v === "number") return isNaN(v) ? 0 : v;
+  const n = parseFloat(String(v ?? "").replace(",", "."));
+  return isNaN(n) ? 0 : n;
+}
+
+function custoDoItem(it) {
+  const qtd = numBR(it.qtd), diaria = numBR(it.diaria), custo = numBR(it.valorCusto);
+  if (it.categoria === "lona_adesivo") return custo * qtd * (numBR(it.largura) * numBR(it.altura));
+  return custo * qtd * diaria; // outros, sublocação e serviços
+}
+
+// p = { bv, simples, comissao, margem } em fração (0.12 = 12%), ajuste em R$
+function calcularComposicao(itens, p, ajuste) {
+  const soma = (cat) => itens.filter((i) => i.categoria === cat).reduce((s, i) => s + custoDoItem(i), 0);
+  const totalLona = soma("lona_adesivo");
+  const totalOutros = soma("outros_gera_lucro");
+  const totalSub = soma("sublocacao_gera_lucro");
+  const total3 = totalLona + totalOutros + totalSub;
+  const total4 = soma("servico_nao_gera_lucro");
+  const total6 = total3 + total4;
+  const divisor = 1 - p.margem - p.bv - p.simples - p.comissao;
+  const precoVenda = divisor > 0 ? total6 / divisor : 0;
+  const precoFinal = precoVenda + (ajuste || 0);
+  const bvR = precoFinal * p.bv, simplesR = precoFinal * p.simples;
+  const comissaoR = precoFinal * p.comissao, margemR = precoFinal * p.margem;
+  const lucroPct = !ajuste ? p.margem : precoFinal > 0 ? 1 - (total6 + bvR + simplesR + comissaoR) / precoFinal : 0;
+  return { totalLona, totalOutros, totalSub, total3, total4, total6, divisor, precoVenda, precoFinal, bvR, simplesR, comissaoR, margemR, lucroPct };
+}
+
+function itemFromRow(r) {
+  return {
+    id: r.id, categoria: r.categoria, descricao: r.descricao || "",
+    largura: r.largura ?? 0, altura: r.altura ?? 0, qtd: r.qtd ?? 1, diaria: r.diaria ?? 1,
+    valorCusto: r.valor_custo ?? 0, status: r.status || "", fornecedor: r.fornecedor || "",
+    contratado: r.contratado || "", ordemPagto: r.ordem_pagto || "",
+  };
+}
+
+const CELULA_DIGITAVEL = { background: "#FFFBCC", border: "1px solid #E6DFA0", borderRadius: 4, padding: "5px 6px", fontSize: 13, fontFamily: FONT_BODY, width: "100%", boxSizing: "border-box" };
+const CELULA_CALCULADA = { background: "#E5E7EB", padding: "6px 8px", fontFamily: FONT_MONO, fontSize: 13, textAlign: "right", whiteSpace: "nowrap" };
+
+function Faixa({ cor, children }) {
+  return <div style={{ background: cor, color: "#fff", textAlign: "center", fontWeight: 700, fontSize: 13, padding: "6px 0", letterSpacing: 0.5 }}>{children}</div>;
+}
+function Entrada({ it, campo, tipo = "num", onSet }) {
+  return (
+    <input
+      style={{ ...CELULA_DIGITAVEL, textAlign: tipo === "num" ? "right" : "left" }}
+      inputMode={tipo === "num" ? "decimal" : undefined}
+      value={it[campo]}
+      onChange={(e) => onSet(it.id, campo, e.target.value)}
+    />
+  );
+}
+function BotaoRemover({ id, onRemover }) {
+  return <button onClick={() => onRemover(id)} style={{ ...btnDangerSmall, padding: "4px 7px" }} title="Remover linha"><Trash2 size={12} /></button>;
+}
+function LinhaTotal({ rotulo, valor, forte }) {
+  return (
+    <tr>
+      <td style={{ padding: "6px 12px", textAlign: "right", fontWeight: forte ? 700 : 500, fontSize: 13 }}>{rotulo}</td>
+      <td style={{ ...CELULA_CALCULADA, width: 150, fontWeight: forte ? 700 : 500 }}>{valor}</td>
+    </tr>
+  );
+}
+function LinhaPct({ rotulo, valor, setValor, valorR, verde, onEdit }) {
+  return (
+    <tr>
+      <td style={{ padding: "6px 12px", textAlign: "right", fontWeight: 600, fontSize: 13 }}>{rotulo}</td>
+      <td style={{ padding: 3, width: 90 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <input
+            style={{ ...CELULA_DIGITAVEL, background: verde ? "#B7E1C8" : "#FFFF00", textAlign: "right" }}
+            inputMode="decimal" value={valor}
+            onChange={(e) => { onEdit(); setValor(e.target.value); }}
+          />
+          <span style={{ fontSize: 12, color: MUTED }}>%</span>
+        </div>
+      </td>
+      <td style={{ ...CELULA_CALCULADA, width: 150 }}>{brl(valorR)}</td>
+    </tr>
+  );
+}
+
+function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
+  const [carregando, setCarregando] = useState(true);
+  const [salvando, setSalvando] = useState(false);
+  const [salvo, setSalvo] = useState(false);
+  const [orc, setOrc] = useState(null);
+  const [itens, setItens] = useState([]);
+  const [numeroOr, setNumeroOr] = useState("");
+  // percentuais ficam como texto na tela (ex.: "12" = 12%)
+  const [bv, setBv] = useState("0");
+  const [simples, setSimples] = useState("12");
+  const [comissao, setComissao] = useState("0");
+  const [margem, setMargem] = useState("55,5");
+  const [ajuste, setAjuste] = useState("0");
+
+  useEffect(() => {
+    setCarregando(true);
+    Promise.all([
+      sbRequest(`orcamentos?select=*,clientes(nome)&id=eq.${orcamentoId}`, session),
+      sbRequest(`orcamento_itens?select=*&orcamento_id=eq.${orcamentoId}&order=ordem.asc`, session),
+    ])
+      .then(([o, its]) => {
+        const row = (o || [])[0];
+        setOrc(row || null);
+        if (row) {
+          setNumeroOr(row.numero_or || "");
+          const pct = (f) => String(Math.round(Number(f || 0) * 10000) / 100).replace(".", ",");
+          setBv(pct(row.bv_pct)); setSimples(pct(row.simples_pct)); setComissao(pct(row.comissao_pct)); setMargem(pct(row.margem_pct));
+          setAjuste(String(Number(row.ajuste || 0)).replace(".", ","));
+        }
+        setItens((its || []).map(itemFromRow));
+      })
+      .catch((e) => setErro(e.message))
+      .finally(() => setCarregando(false));
+  }, [orcamentoId]); // eslint-disable-line
+
+  const params = { bv: numBR(bv) / 100, simples: numBR(simples) / 100, comissao: numBR(comissao) / 100, margem: numBR(margem) / 100 };
+  const calc = useMemo(() => calcularComposicao(itens, params, numBR(ajuste)), [itens, bv, simples, comissao, margem, ajuste]); // eslint-disable-line
+
+  function addItem(categoria) {
+    setSalvo(false);
+    setItens((is) => [...is, {
+      id: crypto.randomUUID(), categoria, descricao: "", largura: "", altura: "", qtd: 1, diaria: 1,
+      valorCusto: "", status: "", fornecedor: "", contratado: "", ordemPagto: "",
+    }]);
+  }
+  function setItem(id, campo, valor) {
+    setSalvo(false);
+    setItens((is) => is.map((i) => (i.id === id ? { ...i, [campo]: valor } : i)));
+  }
+  function removerItem(id) {
+    setSalvo(false);
+    setItens((is) => is.filter((i) => i.id !== id));
+  }
+
+  async function handleSalvar() {
+    setSalvando(true);
+    setErro("");
+    try {
+      if (itens.length > 0) {
+        const body = itens.map((i, idx) => ({
+          id: i.id, orcamento_id: orcamentoId, categoria: i.categoria, descricao: i.descricao || null,
+          largura: numBR(i.largura), altura: numBR(i.altura), qtd: numBR(i.qtd), diaria: numBR(i.diaria),
+          valor_custo: numBR(i.valorCusto), status: i.status || null, fornecedor: i.fornecedor || null,
+          contratado: i.contratado || null, ordem_pagto: i.ordemPagto || null, ordem: idx,
+        }));
+        await sbRequest("orcamento_itens?on_conflict=id", session, {
+          method: "POST", body, extraHeaders: { Prefer: "resolution=merge-duplicates,return=minimal" },
+        });
+        await sbRequest(`orcamento_itens?orcamento_id=eq.${orcamentoId}&id=not.in.(${itens.map((i) => i.id).join(",")})`, session, { method: "DELETE" });
+      } else {
+        await sbRequest(`orcamento_itens?orcamento_id=eq.${orcamentoId}`, session, { method: "DELETE" });
+      }
+      await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, {
+        method: "PATCH",
+        body: {
+          numero_or: numeroOr || null,
+          bv_pct: params.bv, simples_pct: params.simples, comissao_pct: params.comissao, margem_pct: params.margem,
+          ajuste: numBR(ajuste), tem_composicao: true,
+          valor: Math.round(calc.precoFinal * 100) / 100,
+        },
+      });
+      setSalvo(true);
+    } catch (e) { setErro(e.message); }
+    finally { setSalvando(false); }
+  }
+
+  if (carregando) return <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>;
+  if (!orc) return <div style={{ color: MUTED, fontSize: 13 }}>Orçamento não encontrado. <button onClick={onVoltar} style={btnGhostSmall}>Voltar</button></div>;
+
+  const th = { padding: "6px 8px", fontSize: 11, fontWeight: 700, color: "#374151", textAlign: "center", background: "#F3F4F6", border: `1px solid ${BORDER}` };
+  const td = { padding: 3, border: `1px solid ${BORDER}`, verticalAlign: "middle" };
+
+  function renderSecao(cat) {
+    const lista = itens.filter((i) => i.categoria === cat.id);
+    const ehLona = cat.id === "lona_adesivo";
+    const ehServico = cat.id === "servico_nao_gera_lucro";
+    return (
+      <div style={{ marginBottom: 18, border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", background: "#fff" }}>
+        <Faixa cor={cat.cor}>{cat.label.toUpperCase()}</Faixa>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+            <thead>
+              <tr>
+                {ehLona && ["Item", "Largura", "Altura", "Qtd.", "m²/ml", "Valor custo m²", "Vlr custo", "Status", "Fornecedor", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+                {ehServico && ["Item", "Qtd", "Diária", "Unit", "Contratado", "Ordem pagto", "Vlr custo", "Status", "Fornecedor", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+                {!ehLona && !ehServico && ["Descrição", "Qtd.", "Diária", "Valor custo", "Vlr custo", "Status", "Fornecedor", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {lista.length === 0 && (
+                <tr><td colSpan={10} style={{ padding: 12, color: MUTED, fontSize: 12, textAlign: "center" }}>Nenhum item. Use "Adicionar linha".</td></tr>
+              )}
+              {lista.map((it) => (
+                <tr key={it.id}>
+                  <td style={{ ...td, minWidth: 150 }}><Entrada it={it} campo="descricao" tipo="txt" onSet={setItem} /></td>
+                  {ehLona && (
+                    <>
+                      <td style={{ ...td, width: 70 }}><Entrada it={it} campo="largura" onSet={setItem} /></td>
+                      <td style={{ ...td, width: 70 }}><Entrada it={it} campo="altura" onSet={setItem} /></td>
+                      <td style={{ ...td, width: 60 }}><Entrada it={it} campo="qtd" onSet={setItem} /></td>
+                      <td style={{ ...td, ...CELULA_CALCULADA, width: 70 }}>{(numBR(it.largura) * numBR(it.altura)).toLocaleString("pt-BR", { maximumFractionDigits: 2 })}</td>
+                      <td style={{ ...td, width: 90 }}><Entrada it={it} campo="valorCusto" onSet={setItem} /></td>
+                    </>
+                  )}
+                  {ehServico && (
+                    <>
+                      <td style={{ ...td, width: 60 }}><Entrada it={it} campo="qtd" onSet={setItem} /></td>
+                      <td style={{ ...td, width: 60 }}><Entrada it={it} campo="diaria" onSet={setItem} /></td>
+                      <td style={{ ...td, width: 90 }}><Entrada it={it} campo="valorCusto" onSet={setItem} /></td>
+                      <td style={{ ...td, width: 100 }}><Entrada it={it} campo="contratado" tipo="txt" onSet={setItem} /></td>
+                      <td style={{ ...td, width: 100 }}><Entrada it={it} campo="ordemPagto" tipo="txt" onSet={setItem} /></td>
+                    </>
+                  )}
+                  {!ehLona && !ehServico && (
+                    <>
+                      <td style={{ ...td, width: 60 }}><Entrada it={it} campo="qtd" onSet={setItem} /></td>
+                      <td style={{ ...td, width: 60 }}><Entrada it={it} campo="diaria" onSet={setItem} /></td>
+                      <td style={{ ...td, width: 90 }}><Entrada it={it} campo="valorCusto" onSet={setItem} /></td>
+                    </>
+                  )}
+                  <td style={{ ...td, ...CELULA_CALCULADA, width: 100 }}>{brl(custoDoItem(it))}</td>
+                  <td style={{ ...td, width: 90 }}><Entrada it={it} campo="status" tipo="txt" onSet={setItem} /></td>
+                  <td style={{ ...td, width: 120 }}><Entrada it={it} campo="fornecedor" tipo="txt" onSet={setItem} /></td>
+                  <td style={{ ...td, width: 36, textAlign: "center" }}><BotaoRemover id={it.id} onRemover={removerItem} /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ padding: 8 }}>
+          <button onClick={() => addItem(cat.id)} style={btnGhostSmall}><Plus size={12} style={{ verticalAlign: -2 }} /> Adicionar linha</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
+        <button onClick={onVoltar} style={btnGhostSmall}>← Voltar aos orçamentos</button>
+        <button onClick={handleSalvar} disabled={salvando} style={btnPrimary}>
+          <Save size={15} /> {salvando ? "Salvando..." : salvo ? "Salvo ✓" : "Salvar composição"}
+        </button>
+      </div>
+
+      <Card style={{ marginBottom: 18, background: "#FFFBCC" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 160px", gap: 12, fontSize: 14 }}>
+          <div><span style={{ color: MUTED }}>Cliente: </span><b>{orc.clientes?.nome || "-"}</b></div>
+          <div><span style={{ color: MUTED }}>Evento: </span><b>{orc.evento}</b></div>
+          <Field label="OR (nº)"><input style={{ ...CELULA_DIGITAVEL, fontSize: 14 }} value={numeroOr} onChange={(e) => { setSalvo(false); setNumeroOr(e.target.value); }} placeholder="839/26" /></Field>
+        </div>
+      </Card>
+
+      {CATEGORIAS_ITEM.map((cat) => <div key={cat.id}>{renderSecao(cat)}</div>)}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 18, alignItems: "start" }}>
+        <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", background: "#fff" }}>
+          <Faixa cor="#ED1C24">TOTAIS</Faixa>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <tbody>
+              <LinhaTotal rotulo="Total custo lonas / adesivos" valor={brl(calc.totalLona)} />
+              <LinhaTotal rotulo="Total custo outros" valor={brl(calc.totalOutros)} />
+              <LinhaTotal rotulo="Total custo sublocação" valor={brl(calc.totalSub)} />
+              <LinhaTotal rotulo="Total 3" valor={brl(calc.total3)} forte />
+              <LinhaTotal rotulo="Total 4 (outros serviços)" valor={brl(calc.total4)} forte />
+              <LinhaTotal rotulo="Total 6 CUSTOS (Total 3 + Total 4)" valor={brl(calc.total6)} forte />
+            </tbody>
+          </table>
+        </div>
+
+        <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", background: "#fff" }}>
+          <Faixa cor="#ED1C24">IMPOSTOS E MARGEM</Faixa>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <tbody>
+              <LinhaPct rotulo="BV" valor={bv} setValor={setBv} valorR={calc.bvR} onEdit={() => setSalvo(false)} />
+              <LinhaPct rotulo="Simples" valor={simples} setValor={setSimples} valorR={calc.simplesR} onEdit={() => setSalvo(false)} />
+              <LinhaPct rotulo="Comissão" valor={comissao} setValor={setComissao} valorR={calc.comissaoR} onEdit={() => setSalvo(false)} />
+              <LinhaPct rotulo="Margem" valor={margem} setValor={setMargem} valorR={calc.margemR} verde onEdit={() => setSalvo(false)} />
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", background: "#fff", marginTop: 18 }}>
+        <Faixa cor="#ED1C24">VALOR FINAL</Faixa>
+        {calc.divisor <= 0 && (
+          <div style={{ background: "#FDECEC", color: DANGER, padding: 10, fontSize: 12 }}>
+            A soma de margem + BV + Simples + comissão chegou a 100% ou mais — não dá pra calcular o preço de venda.
+          </div>
+        )}
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <tbody>
+            <tr>
+              <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700 }}>PREÇO DE VENDA</td>
+              <td style={{ ...CELULA_CALCULADA, width: 220, fontSize: 20, fontWeight: 700 }}>{brl(calc.precoVenda)}</td>
+            </tr>
+            <tr>
+              <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 600 }}>Desconto / Acréscimo (R$)</td>
+              <td style={{ padding: 3, width: 220 }}>
+                <input style={{ ...CELULA_DIGITAVEL, background: "#FCF305", textAlign: "right", fontSize: 15 }} inputMode="decimal" value={ajuste} onChange={(e) => { setSalvo(false); setAjuste(e.target.value); }} />
+              </td>
+            </tr>
+            <tr>
+              <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700 }}>PREÇO DE VENDA FINAL</td>
+              <td style={{ ...CELULA_CALCULADA, width: 220, fontSize: 22, fontWeight: 700 }}>{brl(calc.precoFinal)}</td>
+            </tr>
+            <tr>
+              <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700 }}>% LUCRO TOTAL</td>
+              <td style={{ ...CELULA_CALCULADA, width: 220, background: "#DD0806", color: "#fff", fontWeight: 700 }}>{(calc.lucroPct * 100).toFixed(2).replace(".", ",")}%</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ fontSize: 12, color: MUTED, marginTop: 12 }}>
+        Células amarelas são digitáveis; as cinzas são calculadas. Ao salvar, o valor do orçamento passa a ser o Preço de Venda Final.
+      </div>
     </div>
   );
 }
@@ -2470,10 +2836,8 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
   const [carregando, setCarregando] = useState(false);
   const [showForm, setShowForm] = useState(false);
   const [salvando, setSalvando] = useState(false);
-  const blankForm = { orcamentoId: "", clienteId: "", valor: 0, dataFaturamento: "" };
+  const blankForm = { clienteId: "", valor: 0, dataFaturamento: "" };
   const [form, setForm] = useState(blankForm);
-  const [pendentes, setPendentes] = useState([]); // orçamentos aprovados ainda não faturados
-  const [buscaOrc, setBuscaOrc] = useState("");
 
   function carregar() {
     setCarregando(true);
@@ -2483,37 +2847,6 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
       .finally(() => setCarregando(false));
   }
   useEffect(() => { carregar(); }, [mesRef]); // eslint-disable-line
-
-  // Orçamentos aprovados que ainda não têm lançamento de faturamento vinculado
-  async function carregarPendentes() {
-    try {
-      const rows = await sbRequest(`orcamentos?select=*,clientes(nome),faturamento(id)&status=eq.aprovado&order=data_evento.asc`, session);
-      setPendentes((rows || []).map(orcamentoFromRow).filter((o) => !o.faturado));
-    } catch (e) { setErro(e.message); }
-  }
-
-  function abrirLancamento() {
-    setForm(blankForm);
-    setBuscaOrc("");
-    setShowForm(true);
-    carregarPendentes();
-  }
-
-  function selecionarOrcamento(id) {
-    const o = pendentes.find((p) => p.id === id);
-    if (!o) { setForm({ ...form, orcamentoId: "" }); return; }
-    setForm({
-      orcamentoId: o.id,
-      clienteId: o.clienteId || "",
-      valor: o.valor,
-      dataFaturamento: new Date().toISOString().slice(0, 10),
-    });
-  }
-
-  const termo = buscaOrc.trim().toLowerCase();
-  const pendentesFiltrados = termo
-    ? pendentes.filter((o) => `${o.evento} ${o.clienteNome || ""} ${o.local || ""}`.toLowerCase().includes(termo) || o.id === form.orcamentoId)
-    : pendentes;
 
   async function handleSalvarValor(r, novoValor) {
     setErro("");
@@ -2543,16 +2876,8 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
     setSalvando(true);
     setErro("");
     try {
-      if (!form.orcamentoId) { setErro("Selecione um orçamento aprovado para faturar."); return; }
-      // Evita faturar o mesmo orçamento duas vezes
-      const jaFaturado = await sbRequest(`faturamento?select=id&orcamento_id=eq.${form.orcamentoId}`, session);
-      if (jaFaturado && jaFaturado.length > 0) {
-        setErro("Esse orçamento já foi faturado.");
-        carregarPendentes();
-        return;
-      }
       const body = {
-        cliente_id: form.clienteId || null, orcamento_id: form.orcamentoId, valor: form.valor,
+        cliente_id: form.clienteId || null, orcamento_id: null, valor: form.valor,
         data_faturamento: form.dataFaturamento || null,
         mes_ref: form.dataFaturamento ? `${form.dataFaturamento.slice(0, 7)}-01` : `${mesRef}-01`,
       };
@@ -2570,7 +2895,7 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
     <div>
       <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
         <MesPicker mesRef={mesRef} setMesRef={setMesRef} />
-        <button onClick={abrirLancamento} style={btnPrimary}><Plus size={16} /> Lançamento manual</button>
+        <button onClick={() => { setForm(blankForm); setShowForm(true); }} style={btnPrimary}><Plus size={16} /> Lançamento manual</button>
       </div>
 
       {showForm && (
@@ -2578,21 +2903,6 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
             <h4 style={{ margin: 0, fontSize: 14 }}>Novo lançamento de faturamento</h4>
             <button onClick={() => setShowForm(false)} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED }}><X size={18} /></button>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12, marginBottom: 12 }}>
-            <Field label="Buscar orçamento">
-              <input style={inputStyle} placeholder="Evento, cliente ou local" value={buscaOrc} onChange={(e) => setBuscaOrc(e.target.value)} />
-            </Field>
-            <Field label={`Orçamento aprovado a faturar (${pendentes.length} pendente${pendentes.length === 1 ? "" : "s"})`}>
-              <select style={inputStyle} value={form.orcamentoId} onChange={(e) => selecionarOrcamento(e.target.value)}>
-                <option value="">{pendentes.length === 0 ? "Nenhum orçamento aprovado pendente" : "Selecione..."}</option>
-                {pendentesFiltrados.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {(o.dataEvento ? o.dataEvento.slice(8, 10) + "/" + o.dataEvento.slice(5, 7) + "/" + o.dataEvento.slice(0, 4) : "s/ data")} · {o.clienteNome || "Sem cliente"} · {o.evento} · {brl(o.valor)}
-                  </option>
-                ))}
-              </select>
-            </Field>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}>
             <Field label="Cliente">
@@ -2606,7 +2916,7 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
             <button onClick={() => setShowForm(false)} style={btnGhostSmall}>Cancelar</button>
-            <button onClick={handleNovoManual} disabled={salvando || !form.orcamentoId} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
+            <button onClick={handleNovoManual} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
           </div>
         </Card>
       )}
