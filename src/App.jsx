@@ -2203,6 +2203,8 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
       }
       if (saved.status === "aprovado") await garantirFaturamento(session, saved);
       const eraNovo = !editing;
+      // a lista passa a mostrar o mês do orçamento salvo (senão ele "some" quando a data é de outro mês)
+      setMesRef(mesRefCalc.slice(0, 7));
       setShowForm(false);
       setEditing(null);
       carregar();
