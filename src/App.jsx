@@ -3964,6 +3964,379 @@ function PlanoContasFinView({ session, setErro, centros, recarregar }) {
   );
 }
 
+// =========================================================
+// Financeiro · importação dos relatórios do sistema antigo (lógica pura, sem tela)
+// =========================================================
+function semAcentoFin(s) { return String(s == null ? "" : s).normalize("NFD").replace(/[̀-ͯ]/g, ""); }
+function chaveTextoFin(s) { return semAcentoFin(s).toUpperCase().replace(/[^A-Z0-9]/g, ""); }
+
+function dataIsoImport(v) {
+  if (v == null || v === "") return null;
+  if (v instanceof Date) return isNaN(v) ? null : `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
+  if (typeof v === "number") {
+    if (!isFinite(v) || v < 20000 || v > 80000) return null;
+    return new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 86400000).toISOString().slice(0, 10);
+  }
+  const s = String(v).trim();
+  let m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+}
+function numeroImport(v) {
+  if (typeof v === "number") return isFinite(v) ? v : null;
+  if (v == null) return null;
+  const s = String(v).replace(/[R$\s]/g, "");
+  if (!s) return null;
+  const n = s.includes(",") ? parseFloat(s.replace(/\./g, "").replace(",", ".")) : parseFloat(s);
+  return isFinite(n) ? n : null;
+}
+function situacaoImport(v) {
+  const s = chaveTextoFin(v);
+  if (s.startsWith("QUIT") || s.startsWith("PAG") || s.startsWith("RECEB") || s.startsWith("LIQUID")) return "quitada";
+  if (s.startsWith("VENCIDA") || s.startsWith("ATRASAD")) return "vencida";
+  return "aberta";
+}
+
+// aoa = linhas da planilha (array de arrays). Retorna { tipo, empresa, periodo, linhas, erro }
+function lerRelatorioFin(aoa) {
+  const topo = aoa.slice(0, 8).map((r) => (r || []).filter((c) => c != null && c !== "").join(" | ")).join(" | ");
+  const topoChave = chaveTextoFin(topo);
+  let tipo = "";
+  if (topoChave.includes("CONTASAPAGAR")) tipo = "pagar";
+  else if (topoChave.includes("CONTASARECEBER")) tipo = "receber";
+  let empresa = "";
+  const mEmp = topo.match(/Empresa:\s*([^|]+)/i);
+  if (mEmp) {
+    const e = chaveTextoFin(mEmp[1]);
+    if (e.startsWith("VS")) empresa = "vs";
+    else if (e.includes("PROSIGN")) empresa = "prosign";
+  }
+  const mPer = topo.match(/Vencimento:\s*(\d{2}\/\d{2}\/\d{4})\s*(?:à|a|até)\s*(\d{2}\/\d{2}\/\d{4})/i);
+  const periodo = mPer ? { ini: dataIsoImport(mPer[1]), fim: dataIsoImport(mPer[2]) } : null;
+
+  let h = -1;
+  for (let i = 0; i < Math.min(aoa.length, 15); i++) {
+    const cells = (aoa[i] || []).map(chaveTextoFin);
+    if (cells.includes("VENCIMENTO") && cells.some((c) => c.endsWith("CONTA"))) { h = i; break; }
+  }
+  if (h < 0) return { tipo, empresa, periodo, linhas: [], erro: "Não encontrei o cabeçalho (Nº CONTA, VENCIMENTO...). Este arquivo é um relatório de contas a pagar/receber?" };
+  const hd = (aoa[h] || []).map(chaveTextoFin);
+  const col = (pred) => hd.findIndex(pred);
+  const c = {
+    num: 0, venc: col((x) => x === "VENCIMENTO"), pag: col((x) => x === "PAGAMENTO"),
+    party: col((x) => x === "FORNECEDOR" || x === "CLIENTE"), cnpj: col((x) => x.startsWith("CNPJ")),
+    cc: col((x) => x.startsWith("CENTROCUSTO")), hist: col((x) => x.startsWith("HISTORICO")), sit: col((x) => x === "SITUACAO"),
+    valor: col((x) => x.startsWith("VALORTOTAL")), banco: hd.findIndex((x, i) => x === "CONTA" && i > 0),
+    forma: col((x) => x.startsWith("FORMAPAGAMENTO")), nf: col((x) => x === "NOTAFISCAL"),
+  };
+  if (c.venc < 0 || c.valor < 0) return { tipo, empresa, periodo, linhas: [], erro: "Faltam as colunas VENCIMENTO ou VALOR TOTAL." };
+  const g = (r, i) => (i >= 0 ? r[i] : null);
+  const linhas = [];
+  for (let i = h + 1; i < aoa.length; i++) {
+    const r = aoa[i] || [];
+    const numero = r[0] == null ? "" : String(r[0]).trim();
+    const venc = dataIsoImport(g(r, c.venc));
+    const valor = numeroImport(g(r, c.valor));
+    if (!numero || !venc || valor == null) continue; // rodapés/subtotais
+    const ccTxt = String(g(r, c.cc) || "");
+    const codigo = (ccTxt.match(/^[\d.\s]*/) || [""])[0].replace(/\s/g, "").replace(/\.+$/, "");
+    linhas.push({
+      numero, vencimento: venc, pagamento: dataIsoImport(g(r, c.pag)), party: String(g(r, c.party) || "").trim(),
+      cnpj: g(r, c.cnpj) ? String(g(r, c.cnpj)).trim() : null, codigo, hist: g(r, c.hist) ? String(g(r, c.hist)).trim() : null,
+      valor: Math.round(valor * 100) / 100, situacao: situacaoImport(g(r, c.sit)),
+      banco: g(r, c.banco) ? String(g(r, c.banco)).trim() : null, forma: g(r, c.forma) ? String(g(r, c.forma)).trim() : null,
+      nf: g(r, c.nf) != null && g(r, c.nf) !== "" ? String(g(r, c.nf)).trim() : null,
+    });
+  }
+  return { tipo, empresa, periodo, linhas, erro: linhas.length === 0 ? "Nenhum lançamento encontrado no arquivo." : "" };
+}
+
+// arquivos: [{ nome, empresa, tipo, linhas }]; existentes: linhas do banco; centrosPorCodigo: {codigo: {id, classificacao}};
+// orcs: orçamentos de venda ({id, evento, valor, mesRef, dataEvento, clienteNome})
+function montarPreviaImport({ arquivos, existentes, centrosPorCodigo, orcs }) {
+  const porChave = {};
+  existentes.forEach((e) => { porChave[`${e.empresa}|${e.tipo}|${e.numero_conta}`] = e; });
+  const vistos = {};
+  const aceitos = []; // para detectar duplicidade dentro do lote
+  const out = [];
+  let repetidos = 0;
+  const centavos = (v) => Math.round(Number(v) * 100);
+  for (const a of arquivos) {
+    if (!a.empresa || !a.tipo) continue;
+    for (const l of a.linhas) {
+      const key = `${a.empresa}|${a.tipo}|${l.numero}`;
+      if (vistos[key]) { repetidos++; continue; }
+      vistos[key] = true;
+      const ex = porChave[key];
+      const cc = centrosPorCodigo[l.codigo];
+      const r = { key, empresa: a.empresa, tipo: a.tipo, ...l, centroCustoId: cc?.id || null, avisos: [], duplicado: false, orcamento: null, acao: "novo", existenteId: null, mudancas: [] };
+      if (!cc) r.avisos.push(l.codigo ? `conta ${l.codigo} não cadastrada` : "sem conta");
+      if (ex) {
+        r.existenteId = ex.id;
+        if (centavos(ex.valor) !== centavos(l.valor)) r.mudancas.push(`valor ${ex.valor} → ${l.valor}`);
+        if ((ex.pagamento || null) !== (l.pagamento || null)) r.mudancas.push(`pagamento ${ex.pagamento || "—"} → ${l.pagamento || "—"}`);
+        if (ex.situacao !== l.situacao) r.mudancas.push(`${ex.situacao} → ${l.situacao}`);
+        r.acao = r.mudancas.length ? "atualiza" : "igual";
+      } else {
+        const nome = chaveTextoFin(l.party);
+        const rival = [...existentes, ...aceitos].find((o) => {
+          const num = o.numero_conta !== undefined ? o.numero_conta : o.numero;
+          const nome2 = chaveTextoFin(o.fornecedor_cliente !== undefined ? o.fornecedor_cliente : o.party);
+          return o.empresa === a.empresa && o.tipo === a.tipo && String(num) !== String(l.numero) && centavos(o.valor) === centavos(l.valor) && nome2 === nome && (o.vencimento || "").slice(0, 10) === l.vencimento;
+        });
+        if (rival) { r.duplicado = true; r.avisos.push(`possível duplicidade da conta ${rival.numero_conta !== undefined ? rival.numero_conta : rival.numero}`); }
+        else if (a.tipo === "receber") {
+          const cand = orcs.filter((o) => Math.abs(Number(o.valor) - l.valor) < 0.005 && o.dataEvento && o.dataEvento <= somarDiasIso(l.vencimento, 30) && o.dataEvento >= somarDiasIso(l.vencimento, -150));
+          if (cand.length === 1) r.orcamento = cand[0];
+        }
+        aceitos.push({ empresa: a.empresa, tipo: a.tipo, numero: l.numero, valor: l.valor, party: l.party, vencimento: l.vencimento });
+      }
+      r.marcado = r.acao !== "igual" && !r.duplicado;
+      out.push(r);
+    }
+  }
+  return { linhas: out, repetidos };
+}
+function somarDiasIso(iso, dias) { const d = new Date(`${iso}T12:00:00Z`); d.setUTCDate(d.getUTCDate() + dias); return d.toISOString().slice(0, 10); }
+
+function carregarLeitorPlanilha() {
+  if (typeof window !== "undefined" && window.XLSX) return Promise.resolve(window.XLSX);
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = () => (window.XLSX ? resolve(window.XLSX) : reject(new Error("Leitor de planilhas indisponível.")));
+    s.onerror = () => reject(new Error("Não foi possível carregar o leitor de planilhas (precisa de internet)."));
+    document.head.appendChild(s);
+  });
+}
+
+function ImportarFinView({ session, setErro, centros }) {
+  const [arquivos, setArquivos] = useState([]);
+  const [previa, setPrevia] = useState(null);
+  const [lendo, setLendo] = useState(false);
+  const [montando, setMontando] = useState(false);
+  const [importando, setImportando] = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const centrosPorCodigo = useMemo(() => Object.fromEntries(centros.filter((c) => c.tipo === "analitico").map((c) => [c.codigo, { id: c.id, classificacao: c.classificacao }])), [centros]);
+
+  async function lerArquivos(fileList) {
+    setErro(""); setResultado(null); setLendo(true);
+    try {
+      const XLSX = await carregarLeitorPlanilha();
+      const novos = [];
+      for (const f of Array.from(fileList)) {
+        const buf = await f.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: null });
+        const rel = lerRelatorioFin(aoa);
+        novos.push({ id: `${f.name}-${f.size}-${f.lastModified}`, nome: f.name, ...rel });
+      }
+      const todos = [...arquivos.filter((a) => !novos.some((n) => n.id === a.id)), ...novos];
+      setArquivos(todos);
+      await recalcular(todos);
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setLendo(false); }
+  }
+
+  async function recalcular(lista) {
+    const validos = lista.filter((a) => a.empresa && a.tipo && a.linhas.length);
+    if (validos.length === 0) { setPrevia(null); return; }
+    setMontando(true);
+    try {
+      const existentesMap = {};
+      const sel = "id,empresa,tipo,numero_conta,valor,pagamento,situacao,vencimento,fornecedor_cliente";
+      const grupos = {};
+      validos.forEach((a) => { (grupos[`${a.empresa}|${a.tipo}`] = grupos[`${a.empresa}|${a.tipo}`] || []).push(a); });
+      let minV = "9999-12-31", maxV = "0000-01-01", temReceber = false;
+      for (const [k, arqs] of Object.entries(grupos)) {
+        const [emp, tp] = k.split("|");
+        const linhas = arqs.flatMap((a) => a.linhas);
+        const venc = linhas.map((l) => l.vencimento).sort();
+        if (venc[0] < minV) minV = venc[0];
+        if (venc[venc.length - 1] > maxV) maxV = venc[venc.length - 1];
+        if (tp === "receber") temReceber = true;
+        const periodo = await sbRequest(`lancamentos_fin?select=${sel}&empresa=eq.${emp}&tipo=eq.${tp}&vencimento=gte.${venc[0]}&vencimento=lte.${venc[venc.length - 1]}&limit=5000`, session);
+        (periodo || []).forEach((e) => { existentesMap[e.id] = e; });
+        const nums = [...new Set(linhas.map((l) => l.numero))];
+        for (let i = 0; i < nums.length; i += 120) {
+          const lote = nums.slice(i, i + 120).map((n) => `"${n}"`).join(",");
+          const rows = await sbRequest(`lancamentos_fin?select=${sel}&empresa=eq.${emp}&tipo=eq.${tp}&numero_conta=in.(${lote})&limit=5000`, session);
+          (rows || []).forEach((e) => { existentesMap[e.id] = e; });
+        }
+      }
+      let orcs = [];
+      if (temReceber) {
+        const rows = await sbRequest(`orcamentos?select=id,evento,valor,data_evento,mes_ref,clientes(nome)&status=in.(aprovado,autorizado_faturamento,faturado)&data_evento=gte.${somarDiasIso(minV, -150)}&data_evento=lte.${somarDiasIso(maxV, 30)}&limit=3000`, session);
+        orcs = (rows || []).map((o) => ({ id: o.id, evento: o.evento, valor: Number(o.valor), mesRef: o.mes_ref, dataEvento: o.data_evento, clienteNome: o.clientes?.nome || "" }));
+      }
+      setPrevia(montarPreviaImport({ arquivos: validos, existentes: Object.values(existentesMap), centrosPorCodigo, orcs }));
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setMontando(false); }
+  }
+
+  function alterarArquivo(id, campos) {
+    const lista = arquivos.map((a) => (a.id === id ? { ...a, ...campos } : a));
+    setArquivos(lista);
+    recalcular(lista);
+  }
+  function removerArquivo(id) {
+    const lista = arquivos.filter((a) => a.id !== id);
+    setArquivos(lista);
+    recalcular(lista);
+  }
+  function alternar(key) {
+    setPrevia((p) => ({ ...p, linhas: p.linhas.map((l) => (l.key === key ? { ...l, marcado: !l.marcado } : l)) }));
+  }
+
+  async function importar() {
+    const marcadas = previa.linhas.filter((l) => l.marcado);
+    const novos = marcadas.filter((l) => l.acao === "novo");
+    const atualiza = marcadas.filter((l) => l.acao === "atualiza");
+    if (novos.length + atualiza.length === 0) { setErro("Nada marcado para importar."); return; }
+    if (!window.confirm(`Importar ${novos.length} lançamentos novos e atualizar ${atualiza.length}?`)) return;
+    setImportando(true); setErro("");
+    try {
+      const corpo = novos.map((l) => ({
+        empresa: l.empresa, tipo: l.tipo, numero_conta: l.numero, vencimento: l.vencimento, pagamento: l.pagamento || null,
+        competencia: `${(l.orcamento?.mesRef || l.vencimento).slice(0, 7)}-01`, fornecedor_cliente: l.party || null, cnpj: l.cnpj || null,
+        centro_custo_id: l.centroCustoId || null, historico: l.hist || null, valor: l.valor, situacao: l.situacao, banco: l.banco || null,
+        forma_pagamento: l.forma || null, nota_fiscal: l.nf || null, orcamento_id: l.orcamento?.id || null, origem: "importado",
+      }));
+      for (let i = 0; i < corpo.length; i += 100) {
+        await sbRequest("lancamentos_fin?on_conflict=empresa,tipo,numero_conta", session, {
+          method: "POST", body: corpo.slice(i, i + 100), extraHeaders: { Prefer: "resolution=ignore-duplicates,return=minimal" },
+        });
+      }
+      for (const l of atualiza) {
+        await sbRequest(`lancamentos_fin?id=eq.${l.existenteId}`, session, { method: "PATCH", body: { valor: l.valor, pagamento: l.pagamento || null, situacao: l.situacao } });
+      }
+      setResultado({ novos: novos.length, atualizados: atualiza.length, ignorados: previa.linhas.length - marcadas.length });
+      setArquivos([]); setPrevia(null);
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setImportando(false); }
+  }
+
+  const L = previa?.linhas || [];
+  const cont = (f) => L.filter(f).length;
+  const nNovos = cont((l) => l.marcado && l.acao === "novo");
+  const nAtual = cont((l) => l.marcado && l.acao === "atualiza");
+  const nIguais = cont((l) => l.acao === "igual");
+  const nDup = cont((l) => l.duplicado);
+  const nSemConta = cont((l) => l.marcado && !l.centroCustoId);
+  const nVinc = cont((l) => l.marcado && l.orcamento);
+  const rotuloAcao = (l) => (l.acao === "novo" ? "Novo" : l.acao === "atualiza" ? "Atualiza" : "Já importado");
+
+  return (
+    <div>
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, color: NAVY, marginBottom: 6 }}>Importar relatórios do sistema antigo</div>
+        <div style={{ fontSize: 13, color: MUTED, marginBottom: 12, lineHeight: 1.5 }}>
+          Escolha os relatórios de <b>Contas a pagar</b> e <b>Contas a receber</b> (.xlsx ou .xls) de cada empresa. A empresa e o tipo são reconhecidos pelo cabeçalho do arquivo.
+          Pode subir vários de uma vez e repetir todo mês: o que já foi importado não duplica, e os que mudaram de situação (ex.: vencida → quitada) são atualizados.
+        </div>
+        <label style={{ ...btnPrimary, display: "inline-flex", cursor: "pointer" }}>
+          <Upload size={16} /> {lendo ? "Lendo..." : "Escolher arquivos"}
+          <input type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }} onChange={(e) => { const lista = Array.from(e.target.files || []); e.target.value = ""; if (lista.length) lerArquivos(lista); }} />
+        </label>
+      </Card>
+
+      {resultado && (
+        <Card style={{ marginBottom: 16, background: "#EAF6EF", borderColor: "#9BD0B3" }}>
+          <div style={{ fontWeight: 700, color: "#1F6B47" }}>Importação concluída</div>
+          <div style={{ fontSize: 13, marginTop: 4 }}>{resultado.novos} lançamentos novos · {resultado.atualizados} atualizados · {resultado.ignorados} ignorados.
+            Para vincular custos aos eventos, use <b>Lançamentos → Pendências</b>.</div>
+        </Card>
+      )}
+
+      {arquivos.length > 0 && (
+        <Card style={{ padding: 0, overflowX: "auto", marginBottom: 16 }}>
+          <div style={{ padding: "14px 18px", fontWeight: 600, color: NAVY }}>Arquivos lidos</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead><tr style={{ background: BG }}><th style={thS}>Arquivo</th><th style={thS}>Empresa</th><th style={thS}>Tipo</th><th style={thS}>Período</th><th style={{ ...thS, textAlign: "right" }}>Linhas</th><th style={{ ...thS, textAlign: "right" }}>Total</th><th style={thS}></th></tr></thead>
+            <tbody>
+              {arquivos.map((a) => (
+                <tr key={a.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={tdS}>{a.nome}{a.erro && <div style={{ color: DANGER, fontSize: 12 }}>{a.erro}</div>}</td>
+                  <td style={tdS}>
+                    <select value={a.empresa} onChange={(e) => alterarArquivo(a.id, { empresa: e.target.value })} style={{ ...selStyle, borderColor: a.empresa ? BORDER : DANGER }}>
+                      <option value="">— escolher —</option>{EMPRESAS_FIN.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
+                    </select>
+                  </td>
+                  <td style={tdS}>
+                    <select value={a.tipo} onChange={(e) => alterarArquivo(a.id, { tipo: e.target.value })} style={{ ...selStyle, borderColor: a.tipo ? BORDER : DANGER }}>
+                      <option value="">— escolher —</option><option value="pagar">A pagar</option><option value="receber">A receber</option>
+                    </select>
+                  </td>
+                  <td style={tdS}>{a.periodo ? `${fmtDataBR(a.periodo.ini)} a ${fmtDataBR(a.periodo.fim)}` : "—"}</td>
+                  <td style={{ ...tdS, textAlign: "right" }}>{a.linhas.length}</td>
+                  <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(a.linhas.reduce((s, l) => s + l.valor, 0))}</td>
+                  <td style={tdS}><button onClick={() => removerArquivo(a.id)} style={btnDangerSmall}><Trash2 size={13} /></button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      )}
+
+      {montando && <div style={{ color: MUTED, fontSize: 13, marginBottom: 12 }}>Conferindo com o que já está no sistema...</div>}
+
+      {previa && !montando && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, marginBottom: 14 }}>
+            <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Novos</div><div style={{ fontSize: 22, fontWeight: 700, color: "#2E7D5B" }}>{nNovos}</div></Card>
+            <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>A atualizar</div><div style={{ fontSize: 22, fontWeight: 700, color: "#1D6FA5" }}>{nAtual}</div></Card>
+            <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Já importados</div><div style={{ fontSize: 22, fontWeight: 700 }}>{nIguais}</div></Card>
+            <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Vinculados a evento</div><div style={{ fontSize: 22, fontWeight: 700, color: GOLD }}>{nVinc}</div></Card>
+          </div>
+          {(nDup > 0 || nSemConta > 0 || previa.repetidos > 0) && (
+            <Card style={{ marginBottom: 14, background: "#FFF8E6", borderColor: "#E8D49A" }}>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
+                {nDup > 0 && <li><b>{nDup} possíveis duplicidades</b> (mesma empresa, fornecedor/cliente, valor e vencimento, com outro número). Ficaram <b>desmarcadas</b>: revise e marque só se forem lançamentos distintos.</li>}
+                {nSemConta > 0 && <li>{nSemConta} lançamentos com conta não cadastrada no plano: entram como "a classificar".</li>}
+                {previa.repetidos > 0 && <li>{previa.repetidos} linhas repetidas entre arquivos (mesmo nº de conta) foram ignoradas.</li>}
+              </ul>
+            </Card>
+          )}
+          <Card style={{ padding: 0, overflow: "auto", maxHeight: 480, marginBottom: 14 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+              <thead style={{ position: "sticky", top: 0, background: BG }}><tr>
+                <th style={thS}></th><th style={thS}>Emp.</th><th style={thS}>Tipo</th><th style={thS}>Nº</th><th style={thS}>Venc.</th><th style={thS}>Fornecedor / Cliente</th>
+                <th style={thS}>Conta</th><th style={{ ...thS, textAlign: "right" }}>Valor</th><th style={thS}>Sit.</th><th style={thS}>O que acontece</th>
+              </tr></thead>
+              <tbody>
+                {L.map((l) => (
+                  <tr key={l.key} style={{ borderTop: `1px solid ${BORDER}`, opacity: l.marcado ? 1 : 0.55, background: l.duplicado ? "#FFF8E6" : "#fff" }}>
+                    <td style={tdS}><input type="checkbox" checked={l.marcado} disabled={l.acao === "igual"} onChange={() => alternar(l.key)} /></td>
+                    <td style={tdS}><ChipEmpresa id={l.empresa} /></td>
+                    <td style={tdS}>{l.tipo === "pagar" ? "Pagar" : "Receber"}</td>
+                    <td style={{ ...tdS, fontFamily: FONT_MONO, fontSize: 12 }}>{l.numero}</td>
+                    <td style={tdS}>{fmtDataBR(l.vencimento)}</td>
+                    <td style={tdS}><div style={{ fontWeight: 600 }}>{l.party}</div><div style={{ fontSize: 11, color: MUTED, maxWidth: 280 }}>{l.hist}</div></td>
+                    <td style={{ ...tdS, fontSize: 12 }}>{l.codigo || "—"}</td>
+                    <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(l.valor)}</td>
+                    <td style={{ ...tdS, fontSize: 12 }}>{l.situacao}</td>
+                    <td style={{ ...tdS, fontSize: 12 }}>
+                      <b>{rotuloAcao(l)}</b>
+                      {l.mudancas.length > 0 && <div style={{ color: "#1D6FA5" }}>{l.mudancas.join(" · ")}</div>}
+                      {l.orcamento && <div style={{ color: GOLD }}>↳ evento: {l.orcamento.evento}{l.orcamento.clienteNome ? ` · ${l.orcamento.clienteNome}` : ""}</div>}
+                      {l.avisos.map((a, i) => <div key={i} style={{ color: DANGER }}>⚠ {a}</div>)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </Card>
+          <button onClick={importar} disabled={importando || nNovos + nAtual === 0} style={btnPrimary}>
+            <Save size={15} /> {importando ? "Importando..." : `Importar ${nNovos} novos e atualizar ${nAtual}`}
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ---------------------------------------------------------
 // Financeiro · tela principal com sub-abas
 // ---------------------------------------------------------
@@ -3986,6 +4359,7 @@ function FinanceiroView({ session, setErro }) {
     { id: "resultado", label: "Resultado por evento" },
     { id: "caixa", label: "Fluxo de caixa" },
     { id: "plano", label: "Plano de contas" },
+    { id: "importar", label: "Importar" },
   ];
   return (
     <div>
@@ -4003,6 +4377,7 @@ function FinanceiroView({ session, setErro }) {
       {subtab === "lancamentos" && !carregandoCentros && <LancamentosFinView session={session} setErro={setErro} centros={centros} />}
       {subtab === "resultado" && !carregandoCentros && <ResultadoFinView session={session} setErro={setErro} centros={centros} />}
       {subtab === "caixa" && <CaixaFinView session={session} setErro={setErro} />}
+      {subtab === "importar" && !carregandoCentros && <ImportarFinView session={session} setErro={setErro} centros={centros} />}
       {subtab === "plano" && !carregandoCentros && <PlanoContasFinView session={session} setErro={setErro} centros={centros} recarregar={carregarCentros} />}
     </div>
   );
