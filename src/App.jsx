@@ -441,7 +441,7 @@ export default function App() {
 
   const isAdmin = !!perfil?.is_admin;
   const temAcessoArea = (area) => isAdmin || areasPermitidas.includes(area);
-  const podeVerAba = (abaId) => (abaId === "usuarios" ? isAdmin : temAcessoArea(AREA_DAS_ABAS[abaId]));
+  const podeVerAba = (abaId) => (abaId === "usuarios" || abaId === "resultados" ? isAdmin : temAcessoArea(AREA_DAS_ABAS[abaId]));
 
   // Carrega o perfil (nome, admin?) e as áreas liberadas pro usuário logado.
   useEffect(() => {
@@ -465,6 +465,7 @@ export default function App() {
     if (podeVerAba("rh")) setTab("rh");
     else if (podeVerAba("comercial")) setTab("comercial");
     else if (podeVerAba("financeiro")) setTab("financeiro");
+    else if (podeVerAba("resultados")) setTab("resultados");
     else if (podeVerAba("usuarios")) setTab("usuarios");
   }, [session, carregandoAcesso, perfil, areasPermitidas]); // eslint-disable-line
 
@@ -523,6 +524,9 @@ export default function App() {
             )}
             {tab === "comercial" && (
               <ComercialView session={session} setErro={setErro} />
+            )}
+            {tab === "resultados" && isAdmin && (
+              <ResultadosAdminView session={session} setErro={setErro} />
             )}
             {tab === "usuarios" && (
               <UsuariosView session={session} setErro={setErro} meuId={session?.user?.id} />
@@ -588,6 +592,7 @@ function Header({ tab, setTab, onLogout, podeVerAba }) {
     { id: "rh", label: "Recursos Humanos", icon: Users },
     { id: "comercial", label: "Comercial", icon: TrendingUp },
     { id: "financeiro", label: "Financeiro", icon: Wallet },
+    { id: "resultados", label: "Resultados", icon: FileBarChart },
     { id: "usuarios", label: "Usuários", icon: UserCog },
   ].filter((it) => podeVerAba(it.id));
   return (
@@ -2159,6 +2164,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   const [editing, setEditing] = useState(null);
   const [salvando, setSalvando] = useState(false);
   const [composicaoDe, setComposicaoDe] = useState(null);
+  const [custosDe, setCustosDe] = useState(null);
 
   const blankForm = { evento: "", clienteId: "", local: "", dataEvento: "", valor: 0, status: "orcado", numeroOr: "", empresa: "prosign" };
   const [form, setForm] = useState(blankForm);
@@ -2238,6 +2244,10 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
 
   const rowsFiltradas = filtroStatus === "todos" ? registros : registros.filter((r) => r.status === filtroStatus);
   const totalFiltrado = rowsFiltradas.reduce((s, r) => s + r.valor, 0);
+
+  if (custosDe) {
+    return <CustosEventoView orcamentoId={custosDe} session={session} setErro={setErro} onVoltar={() => setCustosDe(null)} />;
+  }
 
   if (composicaoDe) {
     return (
@@ -2346,6 +2356,9 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
                     <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                       {r.status === "aprovado" && (
                         <><button onClick={() => handleAutorizarFaturamento(r)} style={{ ...btnGhostSmall, borderColor: "#1D6FA5", color: "#1D6FA5", fontWeight: 600 }}>Autorizar faturamento</button>{" "}</>
+                      )}
+                      {ehVenda(r.status) && (
+                        <><button onClick={() => setCustosDe(r.id)} style={{ ...btnGhostSmall, borderColor: "#2E7D5B", color: "#2E7D5B", fontWeight: 600 }}>Custos</button>{" "}</>
                       )}
                       <button onClick={() => setComposicaoDe(r.id)} style={{ ...btnGhostSmall, borderColor: GOLD, color: GOLD, fontWeight: 600 }}>{r.status === "faturado" ? "Ver composição" : r.temComposicao ? "Composição ✓" : "Composição"}</button>
                       {r.status !== "faturado" && (
@@ -3687,7 +3700,7 @@ function LancamentosFinView({ session, setErro, centros }) {
 // ---------------------------------------------------------
 // Resultado por evento
 // ---------------------------------------------------------
-function ResultadoFinView({ session, setErro, centros }) {
+function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
   const [mes, setMes] = useState(mesAtualFin());
   const [empresa, setEmpresa] = useState("todas");
   const [lancs, setLancs] = useState([]);
@@ -3752,7 +3765,7 @@ function ResultadoFinView({ session, setErro, centros }) {
             {r.eventos.map((e) => (
               <tr key={e.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={tdS}><ChipEmpresa id={e.empresa} /></td>
-                <td style={{ ...tdS, fontWeight: 600 }}>{e.evento}{e.numeroOr ? <span style={{ color: MUTED, fontWeight: 400 }}> · OR {e.numeroOr}</span> : ""}</td>
+                <td style={{ ...tdS, fontWeight: 600 }}>{onAbrirEvento && e.receita > 0 ? <span onClick={() => onAbrirEvento(e.id)} style={{ cursor: "pointer", color: NAVY, textDecoration: "underline" }}>{e.evento}</span> : e.evento}{e.numeroOr ? <span style={{ color: MUTED, fontWeight: 400 }}> · OR {e.numeroOr}</span> : ""}</td>
                 <td style={tdS}>{e.cliente || "—"}</td>
                 <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(e.receita)}</td>
                 <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(e.direto)}</td>
@@ -3787,6 +3800,190 @@ function ResultadoFinView({ session, setErro, centros }) {
             <div>Receitas não operacionais (empréstimos, resgates, caução): <b style={{ fontFamily: FONT_MONO }}>{brl(t.naoOpReceita)}</b></div>
             <div>Despesas não operacionais (financiamentos, juros, aplicações, distribuição de lucro): <b style={{ fontFamily: FONT_MONO }}>{brl(t.naoOpDespesa)}</b></div>
           </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------
+// Custos do evento · liga um orçamento aos custos reais (variáveis vinculados + fixos rateados)
+// ---------------------------------------------------------
+function CustosEventoView({ orcamentoId, session, setErro, onVoltar }) {
+  const [carregando, setCarregando] = useState(true);
+  const [orc, setOrc] = useState(null);
+  const [itens, setItens] = useState([]);
+  const [centros, setCentros] = useState([]);
+  const [vinculados, setVinculados] = useState([]);
+  const [mesLancs, setMesLancs] = useState([]);
+  const [mesOrcs, setMesOrcs] = useState([]);
+
+  useEffect(() => {
+    setCarregando(true);
+    (async () => {
+      try {
+        const [o, its, cs, vinc] = await Promise.all([
+          sbRequest(`orcamentos?select=*,clientes(nome)&id=eq.${orcamentoId}`, session),
+          sbRequest(`orcamento_itens?select=*&orcamento_id=eq.${orcamentoId}&order=ordem.asc`, session),
+          sbRequest("centros_custo?select=*&limit=1000", session),
+          sbRequest(`lancamentos_fin?select=*&orcamento_id=eq.${orcamentoId}&order=vencimento.asc&limit=1000`, session),
+        ]);
+        const row = (o || [])[0] || null;
+        setOrc(row); setItens((its || []).map(itemFromRow)); setCentros(cs || []); setVinculados(vinc || []);
+        if (row?.mes_ref) {
+          const [ls, os] = await Promise.all([
+            sbRequest(`lancamentos_fin?select=*&competencia=eq.${row.mes_ref}&limit=3000`, session),
+            sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${row.mes_ref}&status=in.(aprovado,autorizado_faturamento,faturado)&limit=2000`, session),
+          ]);
+          setMesLancs(ls || []); setMesOrcs((os || []).map(orcamentoFromRow));
+        }
+      } catch (e) { setErro(msgSupabase(e)); }
+      finally { setCarregando(false); }
+    })();
+  }, [orcamentoId]); // eslint-disable-line
+
+  const porId = useMemo(() => Object.fromEntries(centros.map((c) => [c.id, c])), [centros]);
+  const empresa = orc?.empresa || "prosign";
+  const mes = orc?.mes_ref ? String(orc.mes_ref).slice(0, 7) : "";
+
+  const res = useMemo(() => {
+    if (!orc) return null;
+    const r = calcularResultado({ lancs: mesLancs, orcs: mesOrcs, centrosPorId: porId, empresaFiltro: empresa });
+    const ev = r.eventos.find((e) => e.id === orc.id);
+    const classe = (l) => porId[l.centro_custo_id]?.classificacao || "a_classificar";
+    const variaveis = vinculados.filter((l) => l.tipo === "pagar" && classe(l) === "variavel");
+    const outros = vinculados.filter((l) => l.tipo === "pagar" && classe(l) !== "variavel");
+    const direto = variaveis.reduce((s, l) => s + Number(l.valor || 0), 0);
+    const receita = Number(orc.valor) || 0;
+    const fixo = ev ? ev.fixo : 0;
+    const receitaMes = mesOrcs.filter((o) => (o.empresa || "prosign") === empresa).reduce((s, o) => s + o.valor, 0);
+    const fixosMes = mesLancs.filter((l) => l.empresa === empresa && l.tipo === "pagar" && classe(l) === "fixo").reduce((s, l) => s + Number(l.valor || 0), 0);
+    return { variaveis, outros, direto, receita, fixo, receitaMes, fixosMes, margem: receita - direto, resultado: receita - direto - fixo };
+  }, [orc, mesLancs, mesOrcs, vinculados, porId, empresa]);
+
+  const prev = useMemo(() => {
+    if (!orc || itens.length === 0) return null;
+    const p = { bv: Number(orc.bv_pct || 0), simples: Number(orc.simples_pct || 0), comissao: Number(orc.comissao_pct || 0), margem: Number(orc.margem_pct || 0) };
+    const c = calcularComposicao(itens, p, Number(orc.ajuste || 0));
+    return { ...c, deducoes: c.bvR + c.simplesR + c.comissaoR, custoTotal: c.total6 + c.bvR + c.simplesR + c.comissaoR };
+  }, [orc, itens]);
+
+  if (carregando) return <p style={{ color: MUTED }}>Carregando...</p>;
+  if (!orc || !res) return (<div><button onClick={onVoltar} style={btnGhostSmall}>← Voltar</button><p style={{ color: MUTED }}>Orçamento não encontrado.</p></div>);
+
+  const semAcesso = centros.length === 0;
+  const venda = ehVenda(orc.status);
+  const st = STATUS_ORCAMENTO.find((s) => s.id === orc.status);
+  const cor = (v) => (v >= 0 ? "#2E7D5B" : DANGER);
+  const linha = (rot, val, opts = {}) => (
+    <tr style={{ borderTop: `1px solid ${BORDER}` }}>
+      <td style={{ ...tdS, fontWeight: opts.forte ? 700 : 400, color: opts.sub ? MUTED : TEXT }}>{rot}</td>
+      <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, fontWeight: opts.forte ? 700 : 400, color: opts.cor || TEXT }}>{val}</td>
+    </tr>
+  );
+
+  return (
+    <div>
+      <button onClick={onVoltar} style={{ ...btnGhostSmall, marginBottom: 14 }}>← Voltar aos orçamentos</button>
+      <div style={{ marginBottom: 16 }}>
+        <h3 style={{ margin: 0, color: NAVY }}>Custos do evento · {orc.evento} {orc.numero_or ? <span style={{ color: MUTED, fontWeight: 400, fontSize: 14 }}>· OR {orc.numero_or}</span> : null}</h3>
+        <div style={{ fontSize: 13, color: MUTED, marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <ChipEmpresa id={empresa} />
+          <span>{orc.clientes?.nome || "—"}</span>
+          {st && <span style={{ color: st.color, fontWeight: 600 }}>· {st.label}</span>}
+          {mes && <span>· competência {mes.split("-").reverse().join("/")}</span>}
+        </div>
+      </div>
+
+      {semAcesso && (
+        <Card style={{ marginBottom: 16, background: "#FFF8E6", borderColor: "#E8D49A" }}>
+          Você não tem acesso à área Financeiro, por isso os custos reais não aparecem. Peça a um administrador para liberar em <b>Usuários</b>.
+        </Card>
+      )}
+      {!venda && (
+        <Card style={{ marginBottom: 16, background: "#FFF8E6", borderColor: "#E8D49A" }}>
+          Este orçamento ainda não é uma venda (status "{st?.label || orc.status}"). Os fixos só são rateados para orçamentos aprovados, autorizados ou faturados.
+        </Card>
+      )}
+      {!orc.mes_ref && <Card style={{ marginBottom: 16 }}>Orçamento sem data de evento: não há competência para ratear os custos fixos.</Card>}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 18 }}>
+        <CartaoNumero rotulo="Receita (valor do orçamento)" valor={res.receita} />
+        <CartaoNumero rotulo="Custos variáveis reais" valor={res.direto} cor={GOLD} sub={`${res.variaveis.length} lançamento(s) vinculado(s)`} />
+        <CartaoNumero rotulo="Margem de contribuição" valor={res.margem} cor={cor(res.margem)} sub={res.receita > 0 ? pctFmt(res.margem / res.receita) : ""} />
+        <CartaoNumero rotulo="Custos fixos rateados" valor={res.fixo} cor="#1D6FA5" sub={res.receitaMes > 0 && venda ? `${pctFmt(res.receita / res.receitaMes)} da receita do mês` : ""} />
+        <CartaoNumero rotulo="Resultado do evento" valor={res.resultado} cor={cor(res.resultado)} sub={res.receita > 0 ? pctFmt(res.resultado / res.receita) + " da receita" : ""} />
+      </div>
+
+      <Card style={{ padding: 0, overflowX: "auto", marginBottom: 18 }}>
+        <div style={{ padding: "14px 18px", fontWeight: 600, color: NAVY }}>Custos variáveis reais (lançamentos vinculados)</div>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+          <thead><tr style={{ background: BG }}>
+            <th style={thS}>Vencimento</th><th style={thS}>Fornecedor</th><th style={thS}>Conta</th><th style={thS}>Situação</th><th style={{ ...thS, textAlign: "right" }}>Valor</th>
+          </tr></thead>
+          <tbody>
+            {res.variaveis.length === 0 && <tr><td colSpan={5} style={{ ...tdS, color: MUTED }}>Nenhum custo variável vinculado a este orçamento ainda. Vincule em <b>Financeiro → Lançamentos</b> (ou ao importar).</td></tr>}
+            {res.variaveis.map((l) => (
+              <tr key={l.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={tdS}>{fmtDataBR(l.vencimento)}</td>
+                <td style={tdS}>{l.fornecedor_cliente || "—"}<div style={{ fontSize: 11, color: MUTED }}>{l.historico || ""}</div></td>
+                <td style={tdS}>{porId[l.centro_custo_id] ? `${porId[l.centro_custo_id].codigo} · ${porId[l.centro_custo_id].nome}` : "—"}</td>
+                <td style={tdS}>{l.situacao}</td>
+                <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(l.valor)}</td>
+              </tr>
+            ))}
+            {res.variaveis.length > 0 && (
+              <tr style={{ borderTop: `2px solid ${BORDER}`, background: BG }}>
+                <td colSpan={4} style={{ ...tdS, fontWeight: 700 }}>Total</td>
+                <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(res.direto)}</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </Card>
+
+      {res.outros.length > 0 && (
+        <Card style={{ marginBottom: 18, background: "#FFF8E6", borderColor: "#E8D49A", fontSize: 13 }}>
+          {res.outros.length} lançamento(s) vinculado(s) a este orçamento ({brl(res.outros.reduce((s, l) => s + Number(l.valor || 0), 0))}) estão em contas que não são variáveis (fixo, não operacional ou a classificar). Eles <b>não</b> entram no cálculo do evento. Confira a conta em Lançamentos.
+        </Card>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 16 }}>
+        <Card style={{ padding: 0 }}>
+          <div style={{ padding: "14px 18px", fontWeight: 600, color: NAVY }}>Rateio dos custos fixos do mês</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}><tbody>
+            {linha(`Custos fixos de ${nomeEmpresa(empresa)} na competência`, brl(res.fixosMes))}
+            {linha(`Receita de vendas de ${nomeEmpresa(empresa)} no mês`, brl(res.receitaMes))}
+            {linha("Participação deste evento", venda && res.receitaMes > 0 ? pctFmt(res.receita / res.receitaMes) : "—")}
+            {linha("Fixos rateados para o evento", brl(res.fixo), { forte: true, cor: "#1D6FA5" })}
+          </tbody></table>
+        </Card>
+
+        <Card style={{ padding: 0 }}>
+          <div style={{ padding: "14px 18px", fontWeight: 600, color: NAVY }}>Previsto (composição) × Real</div>
+          {!prev ? <div style={{ padding: "0 18px 16px", color: MUTED, fontSize: 13 }}>Este orçamento não tem composição de custos.</div> : (
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead><tr style={{ background: BG }}><th style={thS}></th><th style={{ ...thS, textAlign: "right" }}>Previsto</th><th style={{ ...thS, textAlign: "right" }}>Real</th></tr></thead>
+              <tbody>
+                {[
+                  ["Preço / receita", prev.precoFinal, res.receita],
+                  ["Custos diretos + impostos/comissão", prev.custoTotal, res.direto],
+                  ["Margem de contribuição", prev.precoFinal - prev.custoTotal, res.margem],
+                ].map(([rot, p, r]) => (
+                  <tr key={rot} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={tdS}>{rot}</td>
+                    <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(p)}</td>
+                    <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(r)}</td>
+                  </tr>
+                ))}
+                <tr style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={{ ...tdS, fontWeight: 700 }}>Desvio de custo (real − previsto)</td>
+                  <td colSpan={2} style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700, color: res.direto - prev.custoTotal <= 0 ? "#2E7D5B" : DANGER }}>{brl(res.direto - prev.custoTotal)}</td>
+                </tr>
+              </tbody>
+            </table>
+          )}
+          <div style={{ padding: "8px 18px 14px", fontSize: 11, color: MUTED }}>O previsto inclui BV, Simples e comissão da composição; no real, impostos e comissão só entram se estiverem lançados e vinculados ao evento.</div>
         </Card>
       </div>
     </div>
@@ -4356,7 +4553,6 @@ function FinanceiroView({ session, setErro }) {
   const SUBABAS = [
     { id: "faturamento", label: "Faturamento" },
     { id: "lancamentos", label: "Lançamentos" },
-    { id: "resultado", label: "Resultado por evento" },
     { id: "caixa", label: "Fluxo de caixa" },
     { id: "plano", label: "Plano de contas" },
     { id: "importar", label: "Importar" },
@@ -4375,10 +4571,32 @@ function FinanceiroView({ session, setErro }) {
       {subtab === "faturamento" && <FaturamentoFinanceiroView session={session} setErro={setErro} />}
       {subtab !== "faturamento" && carregandoCentros && <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>}
       {subtab === "lancamentos" && !carregandoCentros && <LancamentosFinView session={session} setErro={setErro} centros={centros} />}
-      {subtab === "resultado" && !carregandoCentros && <ResultadoFinView session={session} setErro={setErro} centros={centros} />}
       {subtab === "caixa" && <CaixaFinView session={session} setErro={setErro} />}
       {subtab === "importar" && !carregandoCentros && <ImportarFinView session={session} setErro={setErro} centros={centros} />}
       {subtab === "plano" && !carregandoCentros && <PlanoContasFinView session={session} setErro={setErro} centros={centros} recarregar={carregarCentros} />}
+    </div>
+  );
+}
+
+// =========================================================
+// Resultados (somente administradores) · análise mensal
+// =========================================================
+function ResultadosAdminView({ session, setErro }) {
+  const [centros, setCentros] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [eventoAberto, setEventoAberto] = useState(null);
+  useEffect(() => {
+    sbRequest("centros_custo?select=*&order=codigo.asc&limit=1000", session)
+      .then((rows) => setCentros(rows || []))
+      .catch((e) => setErro(msgSupabase(e)))
+      .finally(() => setCarregando(false));
+  }, []); // eslint-disable-line
+  if (eventoAberto) return <CustosEventoView orcamentoId={eventoAberto} session={session} setErro={setErro} onVoltar={() => setEventoAberto(null)} />;
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 6px", fontSize: 18, fontWeight: 700 }}>Resultados</h2>
+      <p style={{ margin: "0 0 16px", color: MUTED, fontSize: 13 }}>Análise mensal por competência. Clique no nome de um evento para ver os custos reais e o rateio dos fixos.</p>
+      {carregando ? <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div> : <ResultadoFinView session={session} setErro={setErro} centros={centros} onAbrirEvento={setEventoAberto} />}
     </div>
   );
 }
