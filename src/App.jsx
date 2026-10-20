@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useRef } from "react";
-import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, LogOut, Loader2, Search, TrendingUp, UserCog } from "lucide-react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
+import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, LogOut, Loader2, Search, TrendingUp, UserCog, Wallet } from "lucide-react";
 
 // =========================================================
 // CONFIGURAÇÃO DO SUPABASE — preencha com os dados do seu projeto
@@ -419,6 +419,7 @@ const btnDangerSmall = { padding: "7px 10px", borderRadius: 7, border: `1px soli
 const AREA_DAS_ABAS = {
   rh: "ponto",
   comercial: "comercial",
+  financeiro: "financeiro",
 };
 
 export default function App() {
@@ -463,6 +464,7 @@ export default function App() {
     if (!session || carregandoAcesso || tab) return;
     if (podeVerAba("rh")) setTab("rh");
     else if (podeVerAba("comercial")) setTab("comercial");
+    else if (podeVerAba("financeiro")) setTab("financeiro");
     else if (podeVerAba("usuarios")) setTab("usuarios");
   }, [session, carregandoAcesso, perfil, areasPermitidas]); // eslint-disable-line
 
@@ -515,6 +517,9 @@ export default function App() {
                 mesRef={mesRef} setMesRef={setMesRef}
                 session={session} setErro={setErro}
               />
+            )}
+            {tab === "financeiro" && (
+              <FinanceiroView session={session} setErro={setErro} />
             )}
             {tab === "comercial" && (
               <ComercialView session={session} setErro={setErro} />
@@ -582,6 +587,7 @@ function Header({ tab, setTab, onLogout, podeVerAba }) {
   const items = [
     { id: "rh", label: "Recursos Humanos", icon: Users },
     { id: "comercial", label: "Comercial", icon: TrendingUp },
+    { id: "financeiro", label: "Financeiro", icon: Wallet },
     { id: "usuarios", label: "Usuários", icon: UserCog },
   ].filter((it) => podeVerAba(it.id));
   return (
@@ -1731,6 +1737,7 @@ function ConsultaView({ funcionarios, cargos, session, setErro }) {
 const AREAS_DISPONIVEIS = [
   { id: "ponto", label: "Controle de Ponto" },
   { id: "comercial", label: "Comercial" },
+  { id: "financeiro", label: "Financeiro" },
 ];
 
 function UsuariosView({ session, setErro, meuId }) {
@@ -1970,7 +1977,7 @@ function orcamentoFromRow(r) {
 function faturamentoFromRow(r) {
   return {
     id: r.id, orcamentoId: r.orcamento_id, clienteId: r.cliente_id,
-    clienteNome: r.clientes?.nome || null, orcamentoEvento: r.orcamentos?.evento || null,
+    clienteNome: r.clientes?.nome || null, orcamentoEvento: r.orcamentos?.evento || null, orcamentoStatus: r.orcamentos?.status || null, notaFiscal: r.nota_fiscal || "",
     valor: Number(r.valor || 0), dataFaturamento: r.data_faturamento, mesRef: r.mes_ref,
   };
 }
@@ -1982,26 +1989,17 @@ const STATUS_ORCAMENTO = [
   { id: "em_analise", label: "Em análise", color: GOLD },
   { id: "aprovado", label: "Aprovado", color: OK },
   { id: "nao_aprovado", label: "Não aprovado", color: DANGER },
+  { id: "autorizado_faturamento", label: "Autorizado p/ faturar", color: "#1D6FA5" },
+  { id: "faturado", label: "Faturado", color: NAVY },
 ];
+// status que contam como venda (resultado do mês/ano)
+const STATUS_VENDA = ["aprovado", "autorizado_faturamento", "faturado"];
+function ehVenda(st) { return STATUS_VENDA.includes(st); }
+// extrai só a mensagem de erro do Supabase (ex.: trava do faturado)
+function msgSupabase(e) { const m = String(e?.message || "").match(/"message":"([^"]+)"/); return m ? m[1] : (e?.message || String(e)); }
 function statusInfo(id) { return STATUS_ORCAMENTO.find((s) => s.id === id) || STATUS_ORCAMENTO[0]; }
 
-// Garante que um orçamento aprovado tenha um lançamento de faturamento
-// vinculado (não duplica se já existir). Chamado sempre que um orçamento
-// é salvo com status "aprovado".
-async function garantirFaturamento(session, orcamentoRow) {
-  const existentes = await sbRequest(`faturamento?select=id&orcamento_id=eq.${orcamentoRow.id}`, session);
-  if (existentes && existentes.length > 0) return;
-  await sbRequest("faturamento", session, {
-    method: "POST",
-    body: {
-      orcamento_id: orcamentoRow.id,
-      cliente_id: orcamentoRow.cliente_id,
-      valor: orcamentoRow.valor,
-      data_faturamento: orcamentoRow.data_evento || new Date().toISOString().slice(0, 10),
-      mes_ref: orcamentoRow.mes_ref,
-    },
-  });
-}
+// O lançamento de faturamento agora é gerado pelo Financeiro (função faturar_orcamento no banco).
 
 const MESES_ABREV = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
 
@@ -2201,7 +2199,6 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
       } else {
         [saved] = await sbRequest("orcamentos", session, { method: "POST", body });
       }
-      if (saved.status === "aprovado") await garantirFaturamento(session, saved);
       const eraNovo = !editing;
       // a lista passa a mostrar o mês do orçamento salvo (senão ele "some" quando a data é de outro mês)
       setMesRef(mesRefCalc.slice(0, 7));
@@ -2210,7 +2207,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
       carregar();
       // orçamento novo: já abre a composição pra montar o valor
       if (eraNovo) setComposicaoDe(saved.id);
-    } catch (e) { setErro(e.message); }
+    } catch (e) { setErro(msgSupabase(e)); }
     finally { setSalvando(false); }
   }
 
@@ -2225,10 +2222,18 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   async function handleMudarStatus(o, novoStatus) {
     setErro("");
     try {
-      const [saved] = await sbRequest(`orcamentos?id=eq.${o.id}`, session, { method: "PATCH", body: { status: novoStatus } });
-      if (novoStatus === "aprovado") await garantirFaturamento(session, saved);
+      await sbRequest(`orcamentos?id=eq.${o.id}`, session, { method: "PATCH", body: { status: novoStatus } });
       setRegistros((rs) => rs.map((r) => (r.id === o.id ? { ...r, status: novoStatus } : r)));
-    } catch (e) { setErro(e.message); }
+    } catch (e) { setErro(msgSupabase(e)); }
+  }
+
+  function handleAutorizarFaturamento(o) {
+    if (!o.valor || o.valor <= 0) {
+      setErro("Este orçamento está sem valor. Monte a composição (ou informe o valor) antes de autorizar o faturamento.");
+      return;
+    }
+    if (!window.confirm(`Autorizar o faturamento de "${o.evento}" (${brl(o.valor)})?\n\nEle entra na fila do Financeiro.`)) return;
+    handleMudarStatus(o, "autorizado_faturamento");
   }
 
   const rowsFiltradas = filtroStatus === "todos" ? registros : registros.filter((r) => r.status === filtroStatus);
@@ -2278,13 +2283,13 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
             <Field label={editing?.temComposicao ? "Valor (R$) — vem da composição" : "Valor (R$) — opcional, a composição calcula"}><input type="number" step="0.01" style={inputStyle} disabled={!!editing?.temComposicao} value={form.valor} onChange={(e) => setForm({ ...form, valor: parseFloat(e.target.value) || 0 })} /></Field>
             <Field label="Status">
               <select style={inputStyle} value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-                {STATUS_ORCAMENTO.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                {STATUS_ORCAMENTO.filter((s) => s.id !== "faturado").map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
               </select>
             </Field>
           </div>
-          {form.status === "aprovado" && (
+          {form.status === "autorizado_faturamento" && (
             <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
-              Ao salvar como "Aprovado", um lançamento de faturamento é gerado automaticamente (se ainda não existir).
+              Ao salvar como "Autorizado p/ faturar", o orçamento entra na fila do Financeiro. Quem marca como "Faturado" é o Financeiro.
             </div>
           )}
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
@@ -2320,18 +2325,27 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
                     <td style={{ padding: "10px 14px", color: MUTED }}>{r.local || "-"}</td>
                     <td style={{ padding: "10px 14px", fontFamily: FONT_MONO }}>{brl(r.valor)}</td>
                     <td style={{ padding: "10px 14px" }}>
-                      <select
-                        value={r.status}
-                        onChange={(e) => handleMudarStatus(r, e.target.value)}
-                        style={{ ...selStyle, padding: "5px 8px", fontSize: 12, color: st.color, fontWeight: 600 }}
-                      >
-                        {STATUS_ORCAMENTO.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-                      </select>
+                      {r.status === "faturado" ? (
+                        <span style={{ fontSize: 12, fontWeight: 700, color: st.color }} title="Faturado: ninguém mais altera">🔒 Faturado</span>
+                      ) : (
+                        <select
+                          value={r.status}
+                          onChange={(e) => handleMudarStatus(r, e.target.value)}
+                          style={{ ...selStyle, padding: "5px 8px", fontSize: 12, color: st.color, fontWeight: 600 }}
+                        >
+                          {STATUS_ORCAMENTO.filter((x) => x.id !== "faturado").map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+                        </select>
+                      )}
                     </td>
                     <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
-                      <button onClick={() => setComposicaoDe(r.id)} style={{ ...btnGhostSmall, borderColor: GOLD, color: GOLD, fontWeight: 600 }}>{r.temComposicao ? "Composição ✓" : "Composição"}</button>{" "}
-                      <button onClick={() => abrirEditar(r)} style={btnGhostSmall}>Editar</button>{" "}
-                      <button onClick={() => handleExcluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
+                      {r.status === "aprovado" && (
+                        <><button onClick={() => handleAutorizarFaturamento(r)} style={{ ...btnGhostSmall, borderColor: "#1D6FA5", color: "#1D6FA5", fontWeight: 600 }}>Autorizar faturamento</button>{" "}</>
+                      )}
+                      <button onClick={() => setComposicaoDe(r.id)} style={{ ...btnGhostSmall, borderColor: GOLD, color: GOLD, fontWeight: 600 }}>{r.status === "faturado" ? "Ver composição" : r.temComposicao ? "Composição ✓" : "Composição"}</button>
+                      {r.status !== "faturado" && (
+                        <>{" "}<button onClick={() => abrirEditar(r)} style={btnGhostSmall}>Editar</button>{" "}
+                        <button onClick={() => handleExcluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button></>
+                      )}
                     </td>
                   </tr>
                 );
@@ -2666,9 +2680,11 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         },
       });
       setSalvo(true);
-    } catch (e) { setErro(e.message); }
+    } catch (e) { setErro(msgSupabase(e)); }
     finally { setSalvando(false); }
   }
+
+  const travado = orc?.status === "faturado";
 
   function abrirPdf(modo) {
     const ok = gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo });
@@ -2752,12 +2768,18 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button onClick={() => abrirPdf("interno")} style={btnGhostSmall} title="Layout da planilha, com custos e margem">PDF interno (custos)</button>
           <button onClick={() => abrirPdf("cliente")} style={{ ...btnGhostSmall, borderColor: GOLD, color: GOLD, fontWeight: 600 }} title="Itens e valor total, sem custos nem margem">PDF para o cliente</button>
-          <button onClick={handleSalvar} disabled={salvando} style={btnPrimary}>
+          <button onClick={handleSalvar} disabled={salvando || travado} style={btnPrimary}>
             <Save size={15} /> {salvando ? "Salvando..." : salvo ? "Salvo ✓" : "Salvar composição"}
           </button>
         </div>
       </div>
 
+      {travado && (
+        <div style={{ background: "#EAF0F8", color: NAVY, padding: 10, borderRadius: 8, marginBottom: 14, fontSize: 13, fontWeight: 600 }}>
+          🔒 Orçamento faturado: a composição está somente para consulta. Os PDFs continuam disponíveis.
+        </div>
+      )}
+      <fieldset disabled={travado} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       <Card style={{ marginBottom: 18, background: "#FFFBCC" }}>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 160px", gap: 12, fontSize: 14 }}>
           <div><span style={{ color: MUTED }}>Cliente: </span><b>{orc.clientes?.nome || "-"}</b></div>
@@ -2830,6 +2852,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       <div style={{ fontSize: 12, color: MUTED, marginTop: 12 }}>
         Células amarelas são digitáveis; as cinzas são calculadas. Ao salvar, o valor do orçamento passa a ser o Preço de Venda Final.
       </div>
+      </fieldset>
     </div>
   );
 }
@@ -2865,7 +2888,7 @@ function PrevisaoComercialView({ session, setErro }) {
     setErro("");
     try {
       const rows = await sbRequest(
-        `orcamentos?select=valor,mes_ref&status=eq.aprovado&mes_ref=gte.${anoBase}-01-01&mes_ref=lt.${anoBase + 1}-01-01`,
+        `orcamentos?select=valor,mes_ref&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=gte.${anoBase}-01-01&mes_ref=lt.${anoBase + 1}-01-01`,
         session
       );
       const somaPorMes = Array(12).fill(0);
@@ -2989,7 +3012,7 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
 
   function carregar() {
     setCarregando(true);
-    sbRequest(`faturamento?select=*,clientes(nome),orcamentos(evento)&mes_ref=eq.${mesRef}-01&order=data_faturamento.asc`, session)
+    sbRequest(`faturamento?select=*,clientes(nome),orcamentos(evento,status)&mes_ref=eq.${mesRef}-01&order=data_faturamento.asc`, session)
       .then((rows) => setRegistros((rows || []).map(faturamentoFromRow)))
       .catch((e) => setErro(e.message))
       .finally(() => setCarregando(false));
@@ -3087,19 +3110,19 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
               ) : registros.map((r) => (
                 <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                   <td style={{ padding: "8px 14px" }}>
-                    <input type="date" style={{ ...inputStyle, fontSize: 12 }} defaultValue={r.dataFaturamento || ""} onBlur={(e) => { if (e.target.value !== (r.dataFaturamento || "")) handleSalvarData(r, e.target.value); }} />
+                    <input type="date" disabled={r.orcamentoStatus === "faturado"} style={{ ...inputStyle, fontSize: 12 }} defaultValue={r.dataFaturamento || ""} onBlur={(e) => { if (e.target.value !== (r.dataFaturamento || "")) handleSalvarData(r, e.target.value); }} />
                   </td>
                   <td style={{ padding: "8px 14px" }}>{r.clienteNome || "-"}</td>
-                  <td style={{ padding: "8px 14px", color: MUTED, fontSize: 12 }}>{r.orcamentoEvento || "Lançamento manual"}</td>
+                  <td style={{ padding: "8px 14px", color: MUTED, fontSize: 12 }}>{r.orcamentoEvento || "Lançamento manual"}{r.notaFiscal ? ` · NF ${r.notaFiscal}` : ""}</td>
                   <td style={{ padding: "8px 14px" }}>
                     <input
-                      type="number" step="0.01" style={{ ...inputStyle, width: 120, fontFamily: FONT_MONO }}
+                      type="number" step="0.01" disabled={r.orcamentoStatus === "faturado"} style={{ ...inputStyle, width: 120, fontFamily: FONT_MONO }}
                       defaultValue={r.valor}
                       onBlur={(e) => { const v = parseFloat(e.target.value) || 0; if (v !== r.valor) handleSalvarValor(r, v); }}
                     />
                   </td>
                   <td style={{ padding: "8px 14px", textAlign: "right" }}>
-                    <button onClick={() => handleExcluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
+                    {r.orcamentoStatus === "faturado" ? <span title="Faturado: ninguém mais altera">🔒</span> : <button onClick={() => handleExcluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>}
                   </td>
                 </tr>
               ))}
@@ -3115,6 +3138,144 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
             )}
           </table>
         </div>
+      </Card>
+    </div>
+  );
+}
+
+// =========================================================
+// Financeiro · fila de faturamento
+// =========================================================
+function FinanceiroView({ session, setErro }) {
+  const hojeLocal = () => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  };
+  const fmtData = (iso) => (iso ? iso.slice(0, 10).split("-").reverse().join("/") : "—");
+  const [fila, setFila] = useState([]);
+  const [recentes, setRecentes] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+  const [faturandoId, setFaturandoId] = useState(null);
+  const [form, setForm] = useState({ valor: 0, data: hojeLocal(), nf: "" });
+  const [salvando, setSalvando] = useState(false);
+
+  function carregar() {
+    setCarregando(true);
+    Promise.all([
+      sbRequest("orcamentos?select=*,clientes(nome)&status=eq.autorizado_faturamento&order=autorizado_em.asc", session),
+      sbRequest("faturamento?select=*,clientes(nome),orcamentos!inner(evento,numero_or,status)&orcamentos.status=eq.faturado&order=criado_em.desc&limit=30", session),
+    ])
+      .then(([a, b]) => { setFila(a || []); setRecentes(b || []); })
+      .catch((e) => setErro(msgSupabase(e)))
+      .finally(() => setCarregando(false));
+  }
+  useEffect(() => { carregar(); }, []); // eslint-disable-line
+
+  function abrirFaturar(o) {
+    setFaturandoId(o.id);
+    setForm({ valor: Number(o.valor) || 0, data: hojeLocal(), nf: "" });
+  }
+
+  async function confirmarFaturar(o) {
+    if (!form.valor || form.valor <= 0) { setErro("Informe o valor faturado."); return; }
+    if (!form.data) { setErro("Informe a data do faturamento."); return; }
+    if (!window.confirm(`Marcar "${o.evento}" como FATURADO por ${brl(form.valor)}?\n\nDepois disso ninguém mais poderá alterar este orçamento.`)) return;
+    setSalvando(true);
+    setErro("");
+    try {
+      await sbRequest("rpc/faturar_orcamento", session, {
+        method: "POST",
+        body: { p_orcamento_id: o.id, p_valor: form.valor, p_data: form.data, p_nf: form.nf || null },
+      });
+      setFaturandoId(null);
+      carregar();
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setSalvando(false); }
+  }
+
+  const totalFila = fila.reduce((s, o) => s + (Number(o.valor) || 0), 0);
+  const th = { padding: "10px 14px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4 };
+  const td = { padding: "10px 14px", fontSize: 13 };
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 22, color: NAVY, margin: "0 0 18px" }}>Financeiro · Faturamento</h2>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 22 }}>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Aguardando faturamento</div><div style={{ fontSize: 26, fontWeight: 700, color: "#1D6FA5" }}>{fila.length}</div></Card>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Valor a faturar</div><div style={{ fontSize: 26, fontWeight: 700, color: NAVY, fontFamily: FONT_MONO }}>{brl(totalFila)}</div></Card>
+      </div>
+
+      <Card style={{ padding: 0, overflowX: "auto", marginBottom: 24 }}>
+        <div style={{ padding: "14px 18px", fontWeight: 600, color: NAVY }}>Autorizados para faturar</div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr style={{ background: BG }}>
+            <th style={th}>Autorizado em</th><th style={th}>OR</th><th style={th}>Evento</th><th style={th}>Cliente</th>
+            <th style={th}>Data evento</th><th style={{ ...th, textAlign: "right" }}>Valor</th><th style={th}></th>
+          </tr></thead>
+          <tbody>
+            {carregando && <tr><td colSpan={7} style={{ ...td, color: MUTED }}>Carregando...</td></tr>}
+            {!carregando && fila.length === 0 && <tr><td colSpan={7} style={{ ...td, color: MUTED }}>Nenhum orçamento aguardando faturamento.</td></tr>}
+            {fila.map((o) => (
+              <React.Fragment key={o.id}>
+                <tr style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td style={td}>{fmtData(o.autorizado_em)}</td>
+                  <td style={td}>{o.numero_or || "—"}</td>
+                  <td style={{ ...td, fontWeight: 600 }}>{o.evento}</td>
+                  <td style={td}>{o.clientes?.nome || "—"}</td>
+                  <td style={td}>{fmtData(o.data_evento)}</td>
+                  <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(o.valor)}</td>
+                  <td style={{ ...td, textAlign: "right" }}>
+                    <button onClick={() => (faturandoId === o.id ? setFaturandoId(null) : abrirFaturar(o))} style={{ ...btnGhostSmall, borderColor: NAVY, color: NAVY, fontWeight: 600 }}>
+                      {faturandoId === o.id ? "Cancelar" : "Faturar"}
+                    </button>
+                  </td>
+                </tr>
+                {faturandoId === o.id && (
+                  <tr style={{ background: "#F3F7FB" }}>
+                    <td colSpan={7} style={{ padding: 16 }}>
+                      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+                        <Field label="Data do faturamento">
+                          <input type="date" value={form.data} onChange={(e) => setForm({ ...form, data: e.target.value })} style={inputStyle} />
+                        </Field>
+                        <Field label="Valor faturado (R$)">
+                          <input type="number" step="0.01" value={form.valor} onChange={(e) => setForm({ ...form, valor: parseFloat(e.target.value) || 0 })} style={{ ...inputStyle, width: 150, fontFamily: FONT_MONO }} />
+                        </Field>
+                        <Field label="Nº da nota fiscal (opcional)">
+                          <input value={form.nf} onChange={(e) => setForm({ ...form, nf: e.target.value })} style={{ ...inputStyle, width: 170 }} />
+                        </Field>
+                        <button onClick={() => confirmarFaturar(o)} disabled={salvando} style={btnPrimary}>
+                          {salvando ? "Faturando..." : "Confirmar faturamento"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <Card style={{ padding: 0, overflowX: "auto" }}>
+        <div style={{ padding: "14px 18px", fontWeight: 600, color: NAVY }}>Faturados recentes</div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead><tr style={{ background: BG }}>
+            <th style={th}>Data</th><th style={th}>OR</th><th style={th}>Evento</th><th style={th}>Cliente</th><th style={th}>NF</th><th style={{ ...th, textAlign: "right" }}>Valor</th>
+          </tr></thead>
+          <tbody>
+            {recentes.length === 0 && <tr><td colSpan={6} style={{ ...td, color: MUTED }}>Nada faturado por aqui ainda.</td></tr>}
+            {recentes.map((f) => (
+              <tr key={f.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={td}>{fmtData(f.data_faturamento)}</td>
+                <td style={td}>{f.orcamentos?.numero_or || "—"}</td>
+                <td style={td}>🔒 {f.orcamentos?.evento}</td>
+                <td style={td}>{f.clientes?.nome || "—"}</td>
+                <td style={td}>{f.nota_fiscal || "—"}</td>
+                <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(f.valor)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </Card>
     </div>
   );
@@ -3145,8 +3306,8 @@ function DashboardComercialView({ session, setErro, clientes }) {
     Promise.all([
       sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${mesRef}-01`, session),
       sbRequest(`faturamento?select=valor&mes_ref=eq.${mesRef}-01`, session),
-      sbRequest(`orcamentos?select=valor&status=eq.aprovado&mes_ref=eq.${anoAnterior}-${MESES[mes - 1]}-01`, session),
-      sbRequest(`orcamentos?select=valor,clientes(nome)&status=eq.aprovado&mes_ref=gte.${inicioAno}&mes_ref=lte.${mesRef}-01`, session),
+      sbRequest(`orcamentos?select=valor&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=eq.${anoAnterior}-${MESES[mes - 1]}-01`, session),
+      sbRequest(`orcamentos?select=valor,clientes(nome)&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=gte.${inicioAno}&mes_ref=lte.${mesRef}-01`, session),
     ])
       .then(([oMes, fMes, oAnoAnt, oAcum]) => {
         setOrcMes((oMes || []).map(orcamentoFromRow));
@@ -3158,7 +3319,7 @@ function DashboardComercialView({ session, setErro, clientes }) {
       .finally(() => setCarregando(false));
   }, [mesRef, visao]); // eslint-disable-line
 
-  const vendidoMes = orcMes.filter((o) => o.status === "aprovado").reduce((s, o) => s + o.valor, 0);
+  const vendidoMes = orcMes.filter((o) => ehVenda(o.status)).reduce((s, o) => s + o.valor, 0);
   const variacao = vendidoMesAnoAnterior > 0 ? (vendidoMes - vendidoMesAnoAnterior) / vendidoMesAnoAnterior : null;
 
   const porStatus = STATUS_ORCAMENTO.map((s) => {
@@ -3175,7 +3336,7 @@ function DashboardComercialView({ session, setErro, clientes }) {
     return Object.entries(mapa).sort((a, b) => b[1] - a[1]);
   }
 
-  const vendasPorClienteMes = agruparPorCliente(orcMes.filter((o) => o.status === "aprovado").map((o) => ({ clienteNome: o.clienteNome, valor: o.valor })));
+  const vendasPorClienteMes = agruparPorCliente(orcMes.filter((o) => ehVenda(o.status)).map((o) => ({ clienteNome: o.clienteNome, valor: o.valor })));
   const vendasPorClienteAcumulado = agruparPorCliente(acumuladoAno);
 
   return (
@@ -3223,7 +3384,7 @@ function DashboardComercialView({ session, setErro, clientes }) {
           </div>
 
           <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Orçamentos do mês por status</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 24 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginBottom: 24 }}>
             {porStatus.map((s) => (
               <Card key={s.id}>
                 <div style={{ fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.5 }}>{s.label}</div>
@@ -3294,7 +3455,7 @@ function DashboardAnualComercial({ session, setErro }) {
       sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=gte.${ano}-01-01&mes_ref=lt.${ano + 1}-01-01`, session),
       sbRequest(`faturamento?select=valor,mes_ref&mes_ref=gte.${ano}-01-01&mes_ref=lt.${ano + 1}-01-01`, session),
       sbRequest(`previsao_orcamentaria?select=*&ano=eq.${ano}`, session),
-      sbRequest(`orcamentos?select=valor&status=eq.aprovado&mes_ref=gte.${ano - 1}-01-01&mes_ref=lt.${ano}-01-01`, session),
+      sbRequest(`orcamentos?select=valor&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=gte.${ano - 1}-01-01&mes_ref=lt.${ano}-01-01`, session),
     ])
       .then(([o, f, p, oAnt]) => {
         setOrcAno((o || []).map(orcamentoFromRow));
@@ -3308,7 +3469,7 @@ function DashboardAnualComercial({ session, setErro }) {
       .finally(() => setCarregando(false));
   }, [ano]); // eslint-disable-line
 
-  const aprovados = orcAno.filter((o) => o.status === "aprovado");
+  const aprovados = orcAno.filter((o) => ehVenda(o.status));
   const vendidoAno = aprovados.reduce((s, o) => s + o.valor, 0);
   const faturadoAno = faturamentoAno.reduce((s, r) => s + Number(r.valor || 0), 0);
   const previstoAno = previsaoAno.reduce((s, v) => s + v, 0);
@@ -3371,7 +3532,7 @@ function DashboardAnualComercial({ session, setErro }) {
           </div>
 
           <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Orçamentos do ano por status</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 24 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 14, marginBottom: 24 }}>
             {porStatus.map((s) => (
               <Card key={s.id}>
                 <div style={{ fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.5 }}>{s.label}</div>
