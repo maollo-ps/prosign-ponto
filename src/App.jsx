@@ -1975,7 +1975,7 @@ function orcamentoFromRow(r) {
   return {
     id: r.id, evento: r.evento, clienteId: r.cliente_id, clienteNome: r.clientes?.nome || null,
     local: r.local, dataEvento: r.data_evento, valor: Number(r.valor || 0),
-    status: r.status, mesRef: r.mes_ref, numeroOr: r.numero_or || "", temComposicao: !!r.tem_composicao, empresa: r.empresa || "prosign",
+    status: r.status, mesRef: r.mes_ref, numeroOr: r.numero_or || "", temComposicao: !!r.tem_composicao, empresa: r.empresa || "prosign", contrato: !!r.contrato,
   };
 }
 
@@ -2166,7 +2166,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   const [composicaoDe, setComposicaoDe] = useState(null);
   const [custosDe, setCustosDe] = useState(null);
 
-  const blankForm = { evento: "", clienteId: "", local: "", dataEvento: "", valor: 0, status: "orcado", numeroOr: "", empresa: "prosign" };
+  const blankForm = { evento: "", clienteId: "", local: "", dataEvento: "", valor: 0, status: "orcado", numeroOr: "", empresa: "prosign", contrato: false };
   const [form, setForm] = useState(blankForm);
 
   function carregar() {
@@ -2185,7 +2185,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   }
   function abrirEditar(o) {
     setEditing(o);
-    setForm({ evento: o.evento, clienteId: o.clienteId || "", local: o.local || "", dataEvento: o.dataEvento || "", valor: o.valor, status: o.status, numeroOr: o.numeroOr || "", empresa: o.empresa || "prosign" });
+    setForm({ evento: o.evento, clienteId: o.clienteId || "", local: o.local || "", dataEvento: o.dataEvento || "", valor: o.valor, status: o.status, numeroOr: o.numeroOr || "", empresa: o.empresa || "prosign", contrato: !!o.contrato });
     setShowForm(true);
   }
 
@@ -2197,7 +2197,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
       const mesRefCalc = form.dataEvento ? `${form.dataEvento.slice(0, 7)}-01` : `${mesRef}-01`;
       const body = {
         evento: form.evento, cliente_id: form.clienteId || null, local: form.local || null,
-        data_evento: form.dataEvento || null, valor: form.valor, status: form.status, mes_ref: mesRefCalc, numero_or: form.numeroOr || null, empresa: form.empresa,
+        data_evento: form.dataEvento || null, valor: form.valor, status: form.status, mes_ref: mesRefCalc, numero_or: form.numeroOr || null, empresa: form.empresa, contrato: !!form.contrato,
       };
       let saved;
       if (editing) {
@@ -2289,12 +2289,18 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
             </Field>
             <Field label="Local"><input style={inputStyle} value={form.local} onChange={(e) => setForm({ ...form, local: e.target.value })} /></Field>
             <Field label="Data do evento"><input type="date" style={inputStyle} value={form.dataEvento} onChange={(e) => setForm({ ...form, dataEvento: e.target.value })} /></Field>
-            <Field label="OR (nº)"><input style={inputStyle} value={form.numeroOr} onChange={(e) => setForm({ ...form, numeroOr: e.target.value })} placeholder="839/26" /></Field>
+            <Field label="PR (nº)"><input style={inputStyle} value={form.numeroOr} onChange={(e) => setForm({ ...form, numeroOr: e.target.value })} placeholder="839/26" /></Field>
             <Field label={editing?.temComposicao ? "Valor (R$) — vem da composição" : "Valor (R$) — opcional, a composição calcula"}><input type="number" step="0.01" style={inputStyle} disabled={!!editing?.temComposicao} value={form.valor} onChange={(e) => setForm({ ...form, valor: parseFloat(e.target.value) || 0 })} /></Field>
             <Field label="Empresa">
               <select style={inputStyle} value={form.empresa} onChange={(e) => setForm({ ...form, empresa: e.target.value })}>
                 <option value="prosign">Prosign</option>
                 <option value="vs">VS</option>
+              </select>
+            </Field>
+            <Field label="Tipo de serviço">
+              <select style={inputStyle} value={form.contrato ? "contrato" : "fora"} onChange={(e) => setForm({ ...form, contrato: e.target.value === "contrato" })}>
+                <option value="fora">Fora do contrato</option>
+                <option value="contrato">Contrato</option>
               </select>
             </Field>
             <Field label="Status">
@@ -2320,7 +2326,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
-                {["Data", "OR", "Evento", "Cliente", "Local", "Valor", "Status", ""].map((h) => (
+                {["Data", "PR", "Evento", "Cliente", "Local", "Valor", "Status", ""].map((h) => (
                   <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
                 ))}
               </tr>
@@ -2336,7 +2342,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
                   <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                     <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>{r.dataEvento ? r.dataEvento.slice(8,10)+"/"+r.dataEvento.slice(5,7) : "-"}</td>
                     <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, whiteSpace: "nowrap", color: MUTED }}>{r.numeroOr || "-"}</td>
-                    <td style={{ padding: "10px 14px", fontWeight: 600 }}>{r.evento}{r.empresa === "vs" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#7A5C99", borderRadius: 4, padding: "1px 5px" }}>VS</span>}</td>
+                    <td style={{ padding: "10px 14px", fontWeight: 600 }}>{r.evento}{r.empresa === "vs" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#7A5C99", borderRadius: 4, padding: "1px 5px" }}>VS</span>}{r.contrato && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#1D6FA5", borderRadius: 4, padding: "1px 5px" }}>CONTRATO</span>}</td>
                     <td style={{ padding: "10px 14px" }}>{r.clienteNome || "-"}</td>
                     <td style={{ padding: "10px 14px", color: MUTED }}>{r.local || "-"}</td>
                     <td style={{ padding: "10px 14px", fontFamily: FONT_MONO }}>{brl(r.valor)}</td>
@@ -2594,7 +2600,7 @@ function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo }
   </style></head><body>
     <div class="topo">
       <img src="${LOGO_PSVIEW_ESCURA}" alt="PSView">
-      <div class="titulo"><b>${interno ? "PREVISÃO DE CUSTO" : "ORÇAMENTO"}${numeroOr ? ` · OR ${esc(numeroOr)}` : ""}</b>
+      <div class="titulo"><b>${interno ? "PREVISÃO DE CUSTO" : "ORÇAMENTO"}${numeroOr ? ` · PR ${esc(numeroOr)}` : ""}</b>
         ${interno ? '<span class="interno-tag">USO INTERNO — NÃO ENVIAR AO CLIENTE</span>' : `<span>Emitido em ${hoje}</span>`}</div>
     </div>
     <div class="dados">
@@ -2803,7 +2809,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 160px", gap: 12, fontSize: 14 }}>
           <div><span style={{ color: MUTED }}>Cliente: </span><b>{orc.clientes?.nome || "-"}</b></div>
           <div><span style={{ color: MUTED }}>Evento: </span><b>{orc.evento}</b></div>
-          <Field label="OR (nº)"><input style={{ ...CELULA_DIGITAVEL, fontSize: 14 }} value={numeroOr} onChange={(e) => { setSalvo(false); setNumeroOr(e.target.value); }} placeholder="839/26" /></Field>
+          <Field label="PR (nº)"><input style={{ ...CELULA_DIGITAVEL, fontSize: 14 }} value={numeroOr} onChange={(e) => { setSalvo(false); setNumeroOr(e.target.value); }} placeholder="839/26" /></Field>
         </div>
       </Card>
 
@@ -3228,7 +3234,7 @@ function FaturamentoFinanceiroView({ session, setErro }) {
         <div style={{ padding: "14px 18px", fontWeight: 600, color: NAVY }}>Autorizados para faturar</div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr style={{ background: BG }}>
-            <th style={th}>Autorizado em</th><th style={th}>OR</th><th style={th}>Evento</th><th style={th}>Cliente</th>
+            <th style={th}>Autorizado em</th><th style={th}>PR</th><th style={th}>Evento</th><th style={th}>Cliente</th>
             <th style={th}>Data evento</th><th style={{ ...th, textAlign: "right" }}>Valor</th><th style={th}></th>
           </tr></thead>
           <tbody>
@@ -3279,7 +3285,7 @@ function FaturamentoFinanceiroView({ session, setErro }) {
         <div style={{ padding: "14px 18px", fontWeight: 600, color: NAVY }}>Faturados recentes</div>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr style={{ background: BG }}>
-            <th style={th}>Data</th><th style={th}>OR</th><th style={th}>Evento</th><th style={th}>Cliente</th><th style={th}>NF</th><th style={{ ...th, textAlign: "right" }}>Valor</th>
+            <th style={th}>Data</th><th style={th}>PR</th><th style={th}>Evento</th><th style={th}>Cliente</th><th style={th}>NF</th><th style={{ ...th, textAlign: "right" }}>Valor</th>
           </tr></thead>
           <tbody>
             {recentes.length === 0 && <tr><td colSpan={6} style={{ ...td, color: MUTED }}>Nada faturado por aqui ainda.</td></tr>}
@@ -3317,7 +3323,7 @@ function calcularResultado({ lancs, orcs, centrosPorId, empresaFiltro }) {
     const ls = lancs.filter((l) => l.empresa === emp);
     const mapa = {};
     orcs.filter((o) => (o.empresa || "prosign") === emp && ehVenda(o.status)).forEach((o) => {
-      mapa[o.id] = { id: o.id, empresa: emp, evento: o.evento, numeroOr: o.numeroOr || "", cliente: o.clienteNome || "", receita: Number(o.valor) || 0, direto: 0, fixo: 0 };
+      mapa[o.id] = { id: o.id, empresa: emp, evento: o.evento, numeroOr: o.numeroOr || "", cliente: o.clienteNome || "", contrato: !!o.contrato, receita: Number(o.valor) || 0, direto: 0, fixo: 0 };
     });
     let fixos = 0;
     for (const l of ls) {
@@ -3335,7 +3341,7 @@ function calcularResultado({ lancs, orcs, centrosPorId, empresaFiltro }) {
         if (l.orcamento_id) {
           if (!mapa[l.orcamento_id]) {
             const oi = l.orcamentos || {};
-            mapa[l.orcamento_id] = { id: l.orcamento_id, empresa: emp, evento: oi.evento || "(evento de outro mês)", numeroOr: oi.numero_or || "", cliente: oi.clientes?.nome || "", receita: 0, direto: 0, fixo: 0 };
+            mapa[l.orcamento_id] = { id: l.orcamento_id, empresa: emp, evento: oi.evento || "(evento de outro mês)", numeroOr: oi.numero_or || "", cliente: oi.clientes?.nome || "", contrato: !!oi.contrato, receita: 0, direto: 0, fixo: 0 };
           }
           mapa[l.orcamento_id].direto += v;
         } else tot.variaveisSemEvento += v;
@@ -3447,14 +3453,14 @@ function BuscaOrcamento({ session, setErro, onEscolher }) {
     <div>
       <div style={{ display: "flex", gap: 8 }}>
         <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") buscar(); }}
-          placeholder="Evento, cliente, nº OR ou valor" style={{ ...inputStyle, flex: 1 }} />
+          placeholder="Evento, cliente, nº PR ou valor" style={{ ...inputStyle, flex: 1 }} />
         <button onClick={buscar} style={btnGhostSmall}>{buscando ? "Buscando..." : "Buscar"}</button>
       </div>
       {res.length > 0 && (
         <div style={{ marginTop: 8, border: `1px solid ${BORDER}`, borderRadius: 8, maxHeight: 220, overflowY: "auto", background: "#fff" }}>
           {res.map((o) => (
             <div key={o.id} onClick={() => onEscolher(o)} style={{ padding: "8px 10px", cursor: "pointer", borderBottom: `1px solid ${BORDER}`, fontSize: 12 }}>
-              <b>{o.evento}</b> · {o.clientes?.nome || "sem cliente"} · {fmtDataBR(o.data_evento)} · {brl(o.valor)} {o.numero_or ? `· OR ${o.numero_or}` : ""} · {nomeEmpresa(o.empresa || "prosign")}
+              <b>{o.evento}</b> · {o.clientes?.nome || "sem cliente"} · {fmtDataBR(o.data_evento)} · {brl(o.valor)} {o.numero_or ? `· PR ${o.numero_or}` : ""} · {nomeEmpresa(o.empresa || "prosign")}
             </div>
           ))}
         </div>
@@ -3703,6 +3709,7 @@ function LancamentosFinView({ session, setErro, centros }) {
 function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
   const [mes, setMes] = useState(mesAtualFin());
   const [empresa, setEmpresa] = useState("todas");
+  const [tipoServ, setTipoServ] = useState("todos");
   const [lancs, setLancs] = useState([]);
   const [orcs, setOrcs] = useState([]);
   const [carregando, setCarregando] = useState(false);
@@ -3712,7 +3719,7 @@ function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
   useEffect(() => {
     setCarregando(true);
     Promise.all([
-      sbRequest(`lancamentos_fin?select=*,orcamentos(evento,numero_or,empresa,clientes(nome))&competencia=eq.${mes}-01&limit=3000`, session),
+      sbRequest(`lancamentos_fin?select=*,orcamentos(evento,numero_or,empresa,contrato,clientes(nome))&competencia=eq.${mes}-01&limit=3000`, session),
       sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${mes}-01&status=in.(aprovado,autorizado_faturamento,faturado)&limit=2000`, session),
     ])
       .then(([a, b]) => { setLancs(a || []); setOrcs((b || []).map(orcamentoFromRow)); })
@@ -3722,6 +3729,8 @@ function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
 
   const r = useMemo(() => calcularResultado({ lancs, orcs, centrosPorId: porId, empresaFiltro: empresa }), [lancs, orcs, porId, empresa]);
   const t = r.tot;
+  const eventosVis = r.eventos.filter((e) => tipoServ === "todos" || (tipoServ === "contrato") === !!e.contrato);
+  const subt = eventosVis.reduce((a, e) => ({ receita: a.receita + e.receita, direto: a.direto + e.direto, fixo: a.fixo + e.fixo, resultado: a.resultado + e.resultado }), { receita: 0, direto: 0, fixo: 0, resultado: 0 });
   const grupos = Object.entries(r.porGrupo).sort((a, b) => a[0].localeCompare(b[0]));
 
   return (
@@ -3729,6 +3738,13 @@ function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16 }}>
         <Field label="Competência"><input type="month" value={mes} onChange={(e) => e.target.value && setMes(e.target.value)} style={inputStyle} /></Field>
         <Field label="Empresa"><FiltroEmpresa value={empresa} onChange={setEmpresa} rotuloTodas="Consolidado (Prosign + VS)" /></Field>
+        <Field label="Tipo de serviço (tabela de eventos)">
+          <select value={tipoServ} onChange={(e) => setTipoServ(e.target.value)} style={inputStyle}>
+            <option value="todos">Contrato + fora do contrato</option>
+            <option value="contrato">Somente contrato</option>
+            <option value="fora">Somente fora do contrato</option>
+          </select>
+        </Field>
         {carregando && <span style={{ color: MUTED, fontSize: 13 }}>Carregando...</span>}
       </div>
 
@@ -3761,11 +3777,11 @@ function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
             <th style={{ ...thS, textAlign: "right" }}>Resultado</th><th style={{ ...thS, textAlign: "right" }}>%</th>
           </tr></thead>
           <tbody>
-            {r.eventos.length === 0 && <tr><td colSpan={9} style={{ ...tdS, color: MUTED }}>Nenhuma venda nesta competência.</td></tr>}
-            {r.eventos.map((e) => (
+            {eventosVis.length === 0 && <tr><td colSpan={9} style={{ ...tdS, color: MUTED }}>Nenhuma venda nesta competência.</td></tr>}
+            {eventosVis.map((e) => (
               <tr key={e.id} style={{ borderTop: `1px solid ${BORDER}` }}>
                 <td style={tdS}><ChipEmpresa id={e.empresa} /></td>
-                <td style={{ ...tdS, fontWeight: 600 }}>{onAbrirEvento && e.receita > 0 ? <span onClick={() => onAbrirEvento(e.id)} style={{ cursor: "pointer", color: NAVY, textDecoration: "underline" }}>{e.evento}</span> : e.evento}{e.numeroOr ? <span style={{ color: MUTED, fontWeight: 400 }}> · OR {e.numeroOr}</span> : ""}</td>
+                <td style={{ ...tdS, fontWeight: 600 }}>{onAbrirEvento && e.receita > 0 ? <span onClick={() => onAbrirEvento(e.id)} style={{ cursor: "pointer", color: NAVY, textDecoration: "underline" }}>{e.evento}</span> : e.evento}{e.numeroOr ? <span style={{ color: MUTED, fontWeight: 400 }}> · PR {e.numeroOr}</span> : ""}{e.contrato && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#1D6FA5", borderRadius: 4, padding: "1px 5px" }}>CONTRATO</span>}</td>
                 <td style={tdS}>{e.cliente || "—"}</td>
                 <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(e.receita)}</td>
                 <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(e.direto)}</td>
@@ -3775,6 +3791,17 @@ function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
                 <td style={{ ...tdS, textAlign: "right" }}>{pctFmt(e.pct)}</td>
               </tr>
             ))}
+            {tipoServ !== "todos" && eventosVis.length > 0 && (
+              <tr style={{ borderTop: `2px solid ${BORDER}`, background: BG, fontWeight: 700 }}>
+                <td style={tdS} colSpan={3}>Subtotal ({tipoServ === "contrato" ? "contrato" : "fora do contrato"})</td>
+                <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(subt.receita)}</td>
+                <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(subt.direto)}</td>
+                <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(subt.receita - subt.direto)}</td>
+                <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(subt.fixo)}</td>
+                <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, color: subt.resultado >= 0 ? "#2E7D5B" : DANGER }}>{brl(subt.resultado)}</td>
+                <td style={{ ...tdS, textAlign: "right" }}>{pctFmt(subt.receita > 0 ? subt.resultado / subt.receita : null)}</td>
+              </tr>
+            )}
           </tbody>
         </table>
       </Card>
@@ -3886,11 +3913,12 @@ function CustosEventoView({ orcamentoId, session, setErro, onVoltar }) {
     <div>
       <button onClick={onVoltar} style={{ ...btnGhostSmall, marginBottom: 14 }}>← Voltar aos orçamentos</button>
       <div style={{ marginBottom: 16 }}>
-        <h3 style={{ margin: 0, color: NAVY }}>Custos do evento · {orc.evento} {orc.numero_or ? <span style={{ color: MUTED, fontWeight: 400, fontSize: 14 }}>· OR {orc.numero_or}</span> : null}</h3>
+        <h3 style={{ margin: 0, color: NAVY }}>Custos do evento · {orc.evento} {orc.numero_or ? <span style={{ color: MUTED, fontWeight: 400, fontSize: 14 }}>· PR {orc.numero_or}</span> : null}</h3>
         <div style={{ fontSize: 13, color: MUTED, marginTop: 4, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <ChipEmpresa id={empresa} />
           <span>{orc.clientes?.nome || "—"}</span>
           {st && <span style={{ color: st.color, fontWeight: 600 }}>· {st.label}</span>}
+          <span>· {orc.contrato ? "Contrato" : "Fora do contrato"}</span>
           {mes && <span>· competência {mes.split("-").reverse().join("/")}</span>}
         </div>
       </div>
