@@ -2400,10 +2400,10 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
 // (mesma lógica da planilha "Previsão de custo")
 // =========================================================
 const CATEGORIAS_ITEM = [
-  { id: "lona_adesivo", label: "Lonas / Adesivos", cor: "#ED1C24" },
-  { id: "outros_gera_lucro", label: "Outros custos (gera lucro)", cor: "#ED1C24" },
-  { id: "sublocacao_gera_lucro", label: "Outros custos sublocação (gera lucro)", cor: "#DD0806" },
-  { id: "servico_nao_gera_lucro", label: "Outros serviços (não gera lucro)", cor: "#F58220" },
+  { id: "lona_adesivo", label: "Comunicação visual", cor: "#ED1C24" },
+  { id: "outros_gera_lucro", label: "Outros centros de resultado", cor: "#ED1C24" },
+  { id: "sublocacao_gera_lucro", label: "Outros centros (sublocação)", cor: "#DD0806" },
+  { id: "servico_nao_gera_lucro", label: "Logística", cor: "#F58220" },
 ];
 
 // aceita "1,5" ou "1.5"
@@ -2442,7 +2442,7 @@ function itemFromRow(r) {
     id: r.id, categoria: r.categoria, descricao: r.descricao || "",
     largura: r.largura ?? 0, altura: r.altura ?? 0, qtd: r.qtd ?? 1, diaria: r.diaria ?? 1,
     valorCusto: r.valor_custo ?? 0, status: r.status || "", fornecedor: r.fornecedor || "",
-    contratado: r.contratado || "", ordemPagto: r.ordem_pagto || "", itemId: r.item_id || null,
+    contratado: r.contratado || "", ordemPagto: r.ordem_pagto || "", itemId: r.item_id || null, centroId: r.centro_resultado_id || null,
   };
 }
 
@@ -2496,7 +2496,7 @@ function LinhaPct({ rotulo, valor, setValor, valorR, verde, onEdit }) {
 // Gera o PDF da composição numa janela de impressão (o navegador salva como PDF).
 // modo "cliente": só itens + valor final (sem custos, margem, impostos ou fornecedores).
 // modo "interno": layout da planilha, com custos e margem.
-function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo }) {
+function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, nomeCentro = () => "" }) {
   const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const num = (v, casas = 2) => numBR(v).toLocaleString("pt-BR", { maximumFractionDigits: casas });
   const dataBR = (d) => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : "-");
@@ -2516,8 +2516,8 @@ function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo }
         cab = ["Item", "Qtd", "Diária", "Unit", "Contratado", "Ordem pagto", "Vlr custo", "Status", "Fornecedor"];
         linhas = lista.map((i) => [i.descricao, num(i.qtd), num(i.diaria), brl(numBR(i.valorCusto)), i.contratado, i.ordemPagto, brl(custoDoItem(i)), i.status, i.fornecedor]);
       } else {
-        cab = ["Descrição", "Qtd.", "Diária", "Valor custo", "Vlr custo", "Status", "Fornecedor"];
-        linhas = lista.map((i) => [i.descricao, num(i.qtd), num(i.diaria), brl(numBR(i.valorCusto)), brl(custoDoItem(i)), i.status, i.fornecedor]);
+        cab = ["Descrição", "Centro de resultado", "Qtd.", "Diária", "Valor custo", "Vlr custo", "Status", "Fornecedor"];
+        linhas = lista.map((i) => [i.descricao, nomeCentro(i.centroId), num(i.qtd), num(i.diaria), brl(numBR(i.valorCusto)), brl(custoDoItem(i)), i.status, i.fornecedor]);
       }
     } else {
       if (serv) return ""; // serviços internos não aparecem pro cliente
@@ -2552,11 +2552,10 @@ function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo }
   const totaisInternos = `
     <div class="faixa" style="background:#ED1C24">TOTAIS</div>
     <table class="resumo"><tbody>
-      ${linhaR("Total custo lonas / adesivos", brl(calc.totalLona))}
-      ${linhaR("Total custo outros", brl(calc.totalOutros))}
-      ${linhaR("Total custo sublocação", brl(calc.totalSub))}
+      ${linhaR("Total custo comunicação visual", brl(calc.totalLona))}
+      ${linhaR("Total custo outros centros de resultado", brl(calc.totalOutros + calc.totalSub))}
       ${linhaR("Total 3", brl(calc.total3), true)}
-      ${linhaR("Total 4 (outros serviços)", brl(calc.total4), true)}
+      ${linhaR("Total 4 (logística)", brl(calc.total4), true)}
       ${linhaR("Total 6 CUSTOS (Total 3 + Total 4)", brl(calc.total6), true)}
     </tbody></table>
     <div class="faixa" style="background:#ED1C24">IMPOSTOS</div>
@@ -2627,6 +2626,94 @@ function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo }
   return true;
 }
 
+// Logos por empresa para o orçamento do cliente (enviar o arquivo e colar aqui como "data:image/png;base64,...")
+const LOGOS_EMPRESA = { prosign: null, vs: null };
+const RODAPE_EMPRESA = {
+  prosign: ["PROSIGN COMUNICAÇÃO VISUAL", "RUA JOÃO BASTOS VIEIRA, 304B, BAIRRO MONTE BELO", "VITÓRIA E.S CEP.: 29053 230", "CNPJ.: 07.614.049/0001-83", "TELEFAX: ( 27 ) 3321-7506 / www.prosign.com.br"],
+  vs: ["VS SERVIÇOS AUDIOVISUAIS"],
+};
+
+// Orçamento para o cliente: um item por centro de resultado, com descrição e valor (sem custos nem margem).
+function gerarOrcamentoCliente({ orc, numeroOr, grupos, total }) {
+  const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const dataBR = (d) => (d ? `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(d).slice(0, 4)}` : "");
+  const agora = new Date();
+  const hoje = agora.toLocaleDateString("pt-BR");
+  const validade = new Date(agora.getTime() + 15 * 86400000).toLocaleDateString("pt-BR");
+  const emp = orc.empresa === "vs" ? "vs" : "prosign";
+  const logo = LOGOS_EMPRESA[emp];
+  const c = orc.clientes || {};
+  const endereco = [c.end_logradouro, c.end_numero, c.end_complemento, c.end_bairro, c.end_cidade].filter(Boolean).join(", ");
+  const m = (v) => numBR(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const linhaDados = (...pares) => `<tr>${pares.map(([r, v, col]) => `<td class="r">${esc(r)}</td><td ${col ? `colspan="${col}"` : ""}>${esc(v)}</td>`).join("")}</tr>`;
+
+  const itensHtml = grupos.map((g, i) => `
+    <tr class="it"><td class="c">${String(i + 1).padStart(3, "0")}</td><td>${esc(String(g.titulo).toUpperCase())}</td><td class="c">un</td><td class="c">1</td><td class="c">1</td><td class="n">${m(g.valor)}</td><td class="n">${m(g.valor)}</td></tr>
+    ${g.descricao.trim() ? `<tr><td></td><td colspan="6" class="desc">${esc(g.descricao.trim())}</td></tr>` : ""}`).join("");
+
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+  <title>Orçamento ${esc(numeroOr || "")} - ${esc(orc.evento)}</title>
+  <style>
+    @page { size: A4; margin: 10mm; }
+    * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; font-size: 10px; color: #111; margin: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    table { width: 100%; border-collapse: collapse; }
+    td, th { border: 1px solid #222; padding: 3px 5px; vertical-align: top; }
+    .topo td { padding: 0; }
+    .box { text-align: center; font-size: 10px; padding: 8px 4px; }
+    .box b { font-size: 12px; color: #A6192E; display: block; }
+    .titulo { background: #BDBDBD; text-align: center; font-size: 22px; font-weight: 700; vertical-align: middle; }
+    .logo { text-align: center; vertical-align: middle; width: 130px; font-weight: 700; font-size: 14px; }
+    .logo img { max-width: 120px; max-height: 60px; }
+    .r { font-weight: 700; white-space: nowrap; }
+    .sec { background: #BDBDBD; color: #A6192E; text-align: center; font-weight: 700; font-size: 12px; }
+    .it td { font-size: 10.5px; }
+    .c { text-align: center; } .n { text-align: right; white-space: nowrap; }
+    th { background: #BDBDBD; font-size: 9.5px; }
+    .desc { white-space: pre-wrap; font-size: 10px; }
+    .tot td { background: #BDBDBD; font-weight: 700; }
+    .tot .vm { color: #A6192E; }
+    .rodape { margin-top: 26px; border-top: 1px solid #222; padding-top: 4px; text-align: center; font-size: 9px; }
+    tr { page-break-inside: avoid; }
+  </style></head><body>
+    <table class="topo"><tr>
+      <td class="box" style="width:130px"><b>PR${esc(numeroOr ? String(numeroOr).replace(/^PR\s*/i, "") : "")}</b>REVISÃO: 0<br>${hoje}</td>
+      <td class="titulo">PROJETO</td>
+      <td class="logo">${logo ? `<img src="${logo}" alt="">` : esc(RODAPE_EMPRESA[emp][0])}</td>
+    </tr></table>
+    <table style="margin-top:6px">
+      ${linhaDados(["CLIENTE:", c.nome || ""], ["CNPJ / CPF:", c.documento || ""])}
+      <tr><td class="r">ENDEREÇO:</td><td colspan="3">${esc(endereco)}</td></tr>
+      ${linhaDados(["CONTATO:", c.contato || ""], ["TELEFONE:", c.telefone || ""])}
+      ${linhaDados(["CELULAR:", c.celular || ""], ["E-MAIL:", c.email || ""])}
+      ${linhaDados(["EVENTO:", orc.evento || ""], ["VALIDADE PROPOSTA:", validade])}
+      <tr><td class="r">LOCAL:</td><td colspan="3">${esc(orc.local || "")}</td></tr>
+      <tr><td colspan="4" class="sec">DATAS DO EVENTO</td></tr>
+      ${linhaDados(["INÍCIO EVENTO:", dataBR(orc.data_evento)], ["TÉRM. MONTAGEM:", ""])}
+      ${linhaDados(["TÉRMINO EVENTO:", ""], ["INÍCIO DESMONTA.:", ""])}
+      ${linhaDados(["INÍCIO MONTAGEM:", ""], ["TÉRM. DESMONTA.:", ""])}
+      <tr><td colspan="4" class="sec">ITENS</td></tr>
+    </table>
+    <table style="margin-top:6px">
+      <thead><tr><th style="width:38px">ITEM</th><th>ITEM ORÇAMENTO</th><th style="width:34px">UND</th><th style="width:40px">QTDE</th><th style="width:48px">DIÁRIAS</th><th style="width:82px">VALOR UNITÁRIO (R$)</th><th style="width:82px">VALOR TOTAL (R$)</th></tr></thead>
+      <tbody>${itensHtml}
+        <tr class="tot"><td class="vm">${grupos.length}</td><td></td><td></td><td></td><td></td><td class="n vm">${m(total)}</td><td class="n vm">${m(total)}</td></tr>
+        <tr class="tot"><td colspan="5" style="border:none;background:none"></td><td class="n">SUBTOTAL (R$)</td><td class="n">${m(total)}</td></tr>
+        <tr class="tot"><td colspan="5" style="border:none;background:none"></td><td class="n">VALOR FINAL (R$)</td><td class="n">${m(total)}</td></tr>
+      </tbody>
+    </table>
+    <div class="rodape">${RODAPE_EMPRESA[emp].map((l, i) => (i === 0 ? `<b>${esc(l)}</b>` : esc(l))).join("<br>")}</div>
+    <script>window.onload = function () { setTimeout(function () { window.print(); }, 300); };<\/script>
+  </body></html>`;
+
+  const w = window.open("", "_blank");
+  if (!w) return false;
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  return true;
+}
+
 function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
@@ -2642,20 +2729,26 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const [ajuste, setAjuste] = useState("0");
   const [catalogo, setCatalogo] = useState([]);
   const [fornecedores, setFornecedores] = useState([]);
+  const [centros, setCentros] = useState([]);
+  const [grupoTxt, setGrupoTxt] = useState({}); // { chave: { titulo, descricao } }
+  const [centroNovo, setCentroNovo] = useState("");
 
   // sugestões do cadastro (itens e fornecedores); se o usuário não tem acesso, fica vazio e a tela funciona igual
   useEffect(() => {
     sbRequest("itens?select=*&ativo=eq.true&order=nome.asc&limit=1000", session).then((r) => setCatalogo(r || [])).catch(() => {});
     sbRequest("pessoas?select=nome&fornecedor=eq.true&ativo=eq.true&order=nome.asc&limit=1000", session).then((r) => setFornecedores((r || []).map((x) => x.nome))).catch(() => {});
+    sbRequest("centros_resultado?select=*&order=nome.asc", session).then((r) => setCentros(r || [])).catch(() => {});
   }, []); // eslint-disable-line
 
   useEffect(() => {
     setCarregando(true);
     Promise.all([
-      sbRequest(`orcamentos?select=*,clientes:pessoas(nome)&id=eq.${orcamentoId}`, session),
+      sbRequest(`orcamentos?select=*,clientes:pessoas(nome,documento,contato,telefone,celular,email,end_logradouro,end_numero,end_complemento,end_bairro,end_cidade)&id=eq.${orcamentoId}`, session),
       sbRequest(`orcamento_itens?select=*&orcamento_id=eq.${orcamentoId}&order=ordem.asc`, session),
+      sbRequest(`orcamento_grupos?select=*&orcamento_id=eq.${orcamentoId}`, session).catch(() => []),
     ])
-      .then(([o, its]) => {
+      .then(([o, its, gs]) => {
+        setGrupoTxt(Object.fromEntries((gs || []).map((g) => [g.chave, { titulo: g.titulo || "", descricao: g.descricao || "" }])));
         const row = (o || [])[0];
         setOrc(row || null);
         if (row) {
@@ -2673,11 +2766,57 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const params = { bv: numBR(bv) / 100, simples: numBR(simples) / 100, comissao: numBR(comissao) / 100, margem: numBR(margem) / 100 };
   const calc = useMemo(() => calcularComposicao(itens, params, numBR(ajuste)), [itens, bv, simples, comissao, margem, ajuste]); // eslint-disable-line
 
-  function addItem(categoria) {
+  // ---- centros de resultado: blocos da composição e agrupador de valores ----
+  const nCR = (t) => String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase();
+  const idCV = centros.find((c) => nCR(c.nome) === "COMUNICACAO VISUAL")?.id || null;
+  const idLOG = centros.find((c) => nCR(c.nome) === "LOGISTICA")?.id || null;
+  const nomeCentro = (id) => centros.find((c) => c.id === id)?.nome || "";
+  const ehOutros = (cat) => cat === "outros_gera_lucro" || cat === "sublocacao_gera_lucro";
+  // "tipo" de um item do cadastro dentro da composição
+  const tipoDoCadastro = (c) => {
+    if (c.centro_resultado_id && c.centro_resultado_id === idCV) return "lona_adesivo";
+    if (c.centro_resultado_id && c.centro_resultado_id === idLOG) return "servico_nao_gera_lucro";
+    if (c.centro_resultado_id) return "outros_gera_lucro";
+    return c.categoria === "sublocacao_gera_lucro" ? "outros_gera_lucro" : c.categoria;
+  };
+  const tipoDaLinha = (cat) => (ehOutros(cat) ? "outros_gera_lucro" : cat);
+  const chaveGrupo = (it) => {
+    if (it.categoria === "lona_adesivo") return "cv";
+    if (it.categoria === "servico_nao_gera_lucro") return "log";
+    if (it.centroId) return it.centroId === idCV ? "cv" : it.centroId === idLOG ? "log" : it.centroId;
+    return "sem";
+  };
+  const nomeDoGrupo = (chave) => (chave === "cv" ? "Comunicação visual" : chave === "log" ? "Logística operacional" : chave === "sem" ? "Sem centro de resultado" : nomeCentro(chave) || "Centro de resultado");
+
+  const grupos = useMemo(() => {
+    const m = {};
+    for (const it of itens) {
+      const k = chaveGrupo(it);
+      if (!m[k]) m[k] = { chave: k, custo: 0, descricoes: [] };
+      m[k].custo += custoDoItem(it);
+      if (it.descricao) m[k].descricoes.push(it.descricao);
+    }
+    const lista = Object.values(m).filter((g) => g.custo > 0 || g.descricoes.length);
+    const ordem = (g) => (g.chave === "cv" ? "0" : g.chave === "log" ? "9" : g.chave === "sem" ? "8" : "1" + nomeDoGrupo(g.chave));
+    lista.sort((a, b) => ordem(a).localeCompare(ordem(b)));
+    // valor de venda por grupo: o preço final rateado pelo custo de cada grupo (soma exata, ajuste de centavos no maior)
+    const alvo = Math.round(calc.precoFinal * 100);
+    let soma = 0;
+    lista.forEach((g) => { g.centavos = calc.total6 > 0 ? Math.round((alvo * g.custo) / calc.total6) : 0; soma += g.centavos; });
+    if (lista.length && calc.total6 > 0 && soma !== alvo) {
+      const maior = lista.reduce((a, b) => (b.custo > a.custo ? b : a), lista[0]);
+      maior.centavos += alvo - soma;
+    }
+    lista.forEach((g) => { g.valor = g.centavos / 100; g.pct = calc.total6 > 0 ? g.custo / calc.total6 : 0; });
+    return lista;
+  }, [itens, centros, calc.precoFinal, calc.total6]); // eslint-disable-line
+  const setGrupo = (chave, campo, valor) => { setSalvo(false); setGrupoTxt((g) => ({ ...g, [chave]: { titulo: "", descricao: "", ...g[chave], [campo]: valor } })); };
+
+  function addItem(categoria, centroId = null) {
     setSalvo(false);
     setItens((is) => [...is, {
       id: crypto.randomUUID(), categoria, descricao: "", largura: "", altura: "", qtd: 1, diaria: 1,
-      valorCusto: "", status: "", fornecedor: "", contratado: "", ordemPagto: "", itemId: null,
+      valorCusto: "", status: "", fornecedor: "", contratado: "", ordemPagto: "", itemId: null, centroId,
     }]);
   }
   function setItem(id, campo, valor) {
@@ -2687,12 +2826,13 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       const novo = { ...i, [campo]: valor };
       if (campo === "descricao") {
         // o texto bate com um item do cadastro? então o item fica vinculado (e aparece a foto)
-        const ref0 = catalogo.find((c) => c.categoria === i.categoria && c.nome.trim().toUpperCase() === String(valor).trim().toUpperCase());
+        const ref0 = catalogo.find((c) => tipoDoCadastro(c) === tipoDaLinha(i.categoria) && c.nome.trim().toUpperCase() === String(valor).trim().toUpperCase());
         novo.itemId = ref0 ? ref0.id : null;
+        if (ref0 && ehOutros(i.categoria) && ref0.centro_resultado_id) novo.centroId = ref0.centro_resultado_id;
       }
       // escolheu um item do cadastro: traz o custo padrão se o custo ainda está vazio
       if (campo === "descricao" && !numBR(i.valorCusto)) {
-        const ref = catalogo.find((c) => c.categoria === i.categoria && c.nome === valor);
+        const ref = catalogo.find((c) => tipoDoCadastro(c) === tipoDaLinha(i.categoria) && c.nome === valor);
         if (ref && Number(ref.custo_padrao) > 0) novo.valorCusto = String(ref.custo_padrao).replace(".", ",");
       }
       return novo;
@@ -2712,7 +2852,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
           id: i.id, orcamento_id: orcamentoId, categoria: i.categoria, descricao: i.descricao || null,
           largura: numBR(i.largura), altura: numBR(i.altura), qtd: numBR(i.qtd), diaria: numBR(i.diaria),
           valor_custo: numBR(i.valorCusto), status: i.status || null, fornecedor: i.fornecedor || null,
-          contratado: i.contratado || null, ordem_pagto: i.ordemPagto || null, item_id: i.itemId || null, ordem: idx,
+          contratado: i.contratado || null, ordem_pagto: i.ordemPagto || null, item_id: i.itemId || null, centro_resultado_id: i.centroId || null, ordem: idx,
         }));
         await sbRequest("orcamento_itens?on_conflict=id", session, {
           method: "POST", body, extraHeaders: { Prefer: "resolution=merge-duplicates,return=minimal" },
@@ -2730,6 +2870,16 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
           valor: Math.round(calc.precoFinal * 100) / 100,
         },
       });
+      // descrições do orçamento para o cliente (só dos grupos que existem)
+      const chaves = grupos.map((g) => g.chave);
+      if (chaves.length) {
+        await sbRequest("orcamento_grupos?on_conflict=orcamento_id,chave", session, {
+          method: "POST",
+          body: chaves.map((k) => ({ orcamento_id: orcamentoId, chave: k, titulo: grupoTxt[k]?.titulo || null, descricao: grupoTxt[k]?.descricao || null })),
+          extraHeaders: { Prefer: "resolution=merge-duplicates,return=minimal" },
+        });
+      }
+      await sbRequest(`orcamento_grupos?orcamento_id=eq.${orcamentoId}${chaves.length ? `&chave=not.in.(${chaves.join(",")})` : ""}`, session, { method: "DELETE" });
       setSalvo(true);
     } catch (e) { setErro(msgSupabase(e)); }
     finally { setSalvando(false); }
@@ -2738,8 +2888,13 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const travado = orc?.status === "faturado";
 
   function abrirPdf(modo) {
-    const ok = gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo });
+    const ok = gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, nomeCentro });
     if (!ok) setErro("O navegador bloqueou a janela do PDF. Libere pop-ups para este site e tente de novo.");
+  }
+  function abrirOrcamentoCliente() {
+    const gs = grupos.map((g) => ({ titulo: (grupoTxt[g.chave]?.titulo || "").trim() || (g.chave === "sem" ? "Outros" : nomeDoGrupo(g.chave)), descricao: grupoTxt[g.chave]?.descricao || "", valor: g.valor }));
+    const ok = gerarOrcamentoCliente({ orc, numeroOr, grupos: gs, total: calc.precoFinal });
+    if (!ok) setErro("O navegador bloqueou a janela do orçamento. Libere pop-ups para este site e tente de novo.");
   }
 
   if (carregando) return <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>;
@@ -2748,27 +2903,25 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const th = { padding: "6px 8px", fontSize: 11, fontWeight: 700, color: "#374151", textAlign: "center", background: "#F3F4F6", border: `1px solid ${BORDER}` };
   const td = { padding: 3, border: `1px solid ${BORDER}`, verticalAlign: "middle" };
 
-  function renderSecao(cat) {
-    const lista = itens.filter((i) => i.categoria === cat.id);
-    const ehLona = cat.id === "lona_adesivo";
-    const ehServico = cat.id === "servico_nao_gera_lucro";
+  function renderTabela({ titulo, cor, lista, tipo, adicionar }) {
+    const ehLona = tipo === "lona_adesivo";
+    const ehServico = tipo === "servico_nao_gera_lucro";
+    const catIdLista = ehLona ? "lona_adesivo" : ehServico ? "servico_nao_gera_lucro" : "outros_gera_lucro";
     return (
       <div style={{ marginBottom: 18, border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", background: "#fff" }}>
-        <Faixa cor={cat.cor}>{cat.label.toUpperCase()}</Faixa>
-        <datalist id={`dl-itens-${cat.id}`}>{catalogo.filter((c) => c.categoria === cat.id).map((c) => <option key={c.nome} value={c.nome} />)}</datalist>
-        <datalist id={`dl-forn-${cat.id}`}>{fornecedores.map((n) => <option key={n} value={n} />)}</datalist>
+        <Faixa cor={cor}>{titulo.toUpperCase()}</Faixa>
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
             <thead>
               <tr>
                 {ehLona && ["Item", "Largura", "Altura", "Qtd.", "m²/ml", "Valor custo m²", "Vlr custo", "Status", "Fornecedor", ""].map((h) => <th key={h} style={th}>{h}</th>)}
                 {ehServico && ["Item", "Qtd", "Diária", "Unit", "Contratado", "Ordem pagto", "Vlr custo", "Status", "Fornecedor", ""].map((h) => <th key={h} style={th}>{h}</th>)}
-                {!ehLona && !ehServico && ["Descrição", "Qtd.", "Diária", "Valor custo", "Vlr custo", "Status", "Fornecedor", ""].map((h) => <th key={h} style={th}>{h}</th>)}
+                {!ehLona && !ehServico && ["Descrição", "Qtd.", "Diária", "Valor custo", "Vlr custo", "Status", "Fornecedor", "Centro de resultado", ""].map((h) => <th key={h} style={th}>{h}</th>)}
               </tr>
             </thead>
             <tbody>
               {lista.length === 0 && (
-                <tr><td colSpan={10} style={{ padding: 12, color: MUTED, fontSize: 12, textAlign: "center" }}>Nenhum item. Use "Adicionar linha".</td></tr>
+                <tr><td colSpan={11} style={{ padding: 12, color: MUTED, fontSize: 12, textAlign: "center" }}>Nenhum item. Use "Adicionar linha".</td></tr>
               )}
               {lista.map((it) => (
                 <tr key={it.id}>
@@ -2779,7 +2932,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
                         const url = urlImagemItem(ref?.imagem_path);
                         return url ? <a href={url} target="_blank" rel="noreferrer" title={ref.nome}><img src={url} alt="" style={{ width: 34, height: 34, objectFit: "cover", borderRadius: 4, border: `1px solid ${BORDER}`, display: "block" }} /></a> : null;
                       })()}
-                      <div style={{ flex: 1 }}><Entrada it={it} campo="descricao" tipo="txt" onSet={setItem} lista={`dl-itens-${it.categoria}`} /></div>
+                      <div style={{ flex: 1 }}><Entrada it={it} campo="descricao" tipo="txt" onSet={setItem} lista={`dl-itens-${catIdLista}`} /></div>
                     </div>
                   </td>
                   {ehLona && (
@@ -2809,7 +2962,15 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
                   )}
                   <td style={{ ...td, ...CELULA_CALCULADA, width: 100 }}>{brl(custoDoItem(it))}</td>
                   <td style={{ ...td, width: 90 }}><Entrada it={it} campo="status" tipo="txt" onSet={setItem} /></td>
-                  <td style={{ ...td, width: 120 }}><Entrada it={it} campo="fornecedor" tipo="txt" onSet={setItem} lista={`dl-forn-${it.categoria}`} /></td>
+                  <td style={{ ...td, width: 120 }}><Entrada it={it} campo="fornecedor" tipo="txt" onSet={setItem} lista="dl-forn" /></td>
+                  {!ehLona && !ehServico && (
+                    <td style={{ ...td, width: 150 }}>
+                      <select style={{ ...CELULA_DIGITAVEL, padding: "5px 4px" }} value={it.centroId || ""} onChange={(e) => setItem(it.id, "centroId", e.target.value || null)}>
+                        <option value="">— sem centro —</option>
+                        {centros.filter((c) => c.ativo || c.id === it.centroId).map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+                      </select>
+                    </td>
+                  )}
                   <td style={{ ...td, width: 36, textAlign: "center" }}><BotaoRemover id={it.id} onRemover={removerItem} /></td>
                 </tr>
               ))}
@@ -2817,7 +2978,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
           </table>
         </div>
         <div style={{ padding: 8 }}>
-          <button onClick={() => addItem(cat.id)} style={btnGhostSmall}><Plus size={12} style={{ verticalAlign: -2 }} /> Adicionar linha</button>
+          <button onClick={adicionar} style={btnGhostSmall}><Plus size={12} style={{ verticalAlign: -2 }} /> Adicionar linha</button>
         </div>
       </div>
     );
@@ -2829,7 +2990,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         <button onClick={onVoltar} style={btnGhostSmall}>← Voltar aos orçamentos</button>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button onClick={() => abrirPdf("interno")} style={btnGhostSmall} title="Layout da planilha, com custos e margem">PDF interno (custos)</button>
-          <button onClick={() => abrirPdf("cliente")} style={{ ...btnGhostSmall, borderColor: GOLD, color: GOLD, fontWeight: 600 }} title="Itens e valor total, sem custos nem margem">PDF para o cliente</button>
+          <button onClick={abrirOrcamentoCliente} style={{ ...btnGhostSmall, borderColor: GOLD, color: GOLD, fontWeight: 600 }} title="Documento para o cliente: um item por centro de resultado, com descrição e valor">Orçamento para cliente</button>
           <button onClick={handleSalvar} disabled={salvando || travado} style={btnPrimary}>
             <Save size={15} /> {salvando ? "Salvando..." : salvo ? "Salvo ✓" : "Salvar composição"}
           </button>
@@ -2850,18 +3011,45 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         </div>
       </Card>
 
-      {CATEGORIAS_ITEM.map((cat) => <div key={cat.id}>{renderSecao(cat)}</div>)}
+      {(() => {
+        // listas de sugestões (itens do cadastro) por tipo de bloco
+        const dl = (tipo) => <datalist id={`dl-itens-${tipo}`}>{catalogo.filter((c) => tipoDoCadastro(c) === tipo).map((c) => <option key={c.id} value={c.nome} />)}</datalist>;
+        const outros = itens.filter((i) => ehOutros(i.categoria));
+        const chavesOutros = [...new Set(outros.map((i) => i.centroId || ""))].sort((a, b) => (a === "" ? 1 : b === "" ? -1 : nomeCentro(a).localeCompare(nomeCentro(b))));
+        const centrosParaAdicionar = centros.filter((c) => c.ativo && c.id !== idCV && c.id !== idLOG);
+        return (
+          <>
+            {dl("lona_adesivo")}{dl("outros_gera_lucro")}{dl("servico_nao_gera_lucro")}
+            <datalist id="dl-forn">{fornecedores.map((n) => <option key={n} value={n} />)}</datalist>
+            {renderTabela({ titulo: "Comunicação visual", cor: "#ED1C24", lista: itens.filter((i) => i.categoria === "lona_adesivo"), tipo: "lona_adesivo", adicionar: () => addItem("lona_adesivo", idCV) })}
+            {chavesOutros.map((cid) => (
+              <div key={cid || "sem"}>
+                {renderTabela({ titulo: cid ? nomeCentro(cid) || "Centro de resultado" : "Sem centro de resultado", cor: cid ? "#ED1C24" : "#8A8F98", lista: outros.filter((i) => (i.centroId || "") === cid), tipo: "outros", adicionar: () => addItem("outros_gera_lucro", cid || null) })}
+              </div>
+            ))}
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 18, padding: 10, border: `1px dashed ${BORDER}`, borderRadius: 8, background: "#fff" }}>
+              <span style={{ fontSize: 13, color: MUTED }}>Adicionar item em outro centro de resultado:</span>
+              <select style={{ ...CELULA_DIGITAVEL, width: 220 }} value={centroNovo} onChange={(e) => setCentroNovo(e.target.value)}>
+                <option value="">— escolha o centro —</option>
+                {centrosParaAdicionar.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+              </select>
+              <button disabled={!centroNovo} onClick={() => { addItem("outros_gera_lucro", centroNovo); setCentroNovo(""); }} style={btnGhostSmall}><Plus size={12} style={{ verticalAlign: -2 }} /> Adicionar linha</button>
+              {centros.length === 0 && <span style={{ fontSize: 12, color: MUTED }}>(cadastre os centros em Cadastros → Centros de resultado)</span>}
+            </div>
+            {renderTabela({ titulo: "Logística", cor: "#F58220", lista: itens.filter((i) => i.categoria === "servico_nao_gera_lucro"), tipo: "servico_nao_gera_lucro", adicionar: () => addItem("servico_nao_gera_lucro", idLOG) })}
+          </>
+        );
+      })()}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 18, alignItems: "start" }}>
         <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", background: "#fff" }}>
           <Faixa cor="#ED1C24">TOTAIS</Faixa>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <tbody>
-              <LinhaTotal rotulo="Total custo lonas / adesivos" valor={brl(calc.totalLona)} />
-              <LinhaTotal rotulo="Total custo outros" valor={brl(calc.totalOutros)} />
-              <LinhaTotal rotulo="Total custo sublocação" valor={brl(calc.totalSub)} />
+              <LinhaTotal rotulo="Total custo comunicação visual" valor={brl(calc.totalLona)} />
+              <LinhaTotal rotulo="Total custo outros centros de resultado" valor={brl(calc.totalOutros + calc.totalSub)} />
               <LinhaTotal rotulo="Total 3" valor={brl(calc.total3)} forte />
-              <LinhaTotal rotulo="Total 4 (outros serviços)" valor={brl(calc.total4)} forte />
+              <LinhaTotal rotulo="Total 4 (logística)" valor={brl(calc.total4)} forte />
               <LinhaTotal rotulo="Total 6 CUSTOS (Total 3 + Total 4)" valor={brl(calc.total6)} forte />
             </tbody>
           </table>
@@ -2909,6 +3097,54 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", background: "#fff", marginTop: 18 }}>
+        <Faixa cor="#152A4A">VALORES POR CENTRO DE RESULTADO · ORÇAMENTO PARA O CLIENTE</Faixa>
+        <div style={{ padding: "8px 12px", fontSize: 12, color: MUTED }}>
+          O preço final é dividido entre os centros na proporção do custo de cada um. A descrição é o que o cliente lê no orçamento (os custos e a margem não aparecem).
+        </div>
+        {grupos.some((g) => g.chave === "sem") && (
+          <div style={{ padding: "6px 12px", fontSize: 12, color: DANGER }}>Há itens sem centro de resultado. Escolha o centro na última coluna de cada item para eles entrarem no grupo certo.</div>
+        )}
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+            <thead><tr>
+              {["Item", "Título no orçamento", "Custo", "%", "Valor de venda", "Descrição para o cliente"].map((h) => <th key={h} style={th}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {grupos.length === 0 && <tr><td colSpan={6} style={{ padding: 12, color: MUTED, fontSize: 12, textAlign: "center" }}>Lance os itens acima para formar os grupos.</td></tr>}
+              {grupos.map((g, idx) => (
+                <tr key={g.chave}>
+                  <td style={{ ...td, textAlign: "center", width: 50 }}>{String(idx + 1).padStart(3, "0")}</td>
+                  <td style={{ ...td, width: 200 }}>
+                    <input style={CELULA_DIGITAVEL} value={grupoTxt[g.chave]?.titulo || ""} placeholder={nomeDoGrupo(g.chave)} onChange={(e) => setGrupo(g.chave, "titulo", e.target.value)} />
+                  </td>
+                  <td style={{ ...td, ...CELULA_CALCULADA, width: 110 }}>{brl(g.custo)}</td>
+                  <td style={{ ...td, ...CELULA_CALCULADA, width: 60 }}>{(g.pct * 100).toFixed(1).replace(".", ",")}%</td>
+                  <td style={{ ...td, ...CELULA_CALCULADA, width: 120, fontWeight: 700 }}>{brl(g.valor)}</td>
+                  <td style={td}>
+                    <textarea style={{ ...CELULA_DIGITAVEL, minHeight: 64, resize: "vertical" }} value={grupoTxt[g.chave]?.descricao || ""}
+                      placeholder={g.descricoes.length ? `Ex.: ${g.descricoes.slice(0, 3).join(", ")}` : "Descreva o que está incluído neste item"}
+                      onChange={(e) => setGrupo(g.chave, "descricao", e.target.value)} />
+                    {g.descricoes.length > 0 && !(grupoTxt[g.chave]?.descricao || "").trim() && (
+                      <button type="button" onClick={() => setGrupo(g.chave, "descricao", g.descricoes.join("\n"))} style={{ ...btnGhostSmall, marginTop: 4, padding: "3px 8px", fontSize: 11 }}>Preencher com os itens lançados</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {grupos.length > 0 && (
+                <tr>
+                  <td colSpan={2} style={{ ...td, textAlign: "right", fontWeight: 700, padding: "6px 10px" }}>Total</td>
+                  <td style={{ ...td, ...CELULA_CALCULADA, fontWeight: 700 }}>{brl(grupos.reduce((x, g) => x + g.custo, 0))}</td>
+                  <td style={{ ...td, ...CELULA_CALCULADA }}></td>
+                  <td style={{ ...td, ...CELULA_CALCULADA, fontWeight: 700 }}>{brl(grupos.reduce((x, g) => x + g.valor, 0))}</td>
+                  <td style={td}></td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div style={{ fontSize: 12, color: MUTED, marginTop: 12 }}>
