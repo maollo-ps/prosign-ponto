@@ -2442,7 +2442,7 @@ function itemFromRow(r) {
     id: r.id, categoria: r.categoria, descricao: r.descricao || "",
     largura: r.largura ?? 0, altura: r.altura ?? 0, qtd: r.qtd ?? 1, diaria: r.diaria ?? 1,
     valorCusto: r.valor_custo ?? 0, status: r.status || "", fornecedor: r.fornecedor || "",
-    contratado: r.contratado || "", ordemPagto: r.ordem_pagto || "",
+    contratado: r.contratado || "", ordemPagto: r.ordem_pagto || "", itemId: r.item_id || null,
   };
 }
 
@@ -2645,7 +2645,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
 
   // sugestões do cadastro (itens e fornecedores); se o usuário não tem acesso, fica vazio e a tela funciona igual
   useEffect(() => {
-    sbRequest("itens?select=nome,categoria,custo_padrao&ativo=eq.true&order=nome.asc&limit=1000", session).then((r) => setCatalogo(r || [])).catch(() => {});
+    sbRequest("itens?select=*&ativo=eq.true&order=nome.asc&limit=1000", session).then((r) => setCatalogo(r || [])).catch(() => {});
     sbRequest("pessoas?select=nome&fornecedor=eq.true&ativo=eq.true&order=nome.asc&limit=1000", session).then((r) => setFornecedores((r || []).map((x) => x.nome))).catch(() => {});
   }, []); // eslint-disable-line
 
@@ -2677,7 +2677,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     setSalvo(false);
     setItens((is) => [...is, {
       id: crypto.randomUUID(), categoria, descricao: "", largura: "", altura: "", qtd: 1, diaria: 1,
-      valorCusto: "", status: "", fornecedor: "", contratado: "", ordemPagto: "",
+      valorCusto: "", status: "", fornecedor: "", contratado: "", ordemPagto: "", itemId: null,
     }]);
   }
   function setItem(id, campo, valor) {
@@ -2685,6 +2685,11 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     setItens((is) => is.map((i) => {
       if (i.id !== id) return i;
       const novo = { ...i, [campo]: valor };
+      if (campo === "descricao") {
+        // o texto bate com um item do cadastro? então o item fica vinculado (e aparece a foto)
+        const ref0 = catalogo.find((c) => c.categoria === i.categoria && c.nome.trim().toUpperCase() === String(valor).trim().toUpperCase());
+        novo.itemId = ref0 ? ref0.id : null;
+      }
       // escolheu um item do cadastro: traz o custo padrão se o custo ainda está vazio
       if (campo === "descricao" && !numBR(i.valorCusto)) {
         const ref = catalogo.find((c) => c.categoria === i.categoria && c.nome === valor);
@@ -2707,7 +2712,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
           id: i.id, orcamento_id: orcamentoId, categoria: i.categoria, descricao: i.descricao || null,
           largura: numBR(i.largura), altura: numBR(i.altura), qtd: numBR(i.qtd), diaria: numBR(i.diaria),
           valor_custo: numBR(i.valorCusto), status: i.status || null, fornecedor: i.fornecedor || null,
-          contratado: i.contratado || null, ordem_pagto: i.ordemPagto || null, ordem: idx,
+          contratado: i.contratado || null, ordem_pagto: i.ordemPagto || null, item_id: i.itemId || null, ordem: idx,
         }));
         await sbRequest("orcamento_itens?on_conflict=id", session, {
           method: "POST", body, extraHeaders: { Prefer: "resolution=merge-duplicates,return=minimal" },
@@ -2767,7 +2772,16 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
               )}
               {lista.map((it) => (
                 <tr key={it.id}>
-                  <td style={{ ...td, minWidth: 150 }}><Entrada it={it} campo="descricao" tipo="txt" onSet={setItem} lista={`dl-itens-${it.categoria}`} /></td>
+                  <td style={{ ...td, minWidth: 150 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      {(() => {
+                        const ref = it.itemId ? catalogo.find((c) => c.id === it.itemId) : null;
+                        const url = urlImagemItem(ref?.imagem_path);
+                        return url ? <a href={url} target="_blank" rel="noreferrer" title={ref.nome}><img src={url} alt="" style={{ width: 34, height: 34, objectFit: "cover", borderRadius: 4, border: `1px solid ${BORDER}`, display: "block" }} /></a> : null;
+                      })()}
+                      <div style={{ flex: 1 }}><Entrada it={it} campo="descricao" tipo="txt" onSet={setItem} lista={`dl-itens-${it.categoria}`} /></div>
+                    </div>
+                  </td>
                   {ehLona && (
                     <>
                       <td style={{ ...td, width: 70 }}><Entrada it={it} campo="largura" onSet={setItem} /></td>
@@ -4633,6 +4647,36 @@ function FinanceiroView({ session, setErro }) {
 // =========================================================
 // Cadastros · pessoas (clientes, fornecedores, agências, patrocinadores) e itens
 // =========================================================
+const urlImagemItem = (path) => (path ? `${SUPABASE_URL}/storage/v1/object/public/itens/${path}` : null);
+
+async function reduzirImagem(file, max = 800) {
+  const bmp = await createImageBitmap(file);
+  const k = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const cv = document.createElement("canvas");
+  cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+  const ctx = cv.getContext("2d");
+  ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(bmp, 0, 0, cv.width, cv.height);
+  return await new Promise((ok, erro) => cv.toBlob((b) => (b ? ok(b) : erro(new Error("Não consegui ler a imagem."))), "image/jpeg", 0.82));
+}
+async function enviarImagemItem(file, itemId, session) {
+  const blob = await reduzirImagem(file);
+  const path = `${itemId}-${Date.now()}.jpg`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/itens/${path}`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token || SUPABASE_ANON_KEY}`, "Content-Type": "image/jpeg", "x-upsert": "true" },
+    body: blob,
+  });
+  if (!res.ok) throw new Error(`Imagem não enviada (${res.status}): ${await res.text()}`);
+  return path;
+}
+async function apagarImagemItem(path, session) {
+  if (!path) return;
+  try {
+    await fetch(`${SUPABASE_URL}/storage/v1/object/itens/${path}`, { method: "DELETE", headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token || SUPABASE_ANON_KEY}` } });
+  } catch { /* melhor esforço */ }
+}
+
 const CAT_ITEM = [
   { id: "lona_adesivo", label: "Lonas / Adesivos" },
   { id: "outros_gera_lucro", label: "Outros custos (gera lucro)" },
@@ -4926,17 +4970,27 @@ function ItensCadView({ session, setErro }) {
     const e = editando;
     if (!e.nome.trim()) { setErro("Informe o nome do item."); return; }
     setSalvando(true); setErro("");
+    const id = e.id || crypto.randomUUID();
     const body = { nome: limparTextoCad(e.nome), categoria: e.categoria, unidade: nulCad(e.unidade), custo_padrao: parseFloat(String(e.custo_padrao).replace(",", ".")) || 0, ativo: !!e.ativo };
     try {
+      const antiga = e.imagem_original || null;
+      if (e.arquivoImg) { body.imagem_path = await enviarImagemItem(e.arquivoImg, id, session); }
+      else if (e.removerImg) body.imagem_path = null;
       if (e.id) await sbRequest(`itens?id=eq.${e.id}`, session, { method: "PATCH", body });
-      else await sbRequest("itens", session, { method: "POST", body });
+      else await sbRequest("itens", session, { method: "POST", body: { id, ...body } });
+      if ((e.arquivoImg || e.removerImg) && antiga) apagarImagemItem(antiga, session);
       setEditando(null); carregar();
     } catch (er) { setErro(msgSupabase(er)); }
     finally { setSalvando(false); }
   }
   async function excluir(id) {
     if (!window.confirm("Excluir este item do cadastro? Os orçamentos que já usaram o item não mudam.")) return;
-    try { await sbRequest(`itens?id=eq.${id}`, session, { method: "DELETE" }); carregar(); }
+    try {
+      const alvo = rows.find((r) => r.id === id);
+      await sbRequest(`itens?id=eq.${id}`, session, { method: "DELETE" });
+      apagarImagemItem(alvo?.imagem_path, session);
+      carregar();
+    }
     catch (er) { setErro(msgSupabase(er)); }
   }
 
@@ -4971,6 +5025,24 @@ function ItensCadView({ session, setErro }) {
             <CampoTxt label="Unidade" valor={editando.unidade} onChange={(v) => setEditando({ ...editando, unidade: v })} placeholder="m², diária, un" />
             <CampoTxt label="Custo padrão (R$)" valor={editando.custo_padrao} onChange={(v) => setEditando({ ...editando, custo_padrao: v })} />
           </GradeCad>
+          <div style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+            {(() => {
+              const url = editando.previaImg || (!editando.removerImg ? urlImagemItem(editando.imagem_path) : null);
+              return url
+                ? <img src={url} alt="" style={{ width: 90, height: 90, objectFit: "cover", borderRadius: 6, border: `1px solid ${BORDER}` }} />
+                : <div style={{ width: 90, height: 90, borderRadius: 6, border: `1px dashed ${BORDER}`, display: "flex", alignItems: "center", justifyContent: "center", color: MUTED, fontSize: 11, textAlign: "center" }}>sem imagem</div>;
+            })()}
+            <div style={{ fontSize: 13 }}>
+              <div style={{ marginBottom: 6, color: MUTED }}>Foto do item (para identificar visualmente no orçamento)</div>
+              <input type="file" accept="image/*" onChange={(ev) => {
+                const f = ev.target.files?.[0]; ev.target.value = "";
+                if (f) setEditando((x) => ({ ...x, arquivoImg: f, previaImg: URL.createObjectURL(f), removerImg: false }));
+              }} />
+              {(editando.imagem_path || editando.previaImg) && !editando.removerImg && (
+                <button onClick={() => setEditando({ ...editando, arquivoImg: null, previaImg: null, removerImg: true })} style={{ ...btnGhostSmall, marginLeft: 8 }}>Remover imagem</button>
+              )}
+            </div>
+          </div>
           <label style={{ fontSize: 13, display: "inline-flex", gap: 6, alignItems: "center" }}>
             <input type="checkbox" checked={!!editando.ativo} onChange={(e) => setEditando({ ...editando, ativo: e.target.checked })} /> Item ativo (aparece nas sugestões)
           </label>
@@ -4984,18 +5056,23 @@ function ItensCadView({ session, setErro }) {
       <Card style={{ padding: 0, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
           <thead><tr style={{ background: BG }}>
-            <th style={thS}>Item</th><th style={thS}>Categoria</th><th style={thS}>Unidade</th><th style={{ ...thS, textAlign: "right" }}>Custo padrão</th><th style={thS}></th>
+            <th style={thS}></th><th style={thS}>Item</th><th style={thS}>Categoria</th><th style={thS}>Unidade</th><th style={{ ...thS, textAlign: "right" }}>Custo padrão</th><th style={thS}></th>
           </tr></thead>
           <tbody>
-            {lista.length === 0 && !carregando && <tr><td colSpan={5} style={{ ...tdS, color: MUTED }}>Nenhum item.</td></tr>}
+            {lista.length === 0 && !carregando && <tr><td colSpan={6} style={{ ...tdS, color: MUTED }}>Nenhum item.</td></tr>}
             {lista.map((r) => (
               <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}`, opacity: r.ativo ? 1 : 0.5 }}>
+                <td style={{ ...tdS, width: 52 }}>
+                  {r.imagem_path
+                    ? <a href={urlImagemItem(r.imagem_path)} target="_blank" rel="noreferrer"><img src={urlImagemItem(r.imagem_path)} alt="" style={{ width: 42, height: 42, objectFit: "cover", borderRadius: 4, border: `1px solid ${BORDER}`, display: "block" }} /></a>
+                    : <div style={{ width: 42, height: 42, borderRadius: 4, border: `1px dashed ${BORDER}` }} />}
+                </td>
                 <td style={{ ...tdS, fontWeight: 600 }}>{r.nome}</td>
                 <td style={tdS}>{catItemLabel(r.categoria)}</td>
                 <td style={tdS}>{r.unidade || "—"}</td>
                 <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(r.custo_padrao)}</td>
                 <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
-                  <button onClick={() => setEditando({ ...r, custo_padrao: String(r.custo_padrao).replace(".", ",") })} style={btnGhostSmall}>Editar</button>{" "}
+                  <button onClick={() => setEditando({ ...r, custo_padrao: String(r.custo_padrao).replace(".", ","), imagem_original: r.imagem_path || null })} style={btnGhostSmall}>Editar</button>{" "}
                   <button onClick={() => excluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
                 </td>
               </tr>
@@ -5060,6 +5137,21 @@ function ImportarCadastrosView({ session, setErro }) {
     try {
       const lidos = [];
       for (const f of lista) lidos.push(await lerPlanilhaPessoas(f));
+      // pessoas jurídicas sem CNPJ ou sem razão social só entram se já aparecem em orçamento (ou em lançamento do Financeiro)
+      const normCad = (t) => semAcCad(t).replace(/\s+/g, " ").toUpperCase();
+      const manter = new Set();
+      const sub = await sbRequest("pessoas?select=nome&codigo_antigo=is.null&limit=1000", session);
+      (sub || []).forEach((x) => manter.add(normCad(x.nome)));
+      try {
+        const lc = await sbRequest("lancamentos_fin?select=fornecedor_cliente&limit=5000", session);
+        (lc || []).forEach((x) => x.fornecedor_cliente && manter.add(normCad(x.fornecedor_cliente)));
+      } catch { /* sem acesso ao Financeiro: usa só os orçamentos */ }
+      for (const a of lidos) {
+        if (a.tipo !== "pj") continue;
+        const antes = a.linhas.length;
+        a.linhas = a.linhas.filter((l) => (l.documento && l.razao_social) || manter.has(normCad(l.nome)) || manter.has(normCad(l.razao_social)));
+        a.descartados = antes - a.linhas.length;
+      }
       setArquivos(lidos);
       const cods = new Set();
       for (let off = 0; ; off += 1000) {
@@ -5122,7 +5214,7 @@ function ImportarCadastrosView({ session, setErro }) {
         <div style={{ fontWeight: 600, color: NAVY, marginBottom: 6 }}>1. Importar planilhas do sistema antigo</div>
         <p style={{ margin: "0 0 10px", fontSize: 13, color: MUTED }}>
           Envie o cadastro de pessoas jurídicas e/ou o de pessoas físicas (.xls ou .xlsx). Cadastros que já existem (mesmo código antigo) não são alterados, a menos que você marque a opção abaixo.
-          Quem não tem nome nem razão social é ignorado.
+          Pessoas jurídicas sem CNPJ ou sem razão social só entram se já têm orçamento (ou lançamento no Financeiro); quem não tem nome nem razão social é ignorado.
         </p>
         <input type="file" accept=".xls,.xlsx" multiple disabled={lendo || importando}
           onChange={(e) => { const lista = Array.from(e.target.files || []); e.target.value = ""; if (lista.length) lerArquivos(lista); }} />
@@ -5132,7 +5224,7 @@ function ImportarCadastrosView({ session, setErro }) {
           <div style={{ marginTop: 14, fontSize: 13, lineHeight: 1.7 }}>
             {arquivos.map((a) => (
               <div key={a.arquivo}>
-                <b>{a.arquivo}</b>{a.erro ? <span style={{ color: DANGER }}> · {a.erro}</span> : <> · {a.tipo === "pf" ? "pessoas físicas" : "pessoas jurídicas"}: {a.linhas.length} cadastros{a.ignorados ? `, ${a.ignorados} ignorados (sem nome)` : ""}</>}
+                <b>{a.arquivo}</b>{a.erro ? <span style={{ color: DANGER }}> · {a.erro}</span> : <> · {a.tipo === "pf" ? "pessoas físicas" : "pessoas jurídicas"}: {a.linhas.length} cadastros{a.ignorados ? `, ${a.ignorados} ignorados (sem nome)` : ""}{a.descartados ? `, ${a.descartados} ignorados (sem CNPJ ou razão social e sem orçamento)` : ""}</>}
               </div>
             ))}
             <div style={{ marginTop: 6 }}>Novos: <b>{novos.length}</b> · Já cadastrados: <b>{jaExistem.length}</b></div>
