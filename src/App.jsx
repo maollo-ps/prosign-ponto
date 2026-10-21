@@ -441,7 +441,7 @@ export default function App() {
 
   const isAdmin = !!perfil?.is_admin;
   const temAcessoArea = (area) => isAdmin || areasPermitidas.includes(area);
-  const podeVerAba = (abaId) => (abaId === "usuarios" || abaId === "resultados" ? isAdmin : temAcessoArea(AREA_DAS_ABAS[abaId]));
+  const podeVerAba = (abaId) => (abaId === "usuarios" || abaId === "resultados" ? isAdmin : abaId === "cadastros" ? (isAdmin || temAcessoArea("comercial") || temAcessoArea("financeiro")) : temAcessoArea(AREA_DAS_ABAS[abaId]));
 
   // Carrega o perfil (nome, admin?) e as áreas liberadas pro usuário logado.
   useEffect(() => {
@@ -465,6 +465,7 @@ export default function App() {
     if (podeVerAba("rh")) setTab("rh");
     else if (podeVerAba("comercial")) setTab("comercial");
     else if (podeVerAba("financeiro")) setTab("financeiro");
+    else if (podeVerAba("cadastros")) setTab("cadastros");
     else if (podeVerAba("resultados")) setTab("resultados");
     else if (podeVerAba("usuarios")) setTab("usuarios");
   }, [session, carregandoAcesso, perfil, areasPermitidas]); // eslint-disable-line
@@ -524,6 +525,9 @@ export default function App() {
             )}
             {tab === "comercial" && (
               <ComercialView session={session} setErro={setErro} />
+            )}
+            {tab === "cadastros" && podeVerAba("cadastros") && (
+              <CadastrosView session={session} setErro={setErro} />
             )}
             {tab === "resultados" && isAdmin && (
               <ResultadosAdminView session={session} setErro={setErro} />
@@ -592,6 +596,7 @@ function Header({ tab, setTab, onLogout, podeVerAba }) {
     { id: "rh", label: "Recursos Humanos", icon: Users },
     { id: "comercial", label: "Comercial", icon: TrendingUp },
     { id: "financeiro", label: "Financeiro", icon: Wallet },
+    { id: "cadastros", label: "Cadastros", icon: Briefcase },
     { id: "resultados", label: "Resultados", icon: FileBarChart },
     { id: "usuarios", label: "Usuários", icon: UserCog },
   ].filter((it) => podeVerAba(it.id));
@@ -2018,7 +2023,7 @@ function ComercialView({ session, setErro }) {
 
   function carregarClientes() {
     setCarregandoClientes(true);
-    sbRequest("clientes?select=*&order=nome.asc", session)
+    sbRequest("pessoas?select=id,nome&cliente=eq.true&ativo=eq.true&order=nome.asc&limit=1000", session)
       .then((rows) => setClientes((rows || []).map(clienteFromRow)))
       .catch((e) => setErro(e.message))
       .finally(() => setCarregandoClientes(false));
@@ -2029,7 +2034,6 @@ function ComercialView({ session, setErro }) {
   const SUBABAS = [
     { id: "dashboard", label: "Dashboard" },
     { id: "orcamentos", label: "Orçamentos" },
-    { id: "clientes", label: "Clientes" },
     { id: "previsao", label: "Previsão Orçamentária" },
     { id: "faturamento", label: "Faturamento" },
   ];
@@ -2059,7 +2063,6 @@ function ComercialView({ session, setErro }) {
         <>
           {subtab === "dashboard" && <DashboardComercialView session={session} setErro={setErro} clientes={clientes} />}
           {subtab === "orcamentos" && <OrcamentosComercialView session={session} setErro={setErro} clientes={clientes} />}
-          {subtab === "clientes" && <ClientesComercialView session={session} setErro={setErro} clientes={clientes} setClientes={setClientes} />}
           {subtab === "previsao" && <PrevisaoComercialView session={session} setErro={setErro} />}
           {subtab === "faturamento" && <FaturamentoComercialView session={session} setErro={setErro} clientes={clientes} />}
         </>
@@ -2171,7 +2174,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
 
   function carregar() {
     setCarregando(true);
-    sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${mesRef}-01&order=data_evento.asc`, session)
+    sbRequest(`orcamentos?select=*,clientes:pessoas(nome)&mes_ref=eq.${mesRef}-01&order=data_evento.asc`, session)
       .then((rows) => setRegistros((rows || []).map(orcamentoFromRow)))
       .catch((e) => setErro(e.message))
       .finally(() => setCarregando(false));
@@ -2449,9 +2452,10 @@ const CELULA_CALCULADA = { background: "#E5E7EB", padding: "6px 8px", fontFamily
 function Faixa({ cor, children }) {
   return <div style={{ background: cor, color: "#fff", textAlign: "center", fontWeight: 700, fontSize: 13, padding: "6px 0", letterSpacing: 0.5 }}>{children}</div>;
 }
-function Entrada({ it, campo, tipo = "num", onSet }) {
+function Entrada({ it, campo, tipo = "num", onSet, lista }) {
   return (
     <input
+      list={lista}
       style={{ ...CELULA_DIGITAVEL, textAlign: tipo === "num" ? "right" : "left" }}
       inputMode={tipo === "num" ? "decimal" : undefined}
       value={it[campo]}
@@ -2636,11 +2640,19 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const [comissao, setComissao] = useState("0");
   const [margem, setMargem] = useState("55,5");
   const [ajuste, setAjuste] = useState("0");
+  const [catalogo, setCatalogo] = useState([]);
+  const [fornecedores, setFornecedores] = useState([]);
+
+  // sugestões do cadastro (itens e fornecedores); se o usuário não tem acesso, fica vazio e a tela funciona igual
+  useEffect(() => {
+    sbRequest("itens?select=nome,categoria,custo_padrao&ativo=eq.true&order=nome.asc&limit=1000", session).then((r) => setCatalogo(r || [])).catch(() => {});
+    sbRequest("pessoas?select=nome&fornecedor=eq.true&ativo=eq.true&order=nome.asc&limit=1000", session).then((r) => setFornecedores((r || []).map((x) => x.nome))).catch(() => {});
+  }, []); // eslint-disable-line
 
   useEffect(() => {
     setCarregando(true);
     Promise.all([
-      sbRequest(`orcamentos?select=*,clientes(nome)&id=eq.${orcamentoId}`, session),
+      sbRequest(`orcamentos?select=*,clientes:pessoas(nome)&id=eq.${orcamentoId}`, session),
       sbRequest(`orcamento_itens?select=*&orcamento_id=eq.${orcamentoId}&order=ordem.asc`, session),
     ])
       .then(([o, its]) => {
@@ -2670,7 +2682,16 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   }
   function setItem(id, campo, valor) {
     setSalvo(false);
-    setItens((is) => is.map((i) => (i.id === id ? { ...i, [campo]: valor } : i)));
+    setItens((is) => is.map((i) => {
+      if (i.id !== id) return i;
+      const novo = { ...i, [campo]: valor };
+      // escolheu um item do cadastro: traz o custo padrão se o custo ainda está vazio
+      if (campo === "descricao" && !numBR(i.valorCusto)) {
+        const ref = catalogo.find((c) => c.categoria === i.categoria && c.nome === valor);
+        if (ref && Number(ref.custo_padrao) > 0) novo.valorCusto = String(ref.custo_padrao).replace(".", ",");
+      }
+      return novo;
+    }));
   }
   function removerItem(id) {
     setSalvo(false);
@@ -2729,6 +2750,8 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     return (
       <div style={{ marginBottom: 18, border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", background: "#fff" }}>
         <Faixa cor={cat.cor}>{cat.label.toUpperCase()}</Faixa>
+        <datalist id={`dl-itens-${cat.id}`}>{catalogo.filter((c) => c.categoria === cat.id).map((c) => <option key={c.nome} value={c.nome} />)}</datalist>
+        <datalist id={`dl-forn-${cat.id}`}>{fornecedores.map((n) => <option key={n} value={n} />)}</datalist>
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
             <thead>
@@ -2744,7 +2767,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
               )}
               {lista.map((it) => (
                 <tr key={it.id}>
-                  <td style={{ ...td, minWidth: 150 }}><Entrada it={it} campo="descricao" tipo="txt" onSet={setItem} /></td>
+                  <td style={{ ...td, minWidth: 150 }}><Entrada it={it} campo="descricao" tipo="txt" onSet={setItem} lista={`dl-itens-${it.categoria}`} /></td>
                   {ehLona && (
                     <>
                       <td style={{ ...td, width: 70 }}><Entrada it={it} campo="largura" onSet={setItem} /></td>
@@ -2772,7 +2795,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
                   )}
                   <td style={{ ...td, ...CELULA_CALCULADA, width: 100 }}>{brl(custoDoItem(it))}</td>
                   <td style={{ ...td, width: 90 }}><Entrada it={it} campo="status" tipo="txt" onSet={setItem} /></td>
-                  <td style={{ ...td, width: 120 }}><Entrada it={it} campo="fornecedor" tipo="txt" onSet={setItem} /></td>
+                  <td style={{ ...td, width: 120 }}><Entrada it={it} campo="fornecedor" tipo="txt" onSet={setItem} lista={`dl-forn-${it.categoria}`} /></td>
                   <td style={{ ...td, width: 36, textAlign: "center" }}><BotaoRemover id={it.id} onRemover={removerItem} /></td>
                 </tr>
               ))}
@@ -3037,7 +3060,7 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
 
   function carregar() {
     setCarregando(true);
-    sbRequest(`faturamento?select=*,clientes(nome),orcamentos(evento,status)&mes_ref=eq.${mesRef}-01&order=data_faturamento.asc`, session)
+    sbRequest(`faturamento?select=*,clientes:pessoas(nome),orcamentos(evento,status)&mes_ref=eq.${mesRef}-01&order=data_faturamento.asc`, session)
       .then((rows) => setRegistros((rows || []).map(faturamentoFromRow)))
       .catch((e) => setErro(e.message))
       .finally(() => setCarregando(false));
@@ -3187,8 +3210,8 @@ function FaturamentoFinanceiroView({ session, setErro }) {
   function carregar() {
     setCarregando(true);
     Promise.all([
-      sbRequest("orcamentos?select=*,clientes(nome)&status=eq.autorizado_faturamento&order=autorizado_em.asc", session),
-      sbRequest("faturamento?select=*,clientes(nome),orcamentos!inner(evento,numero_or,status)&orcamentos.status=eq.faturado&order=criado_em.desc&limit=30", session),
+      sbRequest("orcamentos?select=*,clientes:pessoas(nome)&status=eq.autorizado_faturamento&order=autorizado_em.asc", session),
+      sbRequest("faturamento?select=*,clientes:pessoas(nome),orcamentos!inner(evento,numero_or,status)&orcamentos.status=eq.faturado&order=criado_em.desc&limit=30", session),
     ])
       .then(([a, b]) => { setFila(a || []); setRecentes(b || []); })
       .catch((e) => setErro(msgSupabase(e)))
@@ -3440,11 +3463,11 @@ function BuscaOrcamento({ session, setErro, onEscolher }) {
     try {
       const limpo = t.replace(/[,()*]/g, " ");
       const filtros = [`evento.ilike.*${limpo}*`, `numero_or.ilike.*${limpo}*`];
-      const cls = await sbRequest(`clientes?select=id&nome=ilike.*${encodeURIComponent(limpo)}*&limit=20`, session);
+      const cls = await sbRequest(`pessoas?select=id&nome=ilike.*${encodeURIComponent(limpo)}*&limit=20`, session);
       if (cls && cls.length) filtros.push(`cliente_id.in.(${cls.map((c) => c.id).join(",")})`);
       const num = parseFloat(limpo.replace(/\./g, "").replace(",", "."));
       if (!isNaN(num) && /\d/.test(limpo)) filtros.push(`valor.eq.${num}`);
-      const rows = await sbRequest(`orcamentos?select=id,evento,numero_or,data_evento,valor,mes_ref,empresa,status,clientes(nome)&or=(${filtros.join(",")})&order=data_evento.desc&limit=25`, session);
+      const rows = await sbRequest(`orcamentos?select=id,evento,numero_or,data_evento,valor,mes_ref,empresa,status,clientes:pessoas(nome)&or=(${filtros.join(",")})&order=data_evento.desc&limit=25`, session);
       setRes(rows || []);
     } catch (e) { setErro(msgSupabase(e)); }
     finally { setBuscando(false); }
@@ -3547,7 +3570,7 @@ function LancamentosFinView({ session, setErro, centros }) {
 
   function carregar() {
     setCarregando(true);
-    sbRequest(`lancamentos_fin?select=*,orcamentos(evento,numero_or,data_evento,clientes(nome))&competencia=eq.${mes}-01&order=vencimento.asc.nullslast&limit=2000`, session)
+    sbRequest(`lancamentos_fin?select=*,orcamentos(evento,numero_or,data_evento,clientes:pessoas(nome))&competencia=eq.${mes}-01&order=vencimento.asc.nullslast&limit=2000`, session)
       .then((rows) => setRegs(rows || []))
       .catch((e) => setErro(msgSupabase(e)))
       .finally(() => setCarregando(false));
@@ -3719,8 +3742,8 @@ function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
   useEffect(() => {
     setCarregando(true);
     Promise.all([
-      sbRequest(`lancamentos_fin?select=*,orcamentos(evento,numero_or,empresa,contrato,clientes(nome))&competencia=eq.${mes}-01&limit=3000`, session),
-      sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${mes}-01&status=in.(aprovado,autorizado_faturamento,faturado)&limit=2000`, session),
+      sbRequest(`lancamentos_fin?select=*,orcamentos(evento,numero_or,empresa,contrato,clientes:pessoas(nome))&competencia=eq.${mes}-01&limit=3000`, session),
+      sbRequest(`orcamentos?select=*,clientes:pessoas(nome)&mes_ref=eq.${mes}-01&status=in.(aprovado,autorizado_faturamento,faturado)&limit=2000`, session),
     ])
       .then(([a, b]) => { setLancs(a || []); setOrcs((b || []).map(orcamentoFromRow)); })
       .catch((e) => setErro(msgSupabase(e)))
@@ -3850,7 +3873,7 @@ function CustosEventoView({ orcamentoId, session, setErro, onVoltar }) {
     (async () => {
       try {
         const [o, its, cs, vinc] = await Promise.all([
-          sbRequest(`orcamentos?select=*,clientes(nome)&id=eq.${orcamentoId}`, session),
+          sbRequest(`orcamentos?select=*,clientes:pessoas(nome)&id=eq.${orcamentoId}`, session),
           sbRequest(`orcamento_itens?select=*&orcamento_id=eq.${orcamentoId}&order=ordem.asc`, session),
           sbRequest("centros_custo?select=*&limit=1000", session),
           sbRequest(`lancamentos_fin?select=*&orcamento_id=eq.${orcamentoId}&order=vencimento.asc&limit=1000`, session),
@@ -3860,7 +3883,7 @@ function CustosEventoView({ orcamentoId, session, setErro, onVoltar }) {
         if (row?.mes_ref) {
           const [ls, os] = await Promise.all([
             sbRequest(`lancamentos_fin?select=*&competencia=eq.${row.mes_ref}&limit=3000`, session),
-            sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${row.mes_ref}&status=in.(aprovado,autorizado_faturamento,faturado)&limit=2000`, session),
+            sbRequest(`orcamentos?select=*,clientes:pessoas(nome)&mes_ref=eq.${row.mes_ref}&status=in.(aprovado,autorizado_faturamento,faturado)&limit=2000`, session),
           ]);
           setMesLancs(ls || []); setMesOrcs((os || []).map(orcamentoFromRow));
         }
@@ -4393,7 +4416,7 @@ function ImportarFinView({ session, setErro, centros }) {
       }
       let orcs = [];
       if (temReceber) {
-        const rows = await sbRequest(`orcamentos?select=id,evento,valor,data_evento,mes_ref,clientes(nome)&status=in.(aprovado,autorizado_faturamento,faturado)&data_evento=gte.${somarDiasIso(minV, -150)}&data_evento=lte.${somarDiasIso(maxV, 30)}&limit=3000`, session);
+        const rows = await sbRequest(`orcamentos?select=id,evento,valor,data_evento,mes_ref,clientes:pessoas(nome)&status=in.(aprovado,autorizado_faturamento,faturado)&data_evento=gte.${somarDiasIso(minV, -150)}&data_evento=lte.${somarDiasIso(maxV, 30)}&limit=3000`, session);
         orcs = (rows || []).map((o) => ({ id: o.id, evento: o.evento, valor: Number(o.valor), mesRef: o.mes_ref, dataEvento: o.data_evento, clienteNome: o.clientes?.nome || "" }));
       }
       setPrevia(montarPreviaImport({ arquivos: validos, existentes: Object.values(existentesMap), centrosPorCodigo, orcs }));
@@ -4437,6 +4460,7 @@ function ImportarFinView({ session, setErro, centros }) {
       for (const l of atualiza) {
         await sbRequest(`lancamentos_fin?id=eq.${l.existenteId}`, session, { method: "PATCH", body: { valor: l.valor, pagamento: l.pagamento || null, situacao: l.situacao } });
       }
+      try { await sbRequest("rpc/vincular_cadastros", session, { method: "POST", body: {} }); } catch { /* cadastro ainda não instalado: segue sem vincular */ }
       setResultado({ novos: novos.length, atualizados: atualiza.length, ignorados: previa.linhas.length - marcadas.length });
       setArquivos([]); setPrevia(null);
     } catch (e) { setErro(msgSupabase(e)); }
@@ -4607,6 +4631,576 @@ function FinanceiroView({ session, setErro }) {
 }
 
 // =========================================================
+// Cadastros · pessoas (clientes, fornecedores, agências, patrocinadores) e itens
+// =========================================================
+const CAT_ITEM = [
+  { id: "lona_adesivo", label: "Lonas / Adesivos" },
+  { id: "outros_gera_lucro", label: "Outros custos (gera lucro)" },
+  { id: "sublocacao_gera_lucro", label: "Sublocação (gera lucro)" },
+  { id: "servico_nao_gera_lucro", label: "Serviços (não gera lucro)" },
+];
+const catItemLabel = (id) => CAT_ITEM.find((c) => c.id === id)?.label || id;
+
+function limparTextoCad(s) { return String(s ?? "").replace(/\s+/g, " ").replace(/^[\s:;.\-–]+/, "").trim(); }
+function limparTelCad(s) { const t = limparTextoCad(s); return /[1-9]/.test(t.replace(/\D/g, "")) ? t : ""; }
+function docFormatadoCad(s) {
+  const t = String(s ?? "").trim();
+  const d = t.replace(/\D/g, "");
+  if (d.length === 14) return d.replace(/(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})/, "$1.$2.$3/$4-$5");
+  if (d.length === 11) return d.replace(/(\d{3})(\d{3})(\d{3})(\d{2})/, "$1.$2.$3-$4");
+  return t;
+}
+const nulCad = (v) => (v === "" || v === undefined || v === null ? null : v);
+
+function ChipsPessoa({ p }) {
+  const t = [];
+  if (p.cliente) t.push(["Cliente", "#2E7D5B"]);
+  if (p.fornecedor) t.push(["Fornecedor", "#1D6FA5"]);
+  if (p.agencia) t.push(["Agência", "#7A5C99"]);
+  if (p.patrocinador) t.push(["Patrocinador", GOLD]);
+  if (t.length === 0) t.push(["Outros", MUTED]);
+  return (
+    <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+      {t.map(([l, c]) => <span key={l} style={{ fontSize: 11, fontWeight: 700, color: c, border: `1px solid ${c}`, borderRadius: 10, padding: "1px 8px", whiteSpace: "nowrap" }}>{l}</span>)}
+    </span>
+  );
+}
+
+function pessoaVazia() {
+  return { tipo_pessoa: "pj", nome: "", sigla: "", razao_social: "", documento: "", identidade: "", inscricao_estadual: "", inscricao_municipal: "", email: "", telefone: "", celular: "", contato: "", comissao: "", cliente: false, fornecedor: false, agencia: false, patrocinador: false, categoria: "", end_logradouro: "", end_numero: "", end_complemento: "", end_bairro: "", end_cidade: "", end_cep: "", end_referencia: "", cobranca: null, bancos: [], observacao: "", ativo: true };
+}
+
+function CampoTxt({ label, valor, onChange, placeholder, tipo }) {
+  return <Field label={label}><input type={tipo || "text"} style={inputStyle} value={valor ?? ""} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} /></Field>;
+}
+function GradeCad({ children, cols = "repeat(auto-fit, minmax(190px, 1fr))" }) {
+  return <div style={{ display: "grid", gridTemplateColumns: cols, gap: 12, marginBottom: 12 }}>{children}</div>;
+}
+function TituloCad({ children }) {
+  return <div style={{ fontWeight: 700, fontSize: 12, color: NAVY, textTransform: "uppercase", letterSpacing: 0.5, margin: "16px 0 8px", borderBottom: `1px solid ${BORDER}`, paddingBottom: 4 }}>{children}</div>;
+}
+
+function PessoaForm({ inicial, onSalvar, onCancelar, onExcluir, salvando }) {
+  const [f, setF] = useState(() => ({
+    ...pessoaVazia(), ...inicial,
+    comissao: inicial.comissao ?? "",
+    cobrancaIgual: !inicial.cobranca,
+    cobranca: inicial.cobranca || {},
+    bancos: [0, 1].map((i) => (inicial.bancos || [])[i] || {}),
+  }));
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const setCob = (k, v) => setF((x) => ({ ...x, cobranca: { ...x.cobranca, [k]: v } }));
+  const setBanco = (i, k, v) => setF((x) => ({ ...x, bancos: x.bancos.map((b, j) => (j === i ? { ...b, [k]: v } : b)) }));
+  const pf = f.tipo_pessoa === "pf";
+
+  function enviar() {
+    if (!f.nome.trim()) { alert("Informe o nome."); return; }
+    const cob = f.cobrancaIgual ? null : Object.fromEntries(Object.entries(f.cobranca).filter(([, v]) => v));
+    onSalvar({
+      tipo_pessoa: f.tipo_pessoa, nome: limparTextoCad(f.nome), sigla: nulCad(String(f.sigla ?? "").trim()), razao_social: nulCad(limparTextoCad(f.razao_social)),
+      documento: nulCad(docFormatadoCad(f.documento)), identidade: nulCad(f.identidade), inscricao_estadual: nulCad(f.inscricao_estadual), inscricao_municipal: nulCad(f.inscricao_municipal),
+      email: nulCad(String(f.email || "").trim().toLowerCase()), telefone: nulCad(f.telefone), celular: nulCad(f.celular), contato: nulCad(f.contato),
+      comissao: f.comissao === "" ? null : parseFloat(String(f.comissao).replace(",", ".")) || 0,
+      cliente: !!f.cliente, fornecedor: !!f.fornecedor, agencia: !!f.agencia, patrocinador: !!f.patrocinador, categoria: nulCad(f.categoria),
+      end_logradouro: nulCad(f.end_logradouro), end_numero: nulCad(f.end_numero), end_complemento: nulCad(f.end_complemento), end_bairro: nulCad(f.end_bairro),
+      end_cidade: nulCad(f.end_cidade), end_cep: nulCad(f.end_cep), end_referencia: nulCad(f.end_referencia),
+      cobranca: cob && Object.keys(cob).length ? cob : null,
+      bancos: f.bancos.map((b) => Object.fromEntries(Object.entries(b).filter(([, v]) => v))).filter((b) => Object.keys(b).length),
+      observacao: nulCad(f.observacao), ativo: !!f.ativo,
+    });
+  }
+
+  const check = (k, rot) => (
+    <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, marginRight: 18 }}>
+      <input type="checkbox" checked={!!f[k]} onChange={(e) => set(k, e.target.checked)} /> {rot}
+    </label>
+  );
+  return (
+    <Card style={{ marginBottom: 18 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+        <h4 style={{ margin: 0, fontSize: 15 }}>{inicial.id ? "Editar cadastro" : "Novo cadastro"}{inicial.codigo_antigo ? <span style={{ color: MUTED, fontWeight: 400 }}> · código antigo {inicial.codigo_antigo}</span> : null}</h4>
+        <button onClick={onCancelar} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED }}><X size={18} /></button>
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        {check("cliente", "Cliente")}{check("fornecedor", "Fornecedor")}{check("agencia", "Agência")}{check("patrocinador", "Patrocinador")}
+        <span style={{ fontSize: 12, color: MUTED }}>(nenhum marcado = Outros)</span>
+      </div>
+      <GradeCad cols="1fr 2fr 1fr">
+        <Field label="Tipo de pessoa">
+          <select style={inputStyle} value={f.tipo_pessoa} onChange={(e) => set("tipo_pessoa", e.target.value)}>
+            <option value="pj">Pessoa jurídica</option><option value="pf">Pessoa física</option>
+          </select>
+        </Field>
+        <CampoTxt label="Nome *" valor={f.nome} onChange={(v) => set("nome", v)} />
+        <CampoTxt label="Sigla" valor={f.sigla} onChange={(v) => set("sigla", v)} />
+      </GradeCad>
+      <GradeCad>
+        {!pf && <CampoTxt label="Razão social" valor={f.razao_social} onChange={(v) => set("razao_social", v)} />}
+        <CampoTxt label={pf ? "CPF" : "CNPJ"} valor={f.documento} onChange={(v) => set("documento", v)} />
+        {pf && <CampoTxt label="Identidade" valor={f.identidade} onChange={(v) => set("identidade", v)} />}
+        {!pf && <CampoTxt label="Inscrição estadual" valor={f.inscricao_estadual} onChange={(v) => set("inscricao_estadual", v)} />}
+        {!pf && <CampoTxt label="Inscrição municipal" valor={f.inscricao_municipal} onChange={(v) => set("inscricao_municipal", v)} />}
+        <CampoTxt label="Telefone" valor={f.telefone} onChange={(v) => set("telefone", v)} />
+        <CampoTxt label="Celular" valor={f.celular} onChange={(v) => set("celular", v)} />
+        <CampoTxt label="E-mail" valor={f.email} onChange={(v) => set("email", v)} />
+        <CampoTxt label="Contato" valor={f.contato} onChange={(v) => set("contato", v)} />
+        <CampoTxt label="Comissão (%)" valor={f.comissao} onChange={(v) => set("comissao", v)} />
+        {pf && <CampoTxt label="Categoria" valor={f.categoria} onChange={(v) => set("categoria", v)} />}
+      </GradeCad>
+
+      <TituloCad>Endereço principal</TituloCad>
+      <GradeCad cols="2fr 1fr 1fr">
+        <CampoTxt label="Endereço" valor={f.end_logradouro} onChange={(v) => set("end_logradouro", v)} />
+        <CampoTxt label="Número" valor={f.end_numero} onChange={(v) => set("end_numero", v)} />
+        <CampoTxt label="Complemento" valor={f.end_complemento} onChange={(v) => set("end_complemento", v)} />
+      </GradeCad>
+      <GradeCad>
+        <CampoTxt label="Bairro" valor={f.end_bairro} onChange={(v) => set("end_bairro", v)} />
+        <CampoTxt label="Cidade" valor={f.end_cidade} onChange={(v) => set("end_cidade", v)} />
+        <CampoTxt label="CEP" valor={f.end_cep} onChange={(v) => set("end_cep", v)} />
+        <CampoTxt label="Ponto de referência" valor={f.end_referencia} onChange={(v) => set("end_referencia", v)} />
+      </GradeCad>
+
+      <TituloCad>Endereço de cobrança / entrega</TituloCad>
+      <label style={{ fontSize: 13, display: "inline-flex", gap: 6, alignItems: "center", marginBottom: 10 }}>
+        <input type="checkbox" checked={f.cobrancaIgual} onChange={(e) => set("cobrancaIgual", e.target.checked)} /> Igual ao endereço principal
+      </label>
+      {!f.cobrancaIgual && (
+        <>
+          <GradeCad cols="2fr 1fr 1fr">
+            <CampoTxt label="Endereço" valor={f.cobranca.logradouro} onChange={(v) => setCob("logradouro", v)} />
+            <CampoTxt label="Número" valor={f.cobranca.numero} onChange={(v) => setCob("numero", v)} />
+            <CampoTxt label="Complemento" valor={f.cobranca.complemento} onChange={(v) => setCob("complemento", v)} />
+          </GradeCad>
+          <GradeCad>
+            <CampoTxt label="Bairro" valor={f.cobranca.bairro} onChange={(v) => setCob("bairro", v)} />
+            <CampoTxt label="Cidade" valor={f.cobranca.cidade} onChange={(v) => setCob("cidade", v)} />
+            <CampoTxt label="CEP" valor={f.cobranca.cep} onChange={(v) => setCob("cep", v)} />
+            <CampoTxt label="Ponto de referência" valor={f.cobranca.referencia} onChange={(v) => setCob("referencia", v)} />
+          </GradeCad>
+        </>
+      )}
+
+      {[0, 1].map((i) => (
+        <div key={i}>
+          <TituloCad>Dados bancários {i + 1}</TituloCad>
+          <GradeCad>
+            <CampoTxt label="Banco" valor={f.bancos[i].banco} onChange={(v) => setBanco(i, "banco", v)} />
+            <CampoTxt label="Agência" valor={f.bancos[i].agencia} onChange={(v) => setBanco(i, "agencia", v)} />
+            <CampoTxt label="Conta" valor={f.bancos[i].conta} onChange={(v) => setBanco(i, "conta", v)} />
+            <CampoTxt label="Titular" valor={f.bancos[i].titular} onChange={(v) => setBanco(i, "titular", v)} />
+            <CampoTxt label="Tipo de conta" valor={f.bancos[i].tipo_conta} onChange={(v) => setBanco(i, "tipo_conta", v)} />
+            <CampoTxt label="Operação" valor={f.bancos[i].operacao} onChange={(v) => setBanco(i, "operacao", v)} />
+            <CampoTxt label="Chave PIX" valor={f.bancos[i].pix} onChange={(v) => setBanco(i, "pix", v)} />
+          </GradeCad>
+        </div>
+      ))}
+
+      <TituloCad>Observação</TituloCad>
+      <textarea style={{ ...inputStyle, minHeight: 60 }} value={f.observacao || ""} onChange={(e) => set("observacao", e.target.value)} />
+      <div style={{ marginTop: 10 }}>
+        <label style={{ fontSize: 13, display: "inline-flex", gap: 6, alignItems: "center" }}>
+          <input type="checkbox" checked={!!f.ativo} onChange={(e) => set("ativo", e.target.checked)} /> Cadastro ativo
+        </label>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 16, justifyContent: "space-between" }}>
+        <div>{inicial.id && onExcluir && <button onClick={onExcluir} style={btnDangerSmall}><Trash2 size={13} /> Excluir</button>}</div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={onCancelar} style={btnGhostSmall}>Cancelar</button>
+          <button onClick={enviar} disabled={salvando} style={btnPrimary}>{salvando ? "Salvando..." : "Salvar"}</button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function PessoasCadView({ session, setErro }) {
+  const [busca, setBusca] = useState("");
+  const [filtro, setFiltro] = useState("todos");
+  const [rows, setRows] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+  const [editando, setEditando] = useState(null);
+  const [salvando, setSalvando] = useState(false);
+  const [versao, setVersao] = useState(0);
+
+  useEffect(() => {
+    const t = setTimeout(async () => {
+      setCarregando(true);
+      try {
+        let f = "";
+        const q = busca.trim().replace(/[,()*]/g, " ").trim();
+        if (q) { const e = encodeURIComponent(q); f += `&or=(nome.ilike.*${e}*,razao_social.ilike.*${e}*,documento.ilike.*${e}*,codigo_antigo.eq.${e},sigla.ilike.*${e}*)`; }
+        if (["cliente", "fornecedor", "agencia", "patrocinador"].includes(filtro)) f += `&${filtro}=eq.true`;
+        if (filtro === "outros") f += "&cliente=eq.false&fornecedor=eq.false&agencia=eq.false&patrocinador=eq.false";
+        const r = await sbRequest(`pessoas?select=id,codigo_antigo,tipo_pessoa,nome,razao_social,documento,telefone,celular,end_cidade,cliente,fornecedor,agencia,patrocinador,ativo&order=nome.asc&limit=100${f}`, session);
+        setRows(r || []);
+      } catch (e) { setErro(msgSupabase(e)); }
+      finally { setCarregando(false); }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [busca, filtro, versao]); // eslint-disable-line
+
+  async function abrir(id) {
+    try {
+      const [p] = await sbRequest(`pessoas?select=*&id=eq.${id}`, session);
+      if (p) setEditando(p);
+    } catch (e) { setErro(msgSupabase(e)); }
+  }
+  async function salvar(payload) {
+    setSalvando(true); setErro("");
+    try {
+      if (editando?.id) await sbRequest(`pessoas?id=eq.${editando.id}`, session, { method: "PATCH", body: payload });
+      else await sbRequest("pessoas", session, { method: "POST", body: payload });
+      setEditando(null); setVersao((v) => v + 1);
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setSalvando(false); }
+  }
+  async function excluir() {
+    if (!window.confirm(`Excluir "${editando.nome}"? Se ele já tem orçamentos ou lançamentos vinculados, o sistema vai recusar; nesse caso desmarque "Cadastro ativo".`)) return;
+    try {
+      await sbRequest(`pessoas?id=eq.${editando.id}`, session, { method: "DELETE" });
+      setEditando(null); setVersao((v) => v + 1);
+    } catch (e) { setErro(msgSupabase(e)); }
+  }
+
+  if (editando) return <PessoaForm inicial={editando} onSalvar={salvar} onCancelar={() => setEditando(null)} onExcluir={editando.id ? excluir : null} salvando={salvando} />;
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+        <Field label="Buscar (nome, razão social, CNPJ/CPF, código)">
+          <input style={{ ...inputStyle, minWidth: 280 }} value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Digite para buscar..." />
+        </Field>
+        <Field label="Tipo">
+          <select style={inputStyle} value={filtro} onChange={(e) => setFiltro(e.target.value)}>
+            <option value="todos">Todos</option><option value="cliente">Clientes</option><option value="fornecedor">Fornecedores</option>
+            <option value="agencia">Agências</option><option value="patrocinador">Patrocinadores</option><option value="outros">Outros</option>
+          </select>
+        </Field>
+        <button onClick={() => setEditando(pessoaVazia())} style={btnPrimary}><Plus size={16} /> Novo cadastro</button>
+        {carregando && <span style={{ color: MUTED, fontSize: 13 }}>Carregando...</span>}
+      </div>
+      <Card style={{ padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+          <thead><tr style={{ background: BG }}>
+            <th style={thS}>Cód.</th><th style={thS}>Nome</th><th style={thS}>CNPJ / CPF</th><th style={thS}>Telefone</th><th style={thS}>Cidade</th><th style={thS}>Tipo</th>
+          </tr></thead>
+          <tbody>
+            {rows.length === 0 && !carregando && <tr><td colSpan={6} style={{ ...tdS, color: MUTED }}>Nenhum cadastro encontrado.</td></tr>}
+            {rows.map((p) => (
+              <tr key={p.id} onClick={() => abrir(p.id)} style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer", opacity: p.ativo ? 1 : 0.5 }}>
+                <td style={{ ...tdS, fontFamily: FONT_MONO, color: MUTED }}>{p.codigo_antigo || "—"}</td>
+                <td style={{ ...tdS, fontWeight: 600 }}>{p.nome}{p.tipo_pessoa === "pf" && <span style={{ color: MUTED, fontWeight: 400, fontSize: 11 }}> · PF</span>}{p.razao_social && p.razao_social !== p.nome ? <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{p.razao_social}</div> : null}</td>
+                <td style={tdS}>{p.documento || "—"}</td>
+                <td style={tdS}>{p.celular || p.telefone || "—"}</td>
+                <td style={tdS}>{p.end_cidade || "—"}</td>
+                <td style={tdS}><ChipsPessoa p={p} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+      <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>Mostrando até 100 resultados. Use a busca para achar um cadastro específico.</div>
+    </div>
+  );
+}
+
+function ItensCadView({ session, setErro }) {
+  const [rows, setRows] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [busca, setBusca] = useState("");
+  const [cat, setCat] = useState("todas");
+  const [editando, setEditando] = useState(null);
+  const [salvando, setSalvando] = useState(false);
+
+  function carregar() {
+    setCarregando(true);
+    sbRequest("itens?select=*&order=nome.asc&limit=1000", session)
+      .then((r) => setRows(r || []))
+      .catch((e) => setErro(msgSupabase(e)))
+      .finally(() => setCarregando(false));
+  }
+  useEffect(() => { carregar(); }, []); // eslint-disable-line
+
+  async function salvar() {
+    const e = editando;
+    if (!e.nome.trim()) { setErro("Informe o nome do item."); return; }
+    setSalvando(true); setErro("");
+    const body = { nome: limparTextoCad(e.nome), categoria: e.categoria, unidade: nulCad(e.unidade), custo_padrao: parseFloat(String(e.custo_padrao).replace(",", ".")) || 0, ativo: !!e.ativo };
+    try {
+      if (e.id) await sbRequest(`itens?id=eq.${e.id}`, session, { method: "PATCH", body });
+      else await sbRequest("itens", session, { method: "POST", body });
+      setEditando(null); carregar();
+    } catch (er) { setErro(msgSupabase(er)); }
+    finally { setSalvando(false); }
+  }
+  async function excluir(id) {
+    if (!window.confirm("Excluir este item do cadastro? Os orçamentos que já usaram o item não mudam.")) return;
+    try { await sbRequest(`itens?id=eq.${id}`, session, { method: "DELETE" }); carregar(); }
+    catch (er) { setErro(msgSupabase(er)); }
+  }
+
+  const q = busca.trim().toUpperCase();
+  const lista = rows.filter((r) => (cat === "todas" || r.categoria === cat) && (!q || r.nome.toUpperCase().includes(q)));
+  const novo = () => setEditando({ nome: "", categoria: "outros_gera_lucro", unidade: "diária", custo_padrao: "", ativo: true });
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+        <Field label="Buscar item"><input style={{ ...inputStyle, minWidth: 240 }} value={busca} onChange={(e) => setBusca(e.target.value)} /></Field>
+        <Field label="Categoria">
+          <select style={inputStyle} value={cat} onChange={(e) => setCat(e.target.value)}>
+            <option value="todas">Todas</option>
+            {CAT_ITEM.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+          </select>
+        </Field>
+        <button onClick={novo} style={btnPrimary}><Plus size={16} /> Novo item</button>
+        {carregando && <span style={{ color: MUTED, fontSize: 13 }}>Carregando...</span>}
+      </div>
+
+      {editando && (
+        <Card style={{ marginBottom: 16 }}>
+          <h4 style={{ margin: "0 0 12px", fontSize: 14 }}>{editando.id ? "Editar item" : "Novo item"}</h4>
+          <GradeCad cols="2fr 1.5fr 1fr 1fr">
+            <CampoTxt label="Nome do item *" valor={editando.nome} onChange={(v) => setEditando({ ...editando, nome: v })} />
+            <Field label="Categoria na composição">
+              <select style={inputStyle} value={editando.categoria} onChange={(e) => setEditando({ ...editando, categoria: e.target.value })}>
+                {CAT_ITEM.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+              </select>
+            </Field>
+            <CampoTxt label="Unidade" valor={editando.unidade} onChange={(v) => setEditando({ ...editando, unidade: v })} placeholder="m², diária, un" />
+            <CampoTxt label="Custo padrão (R$)" valor={editando.custo_padrao} onChange={(v) => setEditando({ ...editando, custo_padrao: v })} />
+          </GradeCad>
+          <label style={{ fontSize: 13, display: "inline-flex", gap: 6, alignItems: "center" }}>
+            <input type="checkbox" checked={!!editando.ativo} onChange={(e) => setEditando({ ...editando, ativo: e.target.checked })} /> Item ativo (aparece nas sugestões)
+          </label>
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 12 }}>
+            <button onClick={() => setEditando(null)} style={btnGhostSmall}>Cancelar</button>
+            <button onClick={salvar} disabled={salvando} style={btnPrimary}>{salvando ? "Salvando..." : "Salvar"}</button>
+          </div>
+        </Card>
+      )}
+
+      <Card style={{ padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+          <thead><tr style={{ background: BG }}>
+            <th style={thS}>Item</th><th style={thS}>Categoria</th><th style={thS}>Unidade</th><th style={{ ...thS, textAlign: "right" }}>Custo padrão</th><th style={thS}></th>
+          </tr></thead>
+          <tbody>
+            {lista.length === 0 && !carregando && <tr><td colSpan={5} style={{ ...tdS, color: MUTED }}>Nenhum item.</td></tr>}
+            {lista.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}`, opacity: r.ativo ? 1 : 0.5 }}>
+                <td style={{ ...tdS, fontWeight: 600 }}>{r.nome}</td>
+                <td style={tdS}>{catItemLabel(r.categoria)}</td>
+                <td style={tdS}>{r.unidade || "—"}</td>
+                <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(r.custo_padrao)}</td>
+                <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
+                  <button onClick={() => setEditando({ ...r, custo_padrao: String(r.custo_padrao).replace(".", ",") })} style={btnGhostSmall}>Editar</button>{" "}
+                  <button onClick={() => excluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// ---------- importação das planilhas de pessoas (PJ e PF) ----------
+const semAcCad = (s) => String(s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+
+async function lerPlanilhaPessoas(file) {
+  const XLSX = await carregarLeitorPlanilha();
+  const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const aoa = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: true, defval: null });
+  const cab = (aoa[0] || []).map(semAcCad);
+  const col = (...nomes) => { for (const n of nomes) { const i = cab.indexOf(n); if (i >= 0) return i; } return -1; };
+  const pf = cab.includes("cpf"), pj = cab.includes("cnpj");
+  if (!pf && !pj) return { arquivo: file.name, erro: "Não encontrei a coluna CNPJ ou CPF. Este arquivo é o cadastro de pessoas?", linhas: [], ignorados: 0 };
+  const c = { cod: col("codigo"), nome: col("nome"), razao: col("razao social"), doc: col(pf ? "cpf" : "cnpj"), ident: col("identidade"), email: col("email", "e-mail"), tel: col("telefone", "telefone1"), cel: col("telefone2", "celular"), contato: col("contato"), cidade: col("cidade"), cat: col("categoria") };
+  const v = (r, i) => (i >= 0 ? r[i] : null);
+  const linhas = []; let ignorados = 0; const docsVistos = new Set();
+  for (const r of aoa.slice(1)) {
+    let cod = String(v(r, c.cod) ?? "").trim();
+    if (!cod) continue;
+    if (/^\d+$/.test(cod) && cod.length < 5) cod = cod.padStart(5, "0");
+    let nome = limparTextoCad(v(r, c.nome));
+    const razao = limparTextoCad(v(r, c.razao));
+    if (!nome) nome = razao;
+    if (!nome) { ignorados++; continue; }
+    let doc = docFormatadoCad(v(r, c.doc)) || null;
+    if (doc) { if (docsVistos.has(doc)) doc = null; else docsVistos.add(doc); }
+    const categoria = limparTextoCad(v(r, c.cat)) || null;
+    linhas.push({
+      codigo_antigo: cod, tipo_pessoa: pf ? "pf" : "pj", nome, razao_social: pf ? null : (razao || null), documento: doc,
+      identidade: pf ? (limparTextoCad(v(r, c.ident)) || null) : null,
+      email: limparTextoCad(v(r, c.email)).toLowerCase() || null,
+      telefone: limparTelCad(v(r, c.tel)) || null, celular: pf ? (limparTelCad(v(r, c.cel)) || null) : null,
+      contato: pf ? null : (limparTextoCad(v(r, c.contato)) || null), end_cidade: pf ? null : (limparTextoCad(v(r, c.cidade)) || null),
+      categoria, fornecedor: pf && /apoio/i.test(categoria || ""),
+    });
+  }
+  return { arquivo: file.name, tipo: pf ? "pf" : "pj", linhas, ignorados, erro: "" };
+}
+
+function ImportarCadastrosView({ session, setErro }) {
+  const [arquivos, setArquivos] = useState([]);
+  const [existentes, setExistentes] = useState(null);
+  const [atualizar, setAtualizar] = useState(false);
+  const [lendo, setLendo] = useState(false);
+  const [importando, setImportando] = useState(false);
+  const [progresso, setProgresso] = useState("");
+  const [resultado, setResultado] = useState(null);
+  const [vinculo, setVinculo] = useState(null);
+  const [vinculando, setVinculando] = useState(false);
+
+  async function lerArquivos(lista) {
+    setLendo(true); setResultado(null); setErro("");
+    try {
+      const lidos = [];
+      for (const f of lista) lidos.push(await lerPlanilhaPessoas(f));
+      setArquivos(lidos);
+      const cods = new Set();
+      for (let off = 0; ; off += 1000) {
+        const r = await sbRequest(`pessoas?select=codigo_antigo&codigo_antigo=not.is.null&order=codigo_antigo.asc&limit=1000&offset=${off}`, session);
+        (r || []).forEach((x) => cods.add(x.codigo_antigo));
+        if (!r || r.length < 1000) break;
+      }
+      setExistentes(cods);
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setLendo(false); }
+  }
+
+  const todas = arquivos.flatMap((a) => a.linhas);
+  const novos = existentes ? todas.filter((l) => !existentes.has(l.codigo_antigo)) : [];
+  const jaExistem = existentes ? todas.filter((l) => existentes.has(l.codigo_antigo)) : [];
+
+  async function enviarLote(lote, path, prefer, erros) {
+    try { await sbRequest(path, session, { method: "POST", body: lote, extraHeaders: { Prefer: prefer } }); return lote.length; }
+    catch {
+      let ok = 0;
+      for (const l of lote) {
+        try { await sbRequest(path, session, { method: "POST", body: [l], extraHeaders: { Prefer: prefer } }); ok++; }
+        catch (e) { erros.push(`${l.codigo_antigo} ${l.nome}: ${String(e.message).replace(/^Supabase \([^)]*\) \d+: /, "").slice(0, 120)}`); }
+      }
+      return ok;
+    }
+  }
+
+  async function importar() {
+    setImportando(true); setErro(""); setResultado(null);
+    const erros = []; let ins = 0, atu = 0;
+    try {
+      for (let i = 0; i < novos.length; i += 200) {
+        setProgresso(`Importando novos: ${Math.min(i + 200, novos.length)} de ${novos.length}`);
+        ins += await enviarLote(novos.slice(i, i + 200), "pessoas", "return=minimal", erros);
+      }
+      if (atualizar) {
+        const dados = jaExistem.map(({ cliente, fornecedor, agencia, patrocinador, ...resto }) => resto); // não mexe nos tipos já marcados
+        for (let i = 0; i < dados.length; i += 200) {
+          setProgresso(`Atualizando existentes: ${Math.min(i + 200, dados.length)} de ${dados.length}`);
+          atu += await enviarLote(dados.slice(i, i + 200), "pessoas?on_conflict=codigo_antigo", "resolution=merge-duplicates,return=minimal", erros);
+        }
+      }
+      setResultado({ ins, atu, erros });
+      setExistentes(null); setArquivos([]);
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setImportando(false); setProgresso(""); }
+  }
+
+  async function vincular() {
+    setVinculando(true); setErro(""); setVinculo(null);
+    try { setVinculo(await sbRequest("rpc/vincular_cadastros", session, { method: "POST", body: {} })); }
+    catch (e) { setErro(msgSupabase(e)); }
+    finally { setVinculando(false); }
+  }
+
+  return (
+    <div>
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, color: NAVY, marginBottom: 6 }}>1. Importar planilhas do sistema antigo</div>
+        <p style={{ margin: "0 0 10px", fontSize: 13, color: MUTED }}>
+          Envie o cadastro de pessoas jurídicas e/ou o de pessoas físicas (.xls ou .xlsx). Cadastros que já existem (mesmo código antigo) não são alterados, a menos que você marque a opção abaixo.
+          Quem não tem nome nem razão social é ignorado.
+        </p>
+        <input type="file" accept=".xls,.xlsx" multiple disabled={lendo || importando}
+          onChange={(e) => { const lista = Array.from(e.target.files || []); e.target.value = ""; if (lista.length) lerArquivos(lista); }} />
+        {lendo && <span style={{ marginLeft: 10, color: MUTED, fontSize: 13 }}>Lendo...</span>}
+
+        {arquivos.length > 0 && existentes && (
+          <div style={{ marginTop: 14, fontSize: 13, lineHeight: 1.7 }}>
+            {arquivos.map((a) => (
+              <div key={a.arquivo}>
+                <b>{a.arquivo}</b>{a.erro ? <span style={{ color: DANGER }}> · {a.erro}</span> : <> · {a.tipo === "pf" ? "pessoas físicas" : "pessoas jurídicas"}: {a.linhas.length} cadastros{a.ignorados ? `, ${a.ignorados} ignorados (sem nome)` : ""}</>}
+              </div>
+            ))}
+            <div style={{ marginTop: 6 }}>Novos: <b>{novos.length}</b> · Já cadastrados: <b>{jaExistem.length}</b></div>
+            <label style={{ display: "inline-flex", gap: 6, alignItems: "center", marginTop: 6 }}>
+              <input type="checkbox" checked={atualizar} onChange={(e) => setAtualizar(e.target.checked)} /> Atualizar também os já cadastrados (dados de contato; não muda Cliente/Fornecedor)
+            </label>
+            <div style={{ marginTop: 10 }}>
+              <button onClick={importar} disabled={importando || (novos.length === 0 && !(atualizar && jaExistem.length))} style={btnPrimary}>
+                {importando ? progresso || "Importando..." : `Importar ${novos.length} novos${atualizar ? ` e atualizar ${jaExistem.length}` : ""}`}
+              </button>
+            </div>
+          </div>
+        )}
+        {resultado && (
+          <div style={{ marginTop: 14, fontSize: 13 }}>
+            <div style={{ color: "#2E7D5B", fontWeight: 600 }}>{resultado.ins} cadastros novos importados{resultado.atu ? `, ${resultado.atu} atualizados` : ""}.</div>
+            {resultado.erros.length > 0 && (
+              <div style={{ marginTop: 6, color: DANGER }}>
+                {resultado.erros.length} não entraram:
+                <ul style={{ margin: "4px 0 0", paddingLeft: 18, maxHeight: 160, overflow: "auto" }}>{resultado.erros.slice(0, 50).map((e, i) => <li key={i}>{e}</li>)}</ul>
+              </div>
+            )}
+            <div style={{ marginTop: 6, color: MUTED }}>Agora faça o passo 2 para ligar os cadastros aos orçamentos e lançamentos.</div>
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 600, color: NAVY, marginBottom: 6 }}>2. Vincular cadastros</div>
+        <p style={{ margin: "0 0 10px", fontSize: 13, color: MUTED }}>
+          Junta os clientes antigos do sistema com o cadastro importado (pelo nome, só quando é único), marca como <b>Cliente</b> quem tem orçamento, como <b>Fornecedor</b> a equipe de apoio e quem tem conta a pagar,
+          e liga cada lançamento do Financeiro ao cadastro pelo nome. Pode repetir quando quiser, por exemplo depois de importar um novo mês.
+        </p>
+        <button onClick={vincular} disabled={vinculando} style={btnPrimary}>{vinculando ? "Vinculando..." : "Vincular agora"}</button>
+        {vinculo && (
+          <div style={{ marginTop: 12, fontSize: 13, lineHeight: 1.7 }}>
+            Clientes antigos fundidos ao cadastro: <b>{vinculo.clientes_fundidos}</b><br />
+            Lançamentos ligados a um cadastro: <b>{vinculo.lancamentos_ligados}</b><br />
+            Lançamentos ainda sem cadastro: <b>{vinculo.lancamentos_sem_cadastro}</b> <span style={{ color: MUTED }}>(nome que não bate ou duplicado no cadastro)</span>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function CadastrosView({ session, setErro }) {
+  const [subtab, setSubtab] = useState("pessoas");
+  const SUBABAS = [{ id: "pessoas", label: "Clientes / Fornecedores" }, { id: "itens", label: "Itens" }, { id: "importar", label: "Importar planilhas" }];
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 18px", fontSize: 18, fontWeight: 700 }}>Cadastros</h2>
+      <div style={{ display: "flex", gap: 6, marginBottom: 18, flexWrap: "wrap" }}>
+        {SUBABAS.map((s) => (
+          <button key={s.id} onClick={() => setSubtab(s.id)} style={{
+            padding: "8px 16px", borderRadius: 8, border: `1px solid ${subtab === s.id ? GOLD : BORDER}`,
+            background: subtab === s.id ? GOLD : "#fff", color: subtab === s.id ? "#fff" : TEXT, fontSize: 13, fontWeight: 600, cursor: "pointer",
+          }}>{s.label}</button>
+        ))}
+      </div>
+      {subtab === "pessoas" && <PessoasCadView session={session} setErro={setErro} />}
+      {subtab === "itens" && <ItensCadView session={session} setErro={setErro} />}
+      {subtab === "importar" && <ImportarCadastrosView session={session} setErro={setErro} />}
+    </div>
+  );
+}
+
+// =========================================================
 // Resultados (somente administradores) · análise mensal
 // =========================================================
 function ResultadosAdminView({ session, setErro }) {
@@ -4652,10 +5246,10 @@ function DashboardComercialView({ session, setErro, clientes }) {
     setCarregando(true);
     setErro("");
     Promise.all([
-      sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=eq.${mesRef}-01`, session),
+      sbRequest(`orcamentos?select=*,clientes:pessoas(nome)&mes_ref=eq.${mesRef}-01`, session),
       sbRequest(`faturamento?select=valor&mes_ref=eq.${mesRef}-01`, session),
       sbRequest(`orcamentos?select=valor&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=eq.${anoAnterior}-${MESES[mes - 1]}-01`, session),
-      sbRequest(`orcamentos?select=valor,clientes(nome)&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=gte.${inicioAno}&mes_ref=lte.${mesRef}-01`, session),
+      sbRequest(`orcamentos?select=valor,clientes:pessoas(nome)&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=gte.${inicioAno}&mes_ref=lte.${mesRef}-01`, session),
     ])
       .then(([oMes, fMes, oAnoAnt, oAcum]) => {
         setOrcMes((oMes || []).map(orcamentoFromRow));
@@ -4800,7 +5394,7 @@ function DashboardAnualComercial({ session, setErro }) {
     setCarregando(true);
     setErro("");
     Promise.all([
-      sbRequest(`orcamentos?select=*,clientes(nome)&mes_ref=gte.${ano}-01-01&mes_ref=lt.${ano + 1}-01-01`, session),
+      sbRequest(`orcamentos?select=*,clientes:pessoas(nome)&mes_ref=gte.${ano}-01-01&mes_ref=lt.${ano + 1}-01-01`, session),
       sbRequest(`faturamento?select=valor,mes_ref&mes_ref=gte.${ano}-01-01&mes_ref=lt.${ano + 1}-01-01`, session),
       sbRequest(`previsao_orcamentaria?select=*&ano=eq.${ano}`, session),
       sbRequest(`orcamentos?select=valor&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=gte.${ano - 1}-01-01&mes_ref=lt.${ano}-01-01`, session),
