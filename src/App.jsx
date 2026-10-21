@@ -4956,6 +4956,11 @@ function ItensCadView({ session, setErro }) {
   const [cat, setCat] = useState("todas");
   const [editando, setEditando] = useState(null);
   const [salvando, setSalvando] = useState(false);
+  const [centrosRes, setCentrosRes] = useState([]);
+  const [filtroCR, setFiltroCR] = useState("todos");
+  useEffect(() => {
+    sbRequest("centros_resultado?select=*&order=nome.asc", session).then((r) => setCentrosRes(r || [])).catch(() => {});
+  }, []); // eslint-disable-line
 
   function carregar() {
     setCarregando(true);
@@ -4971,7 +4976,7 @@ function ItensCadView({ session, setErro }) {
     if (!e.nome.trim()) { setErro("Informe o nome do item."); return; }
     setSalvando(true); setErro("");
     const id = e.id || crypto.randomUUID();
-    const body = { nome: limparTextoCad(e.nome), categoria: e.categoria, unidade: nulCad(e.unidade), custo_padrao: parseFloat(String(e.custo_padrao).replace(",", ".")) || 0, ativo: !!e.ativo };
+    const body = { nome: limparTextoCad(e.nome), categoria: e.categoria, unidade: nulCad(e.unidade), custo_padrao: parseFloat(String(e.custo_padrao).replace(",", ".")) || 0, ativo: !!e.ativo, centro_resultado_id: e.centro_resultado_id || null };
     try {
       const antiga = e.imagem_original || null;
       if (e.arquivoImg) { body.imagem_path = await enviarImagemItem(e.arquivoImg, id, session); }
@@ -4995,8 +5000,9 @@ function ItensCadView({ session, setErro }) {
   }
 
   const q = busca.trim().toUpperCase();
-  const lista = rows.filter((r) => (cat === "todas" || r.categoria === cat) && (!q || r.nome.toUpperCase().includes(q)));
-  const novo = () => setEditando({ nome: "", categoria: "outros_gera_lucro", unidade: "diária", custo_padrao: "", ativo: true });
+  const lista = rows.filter((r) => (cat === "todas" || r.categoria === cat) && (filtroCR === "todos" || (filtroCR === "sem" ? !r.centro_resultado_id : r.centro_resultado_id === filtroCR)) && (!q || r.nome.toUpperCase().includes(q)));
+  const nomeCR = (id) => centrosRes.find((c) => c.id === id)?.nome || "—";
+  const novo = () => setEditando({ nome: "", categoria: "outros_gera_lucro", unidade: "diária", custo_padrao: "", ativo: true, centro_resultado_id: "" });
 
   return (
     <div>
@@ -5008,6 +5014,12 @@ function ItensCadView({ session, setErro }) {
             {CAT_ITEM.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
         </Field>
+        <Field label="Centro de resultado">
+          <select style={inputStyle} value={filtroCR} onChange={(e) => setFiltroCR(e.target.value)}>
+            <option value="todos">Todos</option><option value="sem">Sem centro de resultado</option>
+            {centrosRes.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+          </select>
+        </Field>
         <button onClick={novo} style={btnPrimary}><Plus size={16} /> Novo item</button>
         {carregando && <span style={{ color: MUTED, fontSize: 13 }}>Carregando...</span>}
       </div>
@@ -5015,11 +5027,17 @@ function ItensCadView({ session, setErro }) {
       {editando && (
         <Card style={{ marginBottom: 16 }}>
           <h4 style={{ margin: "0 0 12px", fontSize: 14 }}>{editando.id ? "Editar item" : "Novo item"}</h4>
-          <GradeCad cols="2fr 1.5fr 1fr 1fr">
+          <GradeCad cols="2fr 1.5fr 1.5fr 1fr 1fr">
             <CampoTxt label="Nome do item *" valor={editando.nome} onChange={(v) => setEditando({ ...editando, nome: v })} />
             <Field label="Categoria na composição">
               <select style={inputStyle} value={editando.categoria} onChange={(e) => setEditando({ ...editando, categoria: e.target.value })}>
                 {CAT_ITEM.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
+              </select>
+            </Field>
+            <Field label="Centro de resultado">
+              <select style={inputStyle} value={editando.centro_resultado_id || ""} onChange={(e) => setEditando({ ...editando, centro_resultado_id: e.target.value })}>
+                <option value="">— selecione —</option>
+                {centrosRes.filter((c) => c.ativo || c.id === editando.centro_resultado_id).map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
               </select>
             </Field>
             <CampoTxt label="Unidade" valor={editando.unidade} onChange={(v) => setEditando({ ...editando, unidade: v })} placeholder="m², diária, un" />
@@ -5056,10 +5074,10 @@ function ItensCadView({ session, setErro }) {
       <Card style={{ padding: 0, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
           <thead><tr style={{ background: BG }}>
-            <th style={thS}></th><th style={thS}>Item</th><th style={thS}>Categoria</th><th style={thS}>Unidade</th><th style={{ ...thS, textAlign: "right" }}>Custo padrão</th><th style={thS}></th>
+            <th style={thS}></th><th style={thS}>Item</th><th style={thS}>Categoria</th><th style={thS}>Centro de resultado</th><th style={thS}>Unidade</th><th style={{ ...thS, textAlign: "right" }}>Custo padrão</th><th style={thS}></th>
           </tr></thead>
           <tbody>
-            {lista.length === 0 && !carregando && <tr><td colSpan={6} style={{ ...tdS, color: MUTED }}>Nenhum item.</td></tr>}
+            {lista.length === 0 && !carregando && <tr><td colSpan={7} style={{ ...tdS, color: MUTED }}>Nenhum item.</td></tr>}
             {lista.map((r) => (
               <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}`, opacity: r.ativo ? 1 : 0.5 }}>
                 <td style={{ ...tdS, width: 52 }}>
@@ -5069,11 +5087,89 @@ function ItensCadView({ session, setErro }) {
                 </td>
                 <td style={{ ...tdS, fontWeight: 600 }}>{r.nome}</td>
                 <td style={tdS}>{catItemLabel(r.categoria)}</td>
+                <td style={tdS}>{nomeCR(r.centro_resultado_id)}</td>
                 <td style={tdS}>{r.unidade || "—"}</td>
                 <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(r.custo_padrao)}</td>
                 <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
                   <button onClick={() => setEditando({ ...r, custo_padrao: String(r.custo_padrao).replace(".", ","), imagem_original: r.imagem_path || null })} style={btnGhostSmall}>Editar</button>{" "}
                   <button onClick={() => excluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+function CentrosResultadoCadView({ session, setErro }) {
+  const [rows, setRows] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [novo, setNovo] = useState("");
+  const [editId, setEditId] = useState(null);
+  const [editNome, setEditNome] = useState("");
+
+  function carregar() {
+    setCarregando(true);
+    sbRequest("centros_resultado?select=*&order=nome.asc", session)
+      .then((r) => setRows(r || []))
+      .catch((e) => setErro(msgSupabase(e)))
+      .finally(() => setCarregando(false));
+  }
+  useEffect(() => { carregar(); }, []); // eslint-disable-line
+
+  async function adicionar() {
+    const nome = limparTextoCad(novo);
+    if (!nome) return;
+    try { await sbRequest("centros_resultado", session, { method: "POST", body: { nome } }); setNovo(""); carregar(); }
+    catch (e) { setErro(msgSupabase(e)); }
+  }
+  async function salvarNome(id) {
+    const nome = limparTextoCad(editNome);
+    if (!nome) return;
+    try { await sbRequest(`centros_resultado?id=eq.${id}`, session, { method: "PATCH", body: { nome } }); setEditId(null); carregar(); }
+    catch (e) { setErro(msgSupabase(e)); }
+  }
+  async function alternar(r) {
+    try { await sbRequest(`centros_resultado?id=eq.${r.id}`, session, { method: "PATCH", body: { ativo: !r.ativo } }); carregar(); }
+    catch (e) { setErro(msgSupabase(e)); }
+  }
+  async function excluir(r) {
+    if (!window.confirm(`Excluir o centro de resultado "${r.nome}"? Os itens que o usavam ficam sem centro de resultado.`)) return;
+    try { await sbRequest(`centros_resultado?id=eq.${r.id}`, session, { method: "DELETE" }); carregar(); }
+    catch (e) { setErro(msgSupabase(e)); }
+  }
+
+  return (
+    <div>
+      <p style={{ margin: "0 0 14px", fontSize: 13, color: MUTED }}>Áreas de resultado da empresa (comunicação visual, painel de LED, estrutura...). Cada item do cadastro é ligado a um centro de resultado.</p>
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
+        <Field label="Novo centro de resultado">
+          <input style={{ ...inputStyle, minWidth: 260 }} value={novo} onChange={(e) => setNovo(e.target.value)} onKeyDown={(e) => e.key === "Enter" && adicionar()} />
+        </Field>
+        <button onClick={adicionar} style={btnPrimary}><Plus size={16} /> Adicionar</button>
+        {carregando && <span style={{ color: MUTED, fontSize: 13 }}>Carregando...</span>}
+      </div>
+      <Card style={{ padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 480 }}>
+          <thead><tr style={{ background: BG }}><th style={thS}>Nome</th><th style={thS}>Situação</th><th style={thS}></th></tr></thead>
+          <tbody>
+            {rows.length === 0 && !carregando && <tr><td colSpan={3} style={{ ...tdS, color: MUTED }}>Nenhum centro de resultado.</td></tr>}
+            {rows.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}`, opacity: r.ativo ? 1 : 0.55 }}>
+                <td style={{ ...tdS, fontWeight: 600 }}>
+                  {editId === r.id
+                    ? <input style={inputStyle} value={editNome} autoFocus onChange={(e) => setEditNome(e.target.value)} onKeyDown={(e) => e.key === "Enter" && salvarNome(r.id)} />
+                    : r.nome}
+                </td>
+                <td style={tdS}>{r.ativo ? "Ativo" : "Inativo"}</td>
+                <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
+                  {editId === r.id
+                    ? <><button onClick={() => salvarNome(r.id)} style={btnGhostSmall}>Salvar</button>{" "}<button onClick={() => setEditId(null)} style={btnGhostSmall}>Cancelar</button></>
+                    : <><button onClick={() => { setEditId(r.id); setEditNome(r.nome); }} style={btnGhostSmall}>Renomear</button>{" "}
+                        <button onClick={() => alternar(r)} style={btnGhostSmall}>{r.ativo ? "Inativar" : "Ativar"}</button>{" "}
+                        <button onClick={() => excluir(r)} style={btnDangerSmall}><Trash2 size={13} /></button></>}
                 </td>
               </tr>
             ))}
@@ -5273,7 +5369,7 @@ function ImportarCadastrosView({ session, setErro }) {
 
 function CadastrosView({ session, setErro }) {
   const [subtab, setSubtab] = useState("pessoas");
-  const SUBABAS = [{ id: "pessoas", label: "Clientes / Fornecedores" }, { id: "itens", label: "Itens" }, { id: "importar", label: "Importar planilhas" }];
+  const SUBABAS = [{ id: "pessoas", label: "Clientes / Fornecedores" }, { id: "itens", label: "Itens" }, { id: "centros", label: "Centros de resultado" }, { id: "importar", label: "Importar planilhas" }];
   return (
     <div>
       <h2 style={{ margin: "0 0 18px", fontSize: 18, fontWeight: 700 }}>Cadastros</h2>
@@ -5287,6 +5383,7 @@ function CadastrosView({ session, setErro }) {
       </div>
       {subtab === "pessoas" && <PessoasCadView session={session} setErro={setErro} />}
       {subtab === "itens" && <ItensCadView session={session} setErro={setErro} />}
+      {subtab === "centros" && <CentrosResultadoCadView session={session} setErro={setErro} />}
       {subtab === "importar" && <ImportarCadastrosView session={session} setErro={setErro} />}
     </div>
   );
