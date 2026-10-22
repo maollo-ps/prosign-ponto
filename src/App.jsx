@@ -2400,7 +2400,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
 // (mesma lógica da planilha "Previsão de custo")
 // =========================================================
 const CATEGORIAS_ITEM = [
-  { id: "lona_adesivo", label: "Comunicação visual", cor: "#ED1C24" },
+  { id: "lona_adesivo", label: "Lonas / Adesivos", cor: "#ED1C24" },
   { id: "outros_gera_lucro", label: "Outros centros de resultado", cor: "#ED1C24" },
   { id: "sublocacao_gera_lucro", label: "Outros centros (sublocação)", cor: "#DD0806" },
   { id: "servico_nao_gera_lucro", label: "Logística", cor: "#F58220" },
@@ -2552,7 +2552,7 @@ function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, 
   const totaisInternos = `
     <div class="faixa" style="background:#ED1C24">TOTAIS</div>
     <table class="resumo"><tbody>
-      ${linhaR("Total custo comunicação visual", brl(calc.totalLona))}
+      ${linhaR("Total custo lonas / adesivos", brl(calc.totalLona))}
       ${linhaR("Total custo outros centros de resultado", brl(calc.totalOutros + calc.totalSub))}
       ${linhaR("Total 3", brl(calc.total3), true)}
       ${linhaR("Total 4 (logística)", brl(calc.total4), true)}
@@ -2730,7 +2730,10 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const [catalogo, setCatalogo] = useState([]);
   const [fornecedores, setFornecedores] = useState([]);
   const [centros, setCentros] = useState([]);
-  const [grupoTxt, setGrupoTxt] = useState({}); // { chave: { titulo, descricao } }
+  // orçamento para o cliente: "texto" (um item só, valor total) ou "itens" (itens com valor, abatidos do total)
+  const [clienteModo, setClienteModo] = useState("texto");
+  const [itemUnico, setItemUnico] = useState({ titulo: "", descricao: "" });
+  const [itensCli, setItensCli] = useState([]); // [{ id, titulo, descricao, valor }]
   const [centroNovo, setCentroNovo] = useState("");
 
   // sugestões do cadastro (itens e fornecedores); se o usuário não tem acesso, fica vazio e a tela funciona igual
@@ -2745,14 +2748,17 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     Promise.all([
       sbRequest(`orcamentos?select=*,clientes:pessoas(nome,documento,contato,telefone,celular,email,end_logradouro,end_numero,end_complemento,end_bairro,end_cidade)&id=eq.${orcamentoId}`, session),
       sbRequest(`orcamento_itens?select=*&orcamento_id=eq.${orcamentoId}&order=ordem.asc`, session),
-      sbRequest(`orcamento_grupos?select=*&orcamento_id=eq.${orcamentoId}`, session).catch(() => []),
+      sbRequest(`orcamento_cliente_itens?select=*&orcamento_id=eq.${orcamentoId}&order=ordem.asc`, session).catch(() => []),
     ])
       .then(([o, its, gs]) => {
-        setGrupoTxt(Object.fromEntries((gs || []).map((g) => [g.chave, { titulo: g.titulo || "", descricao: g.descricao || "" }])));
+        const unico = (gs || []).find((g) => g.tipo === "unico");
+        if (unico) setItemUnico({ titulo: unico.titulo || "", descricao: unico.descricao || "" });
+        setItensCli((gs || []).filter((g) => g.tipo === "lista").map((g) => ({ id: g.id, titulo: g.titulo || "", descricao: g.descricao || "", valor: String(Number(g.valor || 0)).replace(".", ",") })));
         const row = (o || [])[0];
         setOrc(row || null);
         if (row) {
           setNumeroOr(row.numero_or || "");
+          setClienteModo(row.cliente_modo === "itens" ? "itens" : "texto");
           const pct = (f) => String(Math.round(Number(f || 0) * 10000) / 100).replace(".", ",");
           setBv(pct(row.bv_pct)); setSimples(pct(row.simples_pct)); setComissao(pct(row.comissao_pct)); setMargem(pct(row.margem_pct));
           setAjuste(String(Number(row.ajuste || 0)).replace(".", ","));
@@ -2780,37 +2786,6 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     return c.categoria === "sublocacao_gera_lucro" ? "outros_gera_lucro" : c.categoria;
   };
   const tipoDaLinha = (cat) => (ehOutros(cat) ? "outros_gera_lucro" : cat);
-  const chaveGrupo = (it) => {
-    if (it.categoria === "lona_adesivo") return "cv";
-    if (it.categoria === "servico_nao_gera_lucro") return "log";
-    if (it.centroId) return it.centroId === idCV ? "cv" : it.centroId === idLOG ? "log" : it.centroId;
-    return "sem";
-  };
-  const nomeDoGrupo = (chave) => (chave === "cv" ? "Comunicação visual" : chave === "log" ? "Logística operacional" : chave === "sem" ? "Sem centro de resultado" : nomeCentro(chave) || "Centro de resultado");
-
-  const grupos = useMemo(() => {
-    const m = {};
-    for (const it of itens) {
-      const k = chaveGrupo(it);
-      if (!m[k]) m[k] = { chave: k, custo: 0, descricoes: [] };
-      m[k].custo += custoDoItem(it);
-      if (it.descricao) m[k].descricoes.push(it.descricao);
-    }
-    const lista = Object.values(m).filter((g) => g.custo > 0 || g.descricoes.length);
-    const ordem = (g) => (g.chave === "cv" ? "0" : g.chave === "log" ? "9" : g.chave === "sem" ? "8" : "1" + nomeDoGrupo(g.chave));
-    lista.sort((a, b) => ordem(a).localeCompare(ordem(b)));
-    // valor de venda por grupo: o preço final rateado pelo custo de cada grupo (soma exata, ajuste de centavos no maior)
-    const alvo = Math.round(calc.precoFinal * 100);
-    let soma = 0;
-    lista.forEach((g) => { g.centavos = calc.total6 > 0 ? Math.round((alvo * g.custo) / calc.total6) : 0; soma += g.centavos; });
-    if (lista.length && calc.total6 > 0 && soma !== alvo) {
-      const maior = lista.reduce((a, b) => (b.custo > a.custo ? b : a), lista[0]);
-      maior.centavos += alvo - soma;
-    }
-    lista.forEach((g) => { g.valor = g.centavos / 100; g.pct = calc.total6 > 0 ? g.custo / calc.total6 : 0; });
-    return lista;
-  }, [itens, centros, calc.precoFinal, calc.total6]); // eslint-disable-line
-  const setGrupo = (chave, campo, valor) => { setSalvo(false); setGrupoTxt((g) => ({ ...g, [chave]: { titulo: "", descricao: "", ...g[chave], [campo]: valor } })); };
 
   function addItem(categoria, centroId = null) {
     setSalvo(false);
@@ -2870,16 +2845,14 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
           valor: Math.round(calc.precoFinal * 100) / 100,
         },
       });
-      // descrições do orçamento para o cliente (só dos grupos que existem)
-      const chaves = grupos.map((g) => g.chave);
-      if (chaves.length) {
-        await sbRequest("orcamento_grupos?on_conflict=orcamento_id,chave", session, {
-          method: "POST",
-          body: chaves.map((k) => ({ orcamento_id: orcamentoId, chave: k, titulo: grupoTxt[k]?.titulo || null, descricao: grupoTxt[k]?.descricao || null })),
-          extraHeaders: { Prefer: "resolution=merge-duplicates,return=minimal" },
-        });
-      }
-      await sbRequest(`orcamento_grupos?orcamento_id=eq.${orcamentoId}${chaves.length ? `&chave=not.in.(${chaves.join(",")})` : ""}`, session, { method: "DELETE" });
+      // orçamento para o cliente: modo escolhido + textos/itens
+      await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body: { cliente_modo: clienteModo } });
+      await sbRequest(`orcamento_cliente_itens?orcamento_id=eq.${orcamentoId}`, session, { method: "DELETE" });
+      const linhasCli = [
+        { tipo: "unico", ordem: 0, titulo: itemUnico.titulo || null, descricao: itemUnico.descricao || null, valor: 0 },
+        ...itensCli.map((x, i) => ({ id: x.id, tipo: "lista", ordem: i + 1, titulo: x.titulo || null, descricao: x.descricao || null, valor: numBR(x.valor) })),
+      ].map((x) => ({ orcamento_id: orcamentoId, ...x }));
+      await sbRequest("orcamento_cliente_itens", session, { method: "POST", body: linhasCli, extraHeaders: { Prefer: "return=minimal" } });
       setSalvo(true);
     } catch (e) { setErro(msgSupabase(e)); }
     finally { setSalvando(false); }
@@ -2891,9 +2864,21 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     const ok = gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, nomeCentro });
     if (!ok) setErro("O navegador bloqueou a janela do PDF. Libere pop-ups para este site e tente de novo.");
   }
+  const totalCentavos = Math.round(calc.precoFinal * 100);
+  const distribuidoCentavos = itensCli.reduce((x, i) => x + Math.round(numBR(i.valor) * 100), 0);
+  const saldoCentavos = totalCentavos - distribuidoCentavos;
   function abrirOrcamentoCliente() {
-    const gs = grupos.map((g) => ({ titulo: (grupoTxt[g.chave]?.titulo || "").trim() || (g.chave === "sem" ? "Outros" : nomeDoGrupo(g.chave)), descricao: grupoTxt[g.chave]?.descricao || "", valor: g.valor }));
-    const ok = gerarOrcamentoCliente({ orc, numeroOr, grupos: gs, total: calc.precoFinal });
+    let gs, total;
+    if (clienteModo === "texto") {
+      gs = [{ titulo: (itemUnico.titulo || "").trim() || orc.evento || "Projeto", descricao: itemUnico.descricao || "", valor: calc.precoFinal }];
+      total = calc.precoFinal;
+    } else {
+      if (itensCli.length === 0) { setErro("Adicione pelo menos um item no orçamento para o cliente."); return; }
+      if (saldoCentavos !== 0 && !window.confirm(`Ainda há ${brl(saldoCentavos / 100)} sem distribuir entre os itens. O total do orçamento vai sair diferente do valor da composição. Gerar mesmo assim?`)) return;
+      gs = itensCli.map((i) => ({ titulo: (i.titulo || "").trim() || "Item", descricao: i.descricao || "", valor: Math.round(numBR(i.valor) * 100) / 100 }));
+      total = distribuidoCentavos / 100;
+    }
+    const ok = gerarOrcamentoCliente({ orc, numeroOr, grupos: gs, total });
     if (!ok) setErro("O navegador bloqueou a janela do orçamento. Libere pop-ups para este site e tente de novo.");
   }
 
@@ -3016,12 +3001,12 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         const dl = (tipo) => <datalist id={`dl-itens-${tipo}`}>{catalogo.filter((c) => tipoDoCadastro(c) === tipo).map((c) => <option key={c.id} value={c.nome} />)}</datalist>;
         const outros = itens.filter((i) => ehOutros(i.categoria));
         const chavesOutros = [...new Set(outros.map((i) => i.centroId || ""))].sort((a, b) => (a === "" ? 1 : b === "" ? -1 : nomeCentro(a).localeCompare(nomeCentro(b))));
-        const centrosParaAdicionar = centros.filter((c) => c.ativo && c.id !== idCV && c.id !== idLOG);
+        const centrosParaAdicionar = centros.filter((c) => c.ativo && c.id !== idLOG);
         return (
           <>
             {dl("lona_adesivo")}{dl("outros_gera_lucro")}{dl("servico_nao_gera_lucro")}
             <datalist id="dl-forn">{fornecedores.map((n) => <option key={n} value={n} />)}</datalist>
-            {renderTabela({ titulo: "Comunicação visual", cor: "#ED1C24", lista: itens.filter((i) => i.categoria === "lona_adesivo"), tipo: "lona_adesivo", adicionar: () => addItem("lona_adesivo", idCV) })}
+            {renderTabela({ titulo: "Lonas / Adesivos", cor: "#ED1C24", lista: itens.filter((i) => i.categoria === "lona_adesivo"), tipo: "lona_adesivo", adicionar: () => addItem("lona_adesivo", idCV) })}
             {chavesOutros.map((cid) => (
               <div key={cid || "sem"}>
                 {renderTabela({ titulo: cid ? nomeCentro(cid) || "Centro de resultado" : "Sem centro de resultado", cor: cid ? "#ED1C24" : "#8A8F98", lista: outros.filter((i) => (i.centroId || "") === cid), tipo: "outros", adicionar: () => addItem("outros_gera_lucro", cid || null) })}
@@ -3046,7 +3031,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
           <Faixa cor="#ED1C24">TOTAIS</Faixa>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <tbody>
-              <LinhaTotal rotulo="Total custo comunicação visual" valor={brl(calc.totalLona)} />
+              <LinhaTotal rotulo="Total custo lonas / adesivos" valor={brl(calc.totalLona)} />
               <LinhaTotal rotulo="Total custo outros centros de resultado" valor={brl(calc.totalOutros + calc.totalSub)} />
               <LinhaTotal rotulo="Total 3" valor={brl(calc.total3)} forte />
               <LinhaTotal rotulo="Total 4 (logística)" valor={brl(calc.total4)} forte />
@@ -3100,51 +3085,78 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       </div>
 
       <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", background: "#fff", marginTop: 18 }}>
-        <Faixa cor="#152A4A">VALORES POR CENTRO DE RESULTADO · ORÇAMENTO PARA O CLIENTE</Faixa>
-        <div style={{ padding: "8px 12px", fontSize: 12, color: MUTED }}>
-          O preço final é dividido entre os centros na proporção do custo de cada um. A descrição é o que o cliente lê no orçamento (os custos e a margem não aparecem).
+        <Faixa cor="#152A4A">ORÇAMENTO PARA O CLIENTE</Faixa>
+        <div style={{ padding: "10px 12px", fontSize: 13, display: "flex", gap: 22, flexWrap: "wrap" }}>
+          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
+            <input type="radio" name="clienteModo" checked={clienteModo === "texto"} onChange={() => { setSalvo(false); setClienteModo("texto"); }} />
+            <b>1 · Texto único</b> <span style={{ color: MUTED }}>(um item com a descrição e o valor total)</span>
+          </label>
+          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
+            <input type="radio" name="clienteModo" checked={clienteModo === "itens"} onChange={() => { setSalvo(false); setClienteModo("itens"); }} />
+            <b>2 · Itens com valor</b> <span style={{ color: MUTED }}>(você distribui o valor da composição entre os itens)</span>
+          </label>
         </div>
-        {grupos.some((g) => g.chave === "sem") && (
-          <div style={{ padding: "6px 12px", fontSize: 12, color: DANGER }}>Há itens sem centro de resultado. Escolha o centro na última coluna de cada item para eles entrarem no grupo certo.</div>
+
+        {clienteModo === "texto" && (
+          <div style={{ padding: "0 12px 14px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 12, marginBottom: 8 }}>
+              <Field label="Título do item">
+                <input style={CELULA_DIGITAVEL} value={itemUnico.titulo} placeholder={orc.evento || "Projeto"} onChange={(e) => { setSalvo(false); setItemUnico({ ...itemUnico, titulo: e.target.value }); }} />
+              </Field>
+              <Field label="Valor total (da composição)">
+                <div style={{ ...CELULA_CALCULADA, fontWeight: 700, fontSize: 16 }}>{brl(calc.precoFinal)}</div>
+              </Field>
+            </div>
+            <Field label="Descrição para o cliente">
+              <textarea style={{ ...CELULA_DIGITAVEL, minHeight: 110, resize: "vertical" }} value={itemUnico.descricao}
+                placeholder="Descreva o que está incluído (estrutura, impressões, iluminação, logística...)"
+                onChange={(e) => { setSalvo(false); setItemUnico({ ...itemUnico, descricao: e.target.value }); }} />
+            </Field>
+            {itens.some((i) => i.descricao) && !itemUnico.descricao.trim() && (
+              <button type="button" onClick={() => { setSalvo(false); setItemUnico({ ...itemUnico, descricao: itens.filter((i) => i.descricao).map((i) => i.descricao).join("\n") }); }} style={{ ...btnGhostSmall, marginTop: 6 }}>Preencher com os itens lançados</button>
+            )}
+          </div>
         )}
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
-            <thead><tr>
-              {["Item", "Título no orçamento", "Custo", "%", "Valor de venda", "Descrição para o cliente"].map((h) => <th key={h} style={th}>{h}</th>)}
-            </tr></thead>
-            <tbody>
-              {grupos.length === 0 && <tr><td colSpan={6} style={{ padding: 12, color: MUTED, fontSize: 12, textAlign: "center" }}>Lance os itens acima para formar os grupos.</td></tr>}
-              {grupos.map((g, idx) => (
-                <tr key={g.chave}>
-                  <td style={{ ...td, textAlign: "center", width: 50 }}>{String(idx + 1).padStart(3, "0")}</td>
-                  <td style={{ ...td, width: 200 }}>
-                    <input style={CELULA_DIGITAVEL} value={grupoTxt[g.chave]?.titulo || ""} placeholder={nomeDoGrupo(g.chave)} onChange={(e) => setGrupo(g.chave, "titulo", e.target.value)} />
-                  </td>
-                  <td style={{ ...td, ...CELULA_CALCULADA, width: 110 }}>{brl(g.custo)}</td>
-                  <td style={{ ...td, ...CELULA_CALCULADA, width: 60 }}>{(g.pct * 100).toFixed(1).replace(".", ",")}%</td>
-                  <td style={{ ...td, ...CELULA_CALCULADA, width: 120, fontWeight: 700 }}>{brl(g.valor)}</td>
-                  <td style={td}>
-                    <textarea style={{ ...CELULA_DIGITAVEL, minHeight: 64, resize: "vertical" }} value={grupoTxt[g.chave]?.descricao || ""}
-                      placeholder={g.descricoes.length ? `Ex.: ${g.descricoes.slice(0, 3).join(", ")}` : "Descreva o que está incluído neste item"}
-                      onChange={(e) => setGrupo(g.chave, "descricao", e.target.value)} />
-                    {g.descricoes.length > 0 && !(grupoTxt[g.chave]?.descricao || "").trim() && (
-                      <button type="button" onClick={() => setGrupo(g.chave, "descricao", g.descricoes.join("\n"))} style={{ ...btnGhostSmall, marginTop: 4, padding: "3px 8px", fontSize: 11 }}>Preencher com os itens lançados</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {grupos.length > 0 && (
-                <tr>
-                  <td colSpan={2} style={{ ...td, textAlign: "right", fontWeight: 700, padding: "6px 10px" }}>Total</td>
-                  <td style={{ ...td, ...CELULA_CALCULADA, fontWeight: 700 }}>{brl(grupos.reduce((x, g) => x + g.custo, 0))}</td>
-                  <td style={{ ...td, ...CELULA_CALCULADA }}></td>
-                  <td style={{ ...td, ...CELULA_CALCULADA, fontWeight: 700 }}>{brl(grupos.reduce((x, g) => x + g.valor, 0))}</td>
-                  <td style={td}></td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+
+        {clienteModo === "itens" && (
+          <div style={{ padding: "0 12px 14px" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 12 }}>
+              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10 }}><div style={{ fontSize: 11, color: MUTED }}>Valor da composição</div><div style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 17 }}>{brl(totalCentavos / 100)}</div></div>
+              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10 }}><div style={{ fontSize: 11, color: MUTED }}>Distribuído nos itens</div><div style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 17 }}>{brl(distribuidoCentavos / 100)}</div></div>
+              <div style={{ border: `1px solid ${saldoCentavos === 0 ? "#2E7D5B" : saldoCentavos < 0 ? DANGER : GOLD}`, borderRadius: 8, padding: 10 }}>
+                <div style={{ fontSize: 11, color: MUTED }}>Saldo a distribuir</div>
+                <div style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 17, color: saldoCentavos === 0 ? "#2E7D5B" : saldoCentavos < 0 ? DANGER : TEXT }}>{brl(saldoCentavos / 100)}{saldoCentavos === 0 ? " ✓" : ""}</div>
+                {saldoCentavos < 0 && <div style={{ fontSize: 11, color: DANGER }}>Os itens passaram do valor da composição.</div>}
+              </div>
+            </div>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
+                <thead><tr>{["Item", "Título", "Descrição para o cliente", "Valor (R$)", ""].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {itensCli.length === 0 && <tr><td colSpan={5} style={{ padding: 12, color: MUTED, fontSize: 12, textAlign: "center" }}>Nenhum item. Use "Adicionar item" e vá distribuindo o valor.</td></tr>}
+                  {itensCli.map((x, idx) => (
+                    <tr key={x.id}>
+                      <td style={{ ...td, textAlign: "center", width: 50 }}>{String(idx + 1).padStart(3, "0")}</td>
+                      <td style={{ ...td, width: 210 }}><input style={CELULA_DIGITAVEL} value={x.titulo} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, titulo: e.target.value } : y))); }} /></td>
+                      <td style={td}><textarea style={{ ...CELULA_DIGITAVEL, minHeight: 56, resize: "vertical" }} value={x.descricao} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, descricao: e.target.value } : y))); }} /></td>
+                      <td style={{ ...td, width: 150 }}>
+                        <input style={{ ...CELULA_DIGITAVEL, textAlign: "right" }} inputMode="decimal" value={x.valor} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, valor: e.target.value } : y))); }} />
+                        {saldoCentavos > 0 && (
+                          <button type="button" onClick={() => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, valor: String((Math.round(numBR(y.valor) * 100) + saldoCentavos) / 100).replace(".", ",") } : y))); }}
+                            style={{ ...btnGhostSmall, marginTop: 4, padding: "3px 8px", fontSize: 11 }}>Usar o saldo</button>
+                        )}
+                      </td>
+                      <td style={{ ...td, width: 36, textAlign: "center" }}><BotaoRemover id={x.id} onRemover={(id) => { setSalvo(false); setItensCli((l) => l.filter((y) => y.id !== id)); }} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <button type="button" onClick={() => { setSalvo(false); setItensCli((l) => [...l, { id: crypto.randomUUID(), titulo: "", descricao: "", valor: "" }]); }} style={btnGhostSmall}><Plus size={12} style={{ verticalAlign: -2 }} /> Adicionar item</button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div style={{ fontSize: 12, color: MUTED, marginTop: 12 }}>
