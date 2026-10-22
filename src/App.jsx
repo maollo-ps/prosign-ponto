@@ -3466,14 +3466,16 @@ function FaturamentoFinanceiroView({ session, setErro }) {
   const [recentes, setRecentes] = useState([]);
   const [carregando, setCarregando] = useState(false);
   const [faturandoId, setFaturandoId] = useState(null);
-  const [form, setForm] = useState({ valor: 0, data: hojeLocal(), nf: "" });
+  const [form, setForm] = useState({ valor: 0, data: hojeLocal(), nf: "", previsao: "" });
   const [salvando, setSalvando] = useState(false);
+  const [filtroReceb, setFiltroReceb] = useState("todos");
+  const [editReceb, setEditReceb] = useState(null); // { id, previsao, recebido }
 
   function carregar() {
     setCarregando(true);
     Promise.all([
       sbRequest("orcamentos?select=*,clientes:pessoas(nome)&status=eq.autorizado_faturamento&order=autorizado_em.asc", session),
-      sbRequest("faturamento?select=*,clientes:pessoas(nome),orcamentos!inner(evento,numero_or,status)&orcamentos.status=eq.faturado&order=criado_em.desc&limit=30", session),
+      sbRequest("faturamento?select=*,clientes:pessoas(nome),orcamentos!inner(evento,numero_or,status)&orcamentos.status=eq.faturado&order=criado_em.desc&limit=150", session),
     ])
       .then(([a, b]) => { setFila(a || []); setRecentes(b || []); })
       .catch((e) => setErro(msgSupabase(e)))
@@ -3483,7 +3485,7 @@ function FaturamentoFinanceiroView({ session, setErro }) {
 
   function abrirFaturar(o) {
     setFaturandoId(o.id);
-    setForm({ valor: Number(o.valor) || 0, data: hojeLocal(), nf: "" });
+    setForm({ valor: Number(o.valor) || 0, data: hojeLocal(), nf: "", previsao: "" });
   }
 
   async function confirmarFaturar(o) {
@@ -3495,7 +3497,7 @@ function FaturamentoFinanceiroView({ session, setErro }) {
     try {
       await sbRequest("rpc/faturar_orcamento", session, {
         method: "POST",
-        body: { p_orcamento_id: o.id, p_valor: form.valor, p_data: form.data, p_nf: form.nf || null },
+        body: { p_orcamento_id: o.id, p_valor: form.valor, p_data: form.data, p_nf: form.nf || null, p_previsao: form.previsao || null },
       });
       setFaturandoId(null);
       carregar();
@@ -3503,6 +3505,20 @@ function FaturamentoFinanceiroView({ session, setErro }) {
     finally { setSalvando(false); }
   }
 
+  async function salvarReceb() {
+    setSalvando(true); setErro("");
+    try {
+      await sbRequest(`faturamento?id=eq.${editReceb.id}`, session, { method: "PATCH", body: { previsao_recebimento: editReceb.previsao || null, data_recebimento: editReceb.recebido || null } });
+      setEditReceb(null); carregar();
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setSalvando(false); }
+  }
+  const hoje = hojeLocal();
+  const situacaoReceb = (f) => (f.data_recebimento ? "recebido" : f.previsao_recebimento && f.previsao_recebimento < hoje ? "atrasado" : "a_receber");
+  const aReceber = recentes.filter((f) => !f.data_recebimento);
+  const totalAReceber = aReceber.reduce((x, f) => x + (Number(f.valor) || 0), 0);
+  const totalAtrasado = recentes.filter((f) => situacaoReceb(f) === "atrasado").reduce((x, f) => x + (Number(f.valor) || 0), 0);
+  const recentesVis = recentes.filter((f) => filtroReceb === "todos" || (filtroReceb === "recebidos" ? !!f.data_recebimento : !f.data_recebimento));
   const totalFila = fila.reduce((s, o) => s + (Number(o.valor) || 0), 0);
   const th = { padding: "10px 14px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4 };
   const td = { padding: "10px 14px", fontSize: 13 };
@@ -3513,6 +3529,8 @@ function FaturamentoFinanceiroView({ session, setErro }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 22 }}>
         <Card><div style={{ fontSize: 12, color: MUTED }}>Aguardando faturamento</div><div style={{ fontSize: 26, fontWeight: 700, color: "#1D6FA5" }}>{fila.length}</div></Card>
         <Card><div style={{ fontSize: 12, color: MUTED }}>Valor a faturar</div><div style={{ fontSize: 26, fontWeight: 700, color: NAVY, fontFamily: FONT_MONO }}>{brl(totalFila)}</div></Card>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Faturado a receber</div><div style={{ fontSize: 26, fontWeight: 700, color: GOLD, fontFamily: FONT_MONO }}>{brl(totalAReceber)}</div><div style={{ fontSize: 11, color: MUTED }}>{aReceber.length} faturamento(s)</div></Card>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Recebimento atrasado</div><div style={{ fontSize: 26, fontWeight: 700, color: totalAtrasado > 0 ? DANGER : NAVY, fontFamily: FONT_MONO }}>{brl(totalAtrasado)}</div></Card>
       </div>
 
       <Card style={{ padding: 0, overflowX: "auto", marginBottom: 24 }}>
@@ -3553,6 +3571,9 @@ function FaturamentoFinanceiroView({ session, setErro }) {
                         <Field label="Nº da nota fiscal (opcional)">
                           <input value={form.nf} onChange={(e) => setForm({ ...form, nf: e.target.value })} style={{ ...inputStyle, width: 170 }} />
                         </Field>
+                        <Field label="Previsão de recebimento">
+                          <input type="date" value={form.previsao} onChange={(e) => setForm({ ...form, previsao: e.target.value })} style={inputStyle} />
+                        </Field>
                         <button onClick={() => confirmarFaturar(o)} disabled={salvando} style={btnPrimary}>
                           {salvando ? "Faturando..." : "Confirmar faturamento"}
                         </button>
@@ -3567,23 +3588,59 @@ function FaturamentoFinanceiroView({ session, setErro }) {
       </Card>
 
       <Card style={{ padding: 0, overflowX: "auto" }}>
-        <div style={{ padding: "14px 18px", fontWeight: 600, color: NAVY }}>Faturados recentes</div>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <div style={{ padding: "14px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ fontWeight: 600, color: NAVY }}>Faturados e recebimentos</span>
+          <select value={filtroReceb} onChange={(e) => setFiltroReceb(e.target.value)} style={{ ...selStyle, padding: "6px 10px", fontSize: 12 }}>
+            <option value="todos">Todos</option><option value="areceber">A receber</option><option value="recebidos">Recebidos</option>
+          </select>
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
           <thead><tr style={{ background: BG }}>
-            <th style={th}>Data</th><th style={th}>PR</th><th style={th}>Evento</th><th style={th}>Cliente</th><th style={th}>NF</th><th style={{ ...th, textAlign: "right" }}>Valor</th>
+            <th style={th}>Faturado em</th><th style={th}>PR</th><th style={th}>Evento</th><th style={th}>Cliente</th><th style={th}>NF</th><th style={{ ...th, textAlign: "right" }}>Valor</th>
+            <th style={th}>Previsão receb.</th><th style={th}>Recebido em</th><th style={th}>Situação</th><th style={th}></th>
           </tr></thead>
           <tbody>
-            {recentes.length === 0 && <tr><td colSpan={6} style={{ ...td, color: MUTED }}>Nada faturado por aqui ainda.</td></tr>}
-            {recentes.map((f) => (
-              <tr key={f.id} style={{ borderTop: `1px solid ${BORDER}` }}>
-                <td style={td}>{fmtData(f.data_faturamento)}</td>
-                <td style={td}>{f.orcamentos?.numero_or || "—"}</td>
-                <td style={td}>🔒 {f.orcamentos?.evento}</td>
-                <td style={td}>{f.clientes?.nome || "—"}</td>
-                <td style={td}>{f.nota_fiscal || "—"}</td>
-                <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(f.valor)}</td>
-              </tr>
-            ))}
+            {recentesVis.length === 0 && <tr><td colSpan={10} style={{ ...td, color: MUTED }}>Nada por aqui.</td></tr>}
+            {recentesVis.map((f) => {
+              const sit = situacaoReceb(f);
+              const cor = sit === "recebido" ? "#2E7D5B" : sit === "atrasado" ? DANGER : GOLD;
+              return (
+                <React.Fragment key={f.id}>
+                  <tr style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <td style={td}>{fmtData(f.data_faturamento)}</td>
+                    <td style={td}>{f.orcamentos?.numero_or || "—"}</td>
+                    <td style={td}>🔒 {f.orcamentos?.evento}</td>
+                    <td style={td}>{f.clientes?.nome || "—"}</td>
+                    <td style={td}>{f.nota_fiscal || "—"}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(f.valor)}</td>
+                    <td style={td}>{fmtData(f.previsao_recebimento)}</td>
+                    <td style={td}>{fmtData(f.data_recebimento)}</td>
+                    <td style={td}><span style={{ fontSize: 11, fontWeight: 700, color: cor, border: `1px solid ${cor}`, borderRadius: 10, padding: "1px 8px", whiteSpace: "nowrap" }}>{sit === "recebido" ? "Recebido" : sit === "atrasado" ? "Atrasado" : "A receber"}</span></td>
+                    <td style={{ ...td, textAlign: "right" }}>
+                      <button onClick={() => setEditReceb(editReceb?.id === f.id ? null : { id: f.id, previsao: f.previsao_recebimento || "", recebido: f.data_recebimento || "" })} style={btnGhostSmall}>
+                        {editReceb?.id === f.id ? "Cancelar" : f.data_recebimento ? "Editar datas" : "Informar recebimento"}
+                      </button>
+                    </td>
+                  </tr>
+                  {editReceb?.id === f.id && (
+                    <tr style={{ background: "#F3F7FB" }}>
+                      <td colSpan={10} style={{ padding: 14 }}>
+                        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+                          <Field label="Previsão de recebimento">
+                            <input type="date" value={editReceb.previsao} onChange={(e) => setEditReceb({ ...editReceb, previsao: e.target.value })} style={inputStyle} />
+                          </Field>
+                          <Field label="Data do recebimento efetivo">
+                            <input type="date" value={editReceb.recebido} onChange={(e) => setEditReceb({ ...editReceb, recebido: e.target.value })} style={inputStyle} />
+                          </Field>
+                          <button onClick={salvarReceb} disabled={salvando} style={btnPrimary}>{salvando ? "Salvando..." : "Salvar"}</button>
+                          <span style={{ fontSize: 12, color: MUTED }}>Deixe o recebimento em branco enquanto o dinheiro não entrou.</span>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
       </Card>
