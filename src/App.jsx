@@ -2752,7 +2752,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     ])
       .then(([o, its, gs]) => {
         const unico = (gs || []).find((g) => g.tipo === "unico");
-        if (unico) setItemUnico({ titulo: unico.titulo || "", descricao: unico.descricao || "" });
+        if (unico) setItemUnico({ id: unico.id, titulo: unico.titulo || "", descricao: unico.descricao || "" });
         setItensCli((gs || []).filter((g) => g.tipo === "lista").map((g) => ({ id: g.id, titulo: g.titulo || "", descricao: g.descricao || "", qtd: String(Number(g.qtd ?? 1)).replace(".", ","), diarias: String(Number(g.diarias ?? 1)).replace(".", ","), unitario: String(Number(g.valor_unitario ?? g.valor ?? 0)).replace(".", ",") })));
         const row = (o || [])[0];
         setOrc(row || null);
@@ -2847,12 +2847,15 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       });
       // orçamento para o cliente: modo escolhido + textos/itens
       await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body: { cliente_modo: clienteModo } });
-      await sbRequest(`orcamento_cliente_itens?orcamento_id=eq.${orcamentoId}`, session, { method: "DELETE" });
+      // todas as linhas levam id próprio (linhas sem id viravam NULL e a gravação inteira falhava); grava primeiro, apaga o que sobrou depois
+      const idUnico = itemUnico.id || crypto.randomUUID();
+      if (!itemUnico.id) setItemUnico((x) => ({ ...x, id: idUnico }));
       const linhasCli = [
-        { tipo: "unico", ordem: 0, titulo: itemUnico.titulo || null, descricao: itemUnico.descricao || null, valor: 0, qtd: 1, diarias: 1, valor_unitario: 0 },
+        { id: idUnico, tipo: "unico", ordem: 0, titulo: itemUnico.titulo || null, descricao: itemUnico.descricao || null, valor: 0, qtd: 1, diarias: 1, valor_unitario: 0 },
         ...itensCli.map((x, i) => ({ id: x.id, tipo: "lista", ordem: i + 1, titulo: x.titulo || null, descricao: x.descricao || null, qtd: numBR(x.qtd), diarias: numBR(x.diarias), valor_unitario: numBR(x.unitario), valor: totalCli(x) / 100 })),
       ].map((x) => ({ orcamento_id: orcamentoId, ...x }));
-      await sbRequest("orcamento_cliente_itens", session, { method: "POST", body: linhasCli, extraHeaders: { Prefer: "return=minimal" } });
+      await sbRequest("orcamento_cliente_itens?on_conflict=id", session, { method: "POST", body: linhasCli, extraHeaders: { Prefer: "resolution=merge-duplicates,return=minimal" } });
+      await sbRequest(`orcamento_cliente_itens?orcamento_id=eq.${orcamentoId}&id=not.in.(${linhasCli.map((x) => x.id).join(",")})`, session, { method: "DELETE" });
       setSalvo(true);
     } catch (e) { setErro(msgSupabase(e)); }
     finally { setSalvando(false); }
