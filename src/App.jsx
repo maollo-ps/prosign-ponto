@@ -2648,7 +2648,7 @@ function gerarOrcamentoCliente({ orc, numeroOr, grupos, total }) {
   const linhaDados = (...pares) => `<tr>${pares.map(([r, v, col]) => `<td class="r">${esc(r)}</td><td ${col ? `colspan="${col}"` : ""}>${esc(v)}</td>`).join("")}</tr>`;
 
   const itensHtml = grupos.map((g, i) => `
-    <tr class="it"><td class="c">${String(i + 1).padStart(3, "0")}</td><td>${esc(String(g.titulo).toUpperCase())}</td><td class="c">un</td><td class="c">1</td><td class="c">1</td><td class="n">${m(g.valor)}</td><td class="n">${m(g.valor)}</td></tr>
+    <tr class="it"><td class="c">${String(i + 1).padStart(3, "0")}</td><td>${esc(String(g.titulo).toUpperCase())}</td><td class="c">un</td><td class="c">${esc(numBR(g.qtd ?? 1).toLocaleString("pt-BR", { maximumFractionDigits: 2 }))}</td><td class="c">${esc(numBR(g.diarias ?? 1).toLocaleString("pt-BR", { maximumFractionDigits: 2 }))}</td><td class="n">${m(g.unitario ?? g.valor)}</td><td class="n">${m(g.valor)}</td></tr>
     ${g.descricao.trim() ? `<tr><td></td><td colspan="6" class="desc">${esc(g.descricao.trim())}</td></tr>` : ""}`).join("");
 
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
@@ -2753,7 +2753,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       .then(([o, its, gs]) => {
         const unico = (gs || []).find((g) => g.tipo === "unico");
         if (unico) setItemUnico({ titulo: unico.titulo || "", descricao: unico.descricao || "" });
-        setItensCli((gs || []).filter((g) => g.tipo === "lista").map((g) => ({ id: g.id, titulo: g.titulo || "", descricao: g.descricao || "", valor: String(Number(g.valor || 0)).replace(".", ",") })));
+        setItensCli((gs || []).filter((g) => g.tipo === "lista").map((g) => ({ id: g.id, titulo: g.titulo || "", descricao: g.descricao || "", qtd: String(Number(g.qtd ?? 1)).replace(".", ","), diarias: String(Number(g.diarias ?? 1)).replace(".", ","), unitario: String(Number(g.valor_unitario ?? g.valor ?? 0)).replace(".", ",") })));
         const row = (o || [])[0];
         setOrc(row || null);
         if (row) {
@@ -2849,8 +2849,8 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body: { cliente_modo: clienteModo } });
       await sbRequest(`orcamento_cliente_itens?orcamento_id=eq.${orcamentoId}`, session, { method: "DELETE" });
       const linhasCli = [
-        { tipo: "unico", ordem: 0, titulo: itemUnico.titulo || null, descricao: itemUnico.descricao || null, valor: 0 },
-        ...itensCli.map((x, i) => ({ id: x.id, tipo: "lista", ordem: i + 1, titulo: x.titulo || null, descricao: x.descricao || null, valor: numBR(x.valor) })),
+        { tipo: "unico", ordem: 0, titulo: itemUnico.titulo || null, descricao: itemUnico.descricao || null, valor: 0, qtd: 1, diarias: 1, valor_unitario: 0 },
+        ...itensCli.map((x, i) => ({ id: x.id, tipo: "lista", ordem: i + 1, titulo: x.titulo || null, descricao: x.descricao || null, qtd: numBR(x.qtd), diarias: numBR(x.diarias), valor_unitario: numBR(x.unitario), valor: totalCli(x) / 100 })),
       ].map((x) => ({ orcamento_id: orcamentoId, ...x }));
       await sbRequest("orcamento_cliente_itens", session, { method: "POST", body: linhasCli, extraHeaders: { Prefer: "return=minimal" } });
       setSalvo(true);
@@ -2865,17 +2865,18 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     if (!ok) setErro("O navegador bloqueou a janela do PDF. Libere pop-ups para este site e tente de novo.");
   }
   const totalCentavos = Math.round(calc.precoFinal * 100);
-  const distribuidoCentavos = itensCli.reduce((x, i) => x + Math.round(numBR(i.valor) * 100), 0);
+  const totalCli = (x) => Math.round(numBR(x.unitario) * numBR(x.qtd) * numBR(x.diarias) * 100); // centavos
+  const distribuidoCentavos = itensCli.reduce((x, i) => x + totalCli(i), 0);
   const saldoCentavos = totalCentavos - distribuidoCentavos;
   function abrirOrcamentoCliente() {
     let gs, total;
     if (clienteModo === "texto") {
-      gs = [{ titulo: (itemUnico.titulo || "").trim() || orc.evento || "Projeto", descricao: itemUnico.descricao || "", valor: calc.precoFinal }];
+      gs = [{ titulo: (itemUnico.titulo || "").trim() || orc.evento || "Projeto", descricao: itemUnico.descricao || "", qtd: 1, diarias: 1, unitario: calc.precoFinal, valor: calc.precoFinal }];
       total = calc.precoFinal;
     } else {
       if (itensCli.length === 0) { setErro("Adicione pelo menos um item no orçamento para o cliente."); return; }
       if (saldoCentavos !== 0 && !window.confirm(`Ainda há ${brl(saldoCentavos / 100)} sem distribuir entre os itens. O total do orçamento vai sair diferente do valor da composição. Gerar mesmo assim?`)) return;
-      gs = itensCli.map((i) => ({ titulo: (i.titulo || "").trim() || "Item", descricao: i.descricao || "", valor: Math.round(numBR(i.valor) * 100) / 100 }));
+      gs = itensCli.map((i) => ({ titulo: (i.titulo || "").trim() || "Item", descricao: i.descricao || "", qtd: numBR(i.qtd), diarias: numBR(i.diarias), unitario: numBR(i.unitario), valor: totalCli(i) / 100 }));
       total = distribuidoCentavos / 100;
     }
     const ok = gerarOrcamentoCliente({ orc, numeroOr, grupos: gs, total });
@@ -3130,22 +3131,28 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
               </div>
             </div>
             <div style={{ overflowX: "auto" }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
-                <thead><tr>{["Item", "Título", "Descrição para o cliente", "Valor (R$)", ""].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                <thead><tr>{["Item", "Título", "Descrição para o cliente", "Qtd.", "Diárias", "Valor unitário (R$)", "Valor total (R$)", ""].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {itensCli.length === 0 && <tr><td colSpan={5} style={{ padding: 12, color: MUTED, fontSize: 12, textAlign: "center" }}>Nenhum item. Use "Adicionar item" e vá distribuindo o valor.</td></tr>}
+                  {itensCli.length === 0 && <tr><td colSpan={8} style={{ padding: 12, color: MUTED, fontSize: 12, textAlign: "center" }}>Nenhum item. Use "Adicionar item" e vá distribuindo o valor.</td></tr>}
                   {itensCli.map((x, idx) => (
                     <tr key={x.id}>
                       <td style={{ ...td, textAlign: "center", width: 50 }}>{String(idx + 1).padStart(3, "0")}</td>
                       <td style={{ ...td, width: 210 }}><input style={CELULA_DIGITAVEL} value={x.titulo} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, titulo: e.target.value } : y))); }} /></td>
                       <td style={td}><textarea style={{ ...CELULA_DIGITAVEL, minHeight: 56, resize: "vertical" }} value={x.descricao} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, descricao: e.target.value } : y))); }} /></td>
-                      <td style={{ ...td, width: 150 }}>
-                        <input style={{ ...CELULA_DIGITAVEL, textAlign: "right" }} inputMode="decimal" value={x.valor} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, valor: e.target.value } : y))); }} />
-                        {saldoCentavos > 0 && (
-                          <button type="button" onClick={() => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, valor: String((Math.round(numBR(y.valor) * 100) + saldoCentavos) / 100).replace(".", ",") } : y))); }}
+                      {[["qtd", 64], ["diarias", 64]].map(([campo, w]) => (
+                        <td key={campo} style={{ ...td, width: w }}>
+                          <input style={{ ...CELULA_DIGITAVEL, textAlign: "right" }} inputMode="decimal" value={x[campo]} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, [campo]: e.target.value } : y))); }} />
+                        </td>
+                      ))}
+                      <td style={{ ...td, width: 130 }}>
+                        <input style={{ ...CELULA_DIGITAVEL, textAlign: "right" }} inputMode="decimal" value={x.unitario} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, unitario: e.target.value } : y))); }} />
+                        {saldoCentavos > 0 && numBR(x.qtd) * numBR(x.diarias) > 0 && (
+                          <button type="button" onClick={() => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, unitario: String(Math.round(((totalCli(y) + saldoCentavos) / (numBR(y.qtd) * numBR(y.diarias)))) / 100).replace(".", ",") } : y))); }}
                             style={{ ...btnGhostSmall, marginTop: 4, padding: "3px 8px", fontSize: 11 }}>Usar o saldo</button>
                         )}
                       </td>
+                      <td style={{ ...td, ...CELULA_CALCULADA, width: 120, fontWeight: 700 }}>{brl(totalCli(x) / 100)}</td>
                       <td style={{ ...td, width: 36, textAlign: "center" }}><BotaoRemover id={x.id} onRemover={(id) => { setSalvo(false); setItensCli((l) => l.filter((y) => y.id !== id)); }} /></td>
                     </tr>
                   ))}
@@ -3153,7 +3160,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
               </table>
             </div>
             <div style={{ marginTop: 8 }}>
-              <button type="button" onClick={() => { setSalvo(false); setItensCli((l) => [...l, { id: crypto.randomUUID(), titulo: "", descricao: "", valor: "" }]); }} style={btnGhostSmall}><Plus size={12} style={{ verticalAlign: -2 }} /> Adicionar item</button>
+              <button type="button" onClick={() => { setSalvo(false); setItensCli((l) => [...l, { id: crypto.randomUUID(), titulo: "", descricao: "", qtd: "1", diarias: "1", unitario: "" }]); }} style={btnGhostSmall}><Plus size={12} style={{ verticalAlign: -2 }} /> Adicionar item</button>
             </div>
           </div>
         )}
