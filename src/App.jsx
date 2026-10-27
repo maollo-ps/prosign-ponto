@@ -310,7 +310,19 @@ function lancamentoFromRow(r) {
   obj.faltasHoras = Number(r.faltas_horas || 0);
   obj.dsrDias = Number(r.dsr_faltas_dias || 0);
   obj.atestadoDias = Number(r.atestado_dias || 0);
+  obj.temColDatas = "faltas_datas" in r;
+  obj.faltasDatas = Array.isArray(r.faltas_datas) ? [...r.faltas_datas].sort() : [];
+  obj.dsrManual = !!r.dsr_manual;
   return obj;
+}
+// DSR perdido: cada semana (segunda a domingo) com pelo menos uma falta não justificada perde o domingo dela.
+function semanaDaData(iso) {
+  const d = new Date(iso + "T12:00:00");
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // volta para a segunda-feira
+  return d.toISOString().slice(0, 10);
+}
+function calcularDsrPorFaltas(datas) {
+  return new Set((datas || []).map(semanaDaData)).size;
 }
 function lancamentoToRow(l) {
   const row = { funcionario_id: l.funcionarioId, mes_referencia: l.mes };
@@ -319,6 +331,10 @@ function lancamentoToRow(l) {
   row.faltas_horas = l.faltasHoras || 0;
   row.dsr_faltas_dias = l.dsrDias || 0;
   row.atestado_dias = l.atestadoDias || 0;
+  if (l.temColDatas || (l.faltasDatas && l.faltasDatas.length) || l.dsrManual) {
+    row.faltas_datas = l.faltasDatas || [];
+    row.dsr_manual = !!l.dsrManual;
+  }
   return row;
 }
 
@@ -1026,7 +1042,8 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
   };
   const [pontoForm, setPontoForm] = useState(blankPonto);
 
-  const blankFaltas = { funcionarioId: selId, mes: mesRef, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0 };
+  const blankFaltas = { funcionarioId: selId, mes: mesRef, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0, faltasDatas: [], dsrManual: false };
+  const [novaFalta, setNovaFalta] = useState("");
   const [faltasForm, setFaltasForm] = useState(blankFaltas);
 
   useEffect(() => {
@@ -1076,6 +1093,20 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
     } catch (e) { setErro(e.message); }
   }
 
+  // faltas por data: o número de faltas e o DSR saem das datas
+  const legadoSemDatas = !(faltasForm.faltasDatas || []).length && (faltasForm.faltasDias > 0 || faltasForm.dsrDias > 0);
+  function aplicarDatas(datas, manual = faltasForm.dsrManual) {
+    const ord = [...new Set(datas)].sort();
+    setFaltasForm((f) => ({ ...f, faltasDatas: ord, faltasDias: ord.length, dsrDias: manual ? f.dsrDias : calcularDsrPorFaltas(ord), dsrManual: manual }));
+  }
+  function adicionarFalta() {
+    if (!novaFalta) return;
+    if (novaFalta.slice(0, 7) !== mesRef) { setErro(`A data da falta precisa ser de ${mesRefExtenso(mesRef)}.`); return; }
+    setErro("");
+    aplicarDatas([...(faltasForm.faltasDatas || []), novaFalta]);
+    setNovaFalta("");
+  }
+
   async function handleSalvarFaltas() {
     setSalvandoFaltas(true);
     setErro("");
@@ -1090,7 +1121,9 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
         : [...lancamentos.filter((l) => !(String(l.funcionarioId) === String(selId) && l.mes === mesRef)), novo];
       setLancamentos(next);
       setFaltasForm(novo);
-    } catch (e) { setErro(e.message); }
+    } catch (e) {
+      setErro(/faltas_datas|dsr_manual/.test(e.message) ? "Para salvar as datas das faltas, rode antes o SQL migracao_faltas_datas.sql no Supabase." : e.message);
+    }
     finally { setSalvandoFaltas(false); }
   }
 
@@ -1297,11 +1330,49 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
           <Card>
             <h3 style={{ marginTop: 0, fontSize: 14, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Faltas / DSR / Atestado (mês)</h3>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <Field label="Faltas não just. (dias)"><input type="number" style={inputStyle} value={faltasForm.faltasDias} onChange={(e) => setFaltasForm({ ...faltasForm, faltasDias: parseFloat(e.target.value) || 0 })} /></Field>
-              <Field label="Faltas não just. (hh:mm)"><input style={inputStyle} placeholder="0:00" defaultValue={decimalToHHMM(faltasForm.faltasHoras)} onBlur={(e) => setFaltasForm((s) => ({ ...s, faltasHoras: hhmmToDecimal(e.target.value) }))} /></Field>
-              <Field label="D.S.R. perdido (dias)"><input type="number" style={inputStyle} value={faltasForm.dsrDias} onChange={(e) => setFaltasForm({ ...faltasForm, dsrDias: parseFloat(e.target.value) || 0 })} /></Field>
+              <div style={{ gridColumn: "1 / -1" }}>
+                <Field label="Faltas não justificadas (dia inteiro) — informe as datas">
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <input type="date" style={inputStyle} value={novaFalta} min={`${mesRef}-01`} max={`${mesRef}-31`} onChange={(e) => setNovaFalta(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") adicionarFalta(); }} />
+                    <button type="button" onClick={adicionarFalta} style={btnGhostSmall}><Plus size={13} /> Adicionar falta</button>
+                  </div>
+                </Field>
+                {(faltasForm.faltasDatas || []).length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                    {faltasForm.faltasDatas.map((d) => (
+                      <span key={d} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, background: "#FDECEC", color: DANGER, borderRadius: 12, padding: "3px 6px 3px 10px" }}>
+                        {d.slice(8, 10)}/{d.slice(5, 7)} · {["dom","seg","ter","qua","qui","sex","sáb"][new Date(d + "T12:00:00").getDay()]}
+                        <button type="button" onClick={() => aplicarDatas(faltasForm.faltasDatas.filter((x) => x !== d))} title="Tirar esta falta" style={{ background: "none", border: "none", cursor: "pointer", color: DANGER, padding: 0, display: "flex" }}><X size={13} /></button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {legadoSemDatas && (
+                  <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>
+                    Lançado antes sem datas: {faltasForm.faltasDias} falta(s) e {faltasForm.dsrDias} DSR. Ao informar as datas, os valores passam a ser calculados.{" "}
+                    <button type="button" onClick={() => setFaltasForm((f) => ({ ...f, faltasDias: 0, dsrDias: 0, faltasDatas: [], dsrManual: false }))} style={{ ...btnGhostSmall, padding: "2px 8px", fontSize: 11 }}>Zerar</button>
+                  </div>
+                )}
+              </div>
+              <Field label="Faltas não just. (dias)"><div style={{ ...inputStyle, background: "#F3F4F6", fontFamily: FONT_MONO }}>{faltasForm.faltasDias}</div></Field>
+              <Field label="Atrasos / saídas antecipadas (hh:mm)"><input style={inputStyle} placeholder="0:00" defaultValue={decimalToHHMM(faltasForm.faltasHoras)} key={`fh-${selId}-${mesRef}-${faltasForm.id || ""}`} onBlur={(e) => setFaltasForm((s) => ({ ...s, faltasHoras: hhmmToDecimal(e.target.value) }))} /></Field>
+              <Field label={faltasForm.dsrManual ? "D.S.R. perdido (dias) — ajustado à mão" : "D.S.R. perdido (dias) — calculado"}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {faltasForm.dsrManual
+                    ? <input type="number" style={{ ...inputStyle, width: 90 }} value={faltasForm.dsrDias} onChange={(e) => setFaltasForm({ ...faltasForm, dsrDias: parseFloat(e.target.value) || 0 })} />
+                    : <div style={{ ...inputStyle, background: "#F3F4F6", fontFamily: FONT_MONO, width: 90 }}>{faltasForm.dsrDias}</div>}
+                  <label style={{ fontSize: 11, color: MUTED, display: "inline-flex", gap: 4, alignItems: "center", cursor: "pointer" }} title="Use para feriado na semana da falta ou outro caso especial">
+                    <input type="checkbox" checked={!!faltasForm.dsrManual} onChange={(e) => aplicarDatas(faltasForm.faltasDatas || [], e.target.checked)} /> ajustar à mão
+                  </label>
+                </div>
+              </Field>
               <Field label="Atestado (dias)"><input type="number" style={inputStyle} value={faltasForm.atestadoDias} onChange={(e) => setFaltasForm({ ...faltasForm, atestadoDias: parseFloat(e.target.value) || 0 })} /></Field>
             </div>
+            {(faltasForm.faltasDatas || []).length > 0 && !faltasForm.dsrManual && (
+              <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>
+                {faltasForm.faltasDatas.length} falta(s) em {faltasForm.dsrDias} semana(s) diferente(s) → perde {faltasForm.dsrDias} domingo(s). Faltas na mesma semana (segunda a domingo) tiram um DSR só.
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
               <button onClick={handleSalvarFaltas} disabled={salvandoFaltas} style={btnPrimary}><Save size={15} /> {salvandoFaltas ? "Salvando..." : "Salvar faltas/DSR"}</button>
               <button onClick={handleExcluirFaltas} disabled={salvandoFaltas} style={btnDangerSmall}><Trash2 size={13} /> Excluir lançamento do mês</button>
