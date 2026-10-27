@@ -3362,7 +3362,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
               <Field label="Título do item">
                 <input style={CELULA_DIGITAVEL} value={itemUnico.titulo} placeholder={orc.evento || "Projeto"} onChange={(e) => { setSalvo(false); setItemUnico({ ...itemUnico, titulo: e.target.value }); }} />
               </Field>
-              <Field label="Valor total (da composição)">
+              <Field label={usaDesc ? "Valor total sem desconto" : "Valor total (da composição)"}>
                 <div style={{ ...CELULA_CALCULADA, fontWeight: 700, fontSize: 16 }}>{brl(baseCliente)}</div>
               </Field>
             </div>
@@ -3380,7 +3380,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         {clienteModo === "itens" && (
           <div style={{ padding: "0 12px 14px" }}>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, marginBottom: 12 }}>
-              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10 }}><div style={{ fontSize: 11, color: MUTED }}>Valor da composição</div><div style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 17 }}>{brl(totalCentavos / 100)}</div></div>
+              <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10 }}><div style={{ fontSize: 11, color: MUTED }}>{usaDesc ? "Valor sem desconto (a distribuir)" : "Valor da composição"}</div><div style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 17 }}>{brl(totalCentavos / 100)}</div></div>
               <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10 }}><div style={{ fontSize: 11, color: MUTED }}>Distribuído nos itens</div><div style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 17 }}>{brl(distribuidoCentavos / 100)}</div></div>
               <div style={{ border: `1px solid ${saldoCentavos === 0 ? "#2E7D5B" : saldoCentavos < 0 ? DANGER : GOLD}`, borderRadius: 8, padding: 10 }}>
                 <div style={{ fontSize: 11, color: MUTED }}>Saldo a distribuir</div>
