@@ -313,6 +313,8 @@ function lancamentoFromRow(r) {
   obj.temColDatas = "faltas_datas" in r;
   obj.faltasDatas = Array.isArray(r.faltas_datas) ? [...r.faltas_datas].sort() : [];
   obj.dsrManual = !!r.dsr_manual;
+  obj.temColFolgas = "folgas_datas" in r;
+  obj.folgasDatas = Array.isArray(r.folgas_datas) ? [...r.folgas_datas].sort() : [];
   return obj;
 }
 // DSR perdido: cada semana (segunda a domingo) com pelo menos uma falta não justificada perde o domingo dela.
@@ -335,6 +337,7 @@ function lancamentoToRow(l) {
     row.faltas_datas = l.faltasDatas || [];
     row.dsr_manual = !!l.dsrManual;
   }
+  if (l.temColFolgas || (l.folgasDatas && l.folgasDatas.length)) row.folgas_datas = l.folgasDatas || [];
   return row;
 }
 
@@ -1042,8 +1045,9 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
   };
   const [pontoForm, setPontoForm] = useState(blankPonto);
 
-  const blankFaltas = { funcionarioId: selId, mes: mesRef, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0, faltasDatas: [], dsrManual: false };
+  const blankFaltas = { funcionarioId: selId, mes: mesRef, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0, faltasDatas: [], dsrManual: false, folgasDatas: [] };
   const [novaFalta, setNovaFalta] = useState("");
+  const [novaFolga, setNovaFolga] = useState("");
   const [faltasForm, setFaltasForm] = useState(blankFaltas);
 
   useEffect(() => {
@@ -1103,9 +1107,19 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
     if (!novaFalta) return;
     if (novaFalta.slice(0, 7) !== mesRef) { setErro(`A data da falta precisa ser de ${mesRefExtenso(mesRef)}.`); return; }
     setErro("");
+    if ((faltasForm.folgasDatas || []).includes(novaFalta)) { setErro("Esse dia já está lançado como folga."); return; }
     aplicarDatas([...(faltasForm.faltasDatas || []), novaFalta]);
     setNovaFalta("");
   }
+  function adicionarFolga() {
+    if (!novaFolga) return;
+    if (novaFolga.slice(0, 7) !== mesRef) { setErro(`A data da folga precisa ser de ${mesRefExtenso(mesRef)}.`); return; }
+    if ((faltasForm.faltasDatas || []).includes(novaFolga)) { setErro("Esse dia já está lançado como falta."); return; }
+    setErro("");
+    setFaltasForm((f) => ({ ...f, folgasDatas: [...new Set([...(f.folgasDatas || []), novaFolga])].sort() }));
+    setNovaFolga("");
+  }
+  const folgaComPonto = (faltasForm.folgasDatas || []).filter((d) => registros.some((r) => r.data === d));
 
   async function handleSalvarFaltas() {
     setSalvandoFaltas(true);
@@ -1122,7 +1136,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
       setLancamentos(next);
       setFaltasForm(novo);
     } catch (e) {
-      setErro(/faltas_datas|dsr_manual/.test(e.message) ? "Para salvar as datas das faltas, rode antes o SQL migracao_faltas_datas.sql no Supabase." : e.message);
+      setErro(/folgas_datas/.test(e.message) ? "Para salvar as folgas, rode antes o SQL migracao_folgas.sql no Supabase." : /faltas_datas|dsr_manual/.test(e.message) ? "Para salvar as datas das faltas, rode antes o SQL migracao_faltas_datas.sql no Supabase." : e.message);
     }
     finally { setSalvandoFaltas(false); }
   }
@@ -1328,7 +1342,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
           </Card>
 
           <Card>
-            <h3 style={{ marginTop: 0, fontSize: 14, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Faltas / DSR / Atestado (mês)</h3>
+            <h3 style={{ marginTop: 0, fontSize: 14, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Faltas / DSR / Atestado / Folgas (mês)</h3>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div style={{ gridColumn: "1 / -1" }}>
                 <Field label="Faltas não justificadas (dia inteiro) — informe as datas">
@@ -1367,6 +1381,28 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
                 </div>
               </Field>
               <Field label="Atestado (dias)"><input type="number" style={inputStyle} value={faltasForm.atestadoDias} onChange={(e) => setFaltasForm({ ...faltasForm, atestadoDias: parseFloat(e.target.value) || 0 })} /></Field>
+              <div style={{ gridColumn: "1 / -1", borderTop: `1px dashed ${BORDER}`, paddingTop: 12 }}>
+                <Field label={`Dias de folga (ex.: compensação de fim de semana trabalhado) — ${(faltasForm.folgasDatas || []).length} no mês`}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <input type="date" style={inputStyle} value={novaFolga} min={`${mesRef}-01`} max={`${mesRef}-31`} onChange={(e) => setNovaFolga(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") adicionarFolga(); }} />
+                    <button type="button" onClick={adicionarFolga} style={btnGhostSmall}><Plus size={13} /> Adicionar folga</button>
+                  </div>
+                </Field>
+                {(faltasForm.folgasDatas || []).length > 0 && (
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                    {faltasForm.folgasDatas.map((d) => (
+                      <span key={d} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, background: "#E7F1FA", color: "#1D6FA5", borderRadius: 12, padding: "3px 6px 3px 10px" }}>
+                        {d.slice(8, 10)}/{d.slice(5, 7)} · {["dom","seg","ter","qua","qui","sex","sáb"][new Date(d + "T12:00:00").getDay()]}
+                        <button type="button" onClick={() => setFaltasForm((f) => ({ ...f, folgasDatas: f.folgasDatas.filter((x) => x !== d) }))} title="Tirar esta folga" style={{ background: "none", border: "none", cursor: "pointer", color: "#1D6FA5", padding: 0, display: "flex" }}><X size={13} /></button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {folgaComPonto.length > 0 && (
+                  <div style={{ fontSize: 12, color: DANGER, marginTop: 6 }}>Atenção: há ponto batido em dia de folga ({folgaComPonto.map((d) => d.slice(8, 10) + "/" + d.slice(5, 7)).join(", ")}).</div>
+                )}
+                <div style={{ fontSize: 11, color: MUTED, marginTop: 6 }}>A folga só fica registrada: não desconta nada e não muda as horas extras do fim de semana.</div>
+              </div>
             </div>
             {(faltasForm.faltasDatas || []).length > 0 && !faltasForm.dsrManual && (
               <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>
@@ -1374,7 +1410,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
               </div>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-              <button onClick={handleSalvarFaltas} disabled={salvandoFaltas} style={btnPrimary}><Save size={15} /> {salvandoFaltas ? "Salvando..." : "Salvar faltas/DSR"}</button>
+              <button onClick={handleSalvarFaltas} disabled={salvandoFaltas} style={btnPrimary}><Save size={15} /> {salvandoFaltas ? "Salvando..." : "Salvar faltas/DSR/folgas"}</button>
               <button onClick={handleExcluirFaltas} disabled={salvandoFaltas} style={btnDangerSmall}><Trash2 size={13} /> Excluir lançamento do mês</button>
             </div>
           </Card>
