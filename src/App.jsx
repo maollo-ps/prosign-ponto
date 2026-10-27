@@ -315,6 +315,8 @@ function lancamentoFromRow(r) {
   obj.dsrManual = !!r.dsr_manual;
   obj.temColFolgas = "folgas_datas" in r;
   obj.folgasDatas = Array.isArray(r.folgas_datas) ? [...r.folgas_datas].sort() : [];
+  obj.temColFolgasObs = "folgas_obs" in r;
+  obj.folgasObs = r.folgas_obs && typeof r.folgas_obs === "object" ? r.folgas_obs : {};
   return obj;
 }
 // DSR perdido: cada semana (segunda a domingo) com pelo menos uma falta não justificada perde o domingo dela.
@@ -338,6 +340,9 @@ function lancamentoToRow(l) {
     row.dsr_manual = !!l.dsrManual;
   }
   if (l.temColFolgas || (l.folgasDatas && l.folgasDatas.length)) row.folgas_datas = l.folgasDatas || [];
+  const obsLimpa = {};
+  (l.folgasDatas || []).forEach((d) => { const t = String(l.folgasObs?.[d] || "").trim(); if (t) obsLimpa[d] = t; });
+  if (l.temColFolgasObs || Object.keys(obsLimpa).length) row.folgas_obs = obsLimpa;
   return row;
 }
 
@@ -1045,9 +1050,10 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
   };
   const [pontoForm, setPontoForm] = useState(blankPonto);
 
-  const blankFaltas = { funcionarioId: selId, mes: mesRef, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0, faltasDatas: [], dsrManual: false, folgasDatas: [] };
+  const blankFaltas = { funcionarioId: selId, mes: mesRef, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0, faltasDatas: [], dsrManual: false, folgasDatas: [], folgasObs: {} };
   const [novaFalta, setNovaFalta] = useState("");
   const [novaFolga, setNovaFolga] = useState("");
+  const [novaFolgaObs, setNovaFolgaObs] = useState("");
   const [faltasForm, setFaltasForm] = useState(blankFaltas);
 
   useEffect(() => {
@@ -1116,8 +1122,9 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
     if (novaFolga.slice(0, 7) !== mesRef) { setErro(`A data da folga precisa ser de ${mesRefExtenso(mesRef)}.`); return; }
     if ((faltasForm.faltasDatas || []).includes(novaFolga)) { setErro("Esse dia já está lançado como falta."); return; }
     setErro("");
-    setFaltasForm((f) => ({ ...f, folgasDatas: [...new Set([...(f.folgasDatas || []), novaFolga])].sort() }));
+    setFaltasForm((f) => ({ ...f, folgasDatas: [...new Set([...(f.folgasDatas || []), novaFolga])].sort(), folgasObs: { ...(f.folgasObs || {}), [novaFolga]: novaFolgaObs.trim() || f.folgasObs?.[novaFolga] || "" } }));
     setNovaFolga("");
+    setNovaFolgaObs("");
   }
   const folgaComPonto = (faltasForm.folgasDatas || []).filter((d) => registros.some((r) => r.data === d));
 
@@ -1136,7 +1143,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
       setLancamentos(next);
       setFaltasForm(novo);
     } catch (e) {
-      setErro(/folgas_datas/.test(e.message) ? "Para salvar as folgas, rode antes o SQL migracao_folgas.sql no Supabase." : /faltas_datas|dsr_manual/.test(e.message) ? "Para salvar as datas das faltas, rode antes o SQL migracao_faltas_datas.sql no Supabase." : e.message);
+      setErro(/folgas_datas|folgas_obs/.test(e.message) ? "Para salvar as folgas, rode antes o SQL migracao_folgas.sql no Supabase." : /faltas_datas|dsr_manual/.test(e.message) ? "Para salvar as datas das faltas, rode antes o SQL migracao_faltas_datas.sql no Supabase." : e.message);
     }
     finally { setSalvandoFaltas(false); }
   }
@@ -1384,17 +1391,26 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
               <div style={{ gridColumn: "1 / -1", borderTop: `1px dashed ${BORDER}`, paddingTop: 12 }}>
                 <Field label={`Dias de folga (ex.: compensação de fim de semana trabalhado) — ${(faltasForm.folgasDatas || []).length} no mês`}>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                    <input type="date" style={inputStyle} value={novaFolga} min={`${mesRef}-01`} max={`${mesRef}-31`} onChange={(e) => setNovaFolga(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") adicionarFolga(); }} />
+                    <input type="date" style={inputStyle} value={novaFolga} min={`${mesRef}-01`} max={`${mesRef}-31`} onChange={(e) => setNovaFolga(e.target.value)} />
+                    <input style={{ ...inputStyle, flex: 1, minWidth: 220 }} value={novaFolgaObs} placeholder="Motivo (ex.: trabalhou sáb 10 e dom 11 no evento X)" onChange={(e) => setNovaFolgaObs(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") adicionarFolga(); }} />
                     <button type="button" onClick={adicionarFolga} style={btnGhostSmall}><Plus size={13} /> Adicionar folga</button>
                   </div>
                 </Field>
                 {(faltasForm.folgasDatas || []).length > 0 && (
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
                     {faltasForm.folgasDatas.map((d) => (
-                      <span key={d} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, background: "#E7F1FA", color: "#1D6FA5", borderRadius: 12, padding: "3px 6px 3px 10px" }}>
-                        {d.slice(8, 10)}/{d.slice(5, 7)} · {["dom","seg","ter","qua","qui","sex","sáb"][new Date(d + "T12:00:00").getDay()]}
-                        <button type="button" onClick={() => setFaltasForm((f) => ({ ...f, folgasDatas: f.folgasDatas.filter((x) => x !== d) }))} title="Tirar esta folga" style={{ background: "none", border: "none", cursor: "pointer", color: "#1D6FA5", padding: 0, display: "flex" }}><X size={13} /></button>
-                      </span>
+                      <div key={d} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ fontSize: 12, background: "#E7F1FA", color: "#1D6FA5", borderRadius: 12, padding: "4px 10px", whiteSpace: "nowrap", fontWeight: 600 }}>
+                          {d.slice(8, 10)}/{d.slice(5, 7)} · {["dom","seg","ter","qua","qui","sex","sáb"][new Date(d + "T12:00:00").getDay()]}
+                        </span>
+                        <input
+                          style={{ ...inputStyle, flex: 1, padding: "6px 8px", fontSize: 13 }}
+                          value={faltasForm.folgasObs?.[d] || ""}
+                          placeholder="Motivo da folga"
+                          onChange={(e) => setFaltasForm((f) => ({ ...f, folgasObs: { ...(f.folgasObs || {}), [d]: e.target.value } }))}
+                        />
+                        <button type="button" onClick={() => setFaltasForm((f) => { const o = { ...(f.folgasObs || {}) }; delete o[d]; return { ...f, folgasDatas: f.folgasDatas.filter((x) => x !== d), folgasObs: o }; })} title="Tirar esta folga" style={{ background: "none", border: "none", cursor: "pointer", color: "#1D6FA5", padding: 0, display: "flex" }}><X size={15} /></button>
+                      </div>
                     ))}
                   </div>
                 )}
