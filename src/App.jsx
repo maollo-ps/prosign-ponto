@@ -256,20 +256,6 @@ async function sbLogin(email, password) {
   return data;
 }
 
-// Cria um novo usuário direto do app (sem precisar do painel do Supabase).
-// Usa o endpoint público de cadastro — NÃO afeta a sessão de quem está
-// logado (o retorno é da conta nova, que simplesmente ignoramos).
-async function sbSignup(email, password) {
-  const res = await fetch(`${SUPABASE_URL}/auth/v1/signup`, {
-    method: "POST",
-    headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error_description || data.msg || "Não foi possível criar o usuário.");
-  return data;
-}
-
 async function sbUploadFoto(file, path, session) {
   const res = await fetch(`${SUPABASE_URL}/storage/v1/object/${FOTOS_BUCKET}/${path}`, {
     method: "POST",
@@ -1816,25 +1802,54 @@ const AREAS_DISPONIVEIS = [
   { id: "financeiro", label: "Financeiro" },
 ];
 
+// chama uma Edge Function do Supabase com a sessão de quem está logado
+async function chamarFuncao(nome, session, body) {
+  let res;
+  try {
+    res = await fetch(`${SUPABASE_URL}/functions/v1/${nome}`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw new Error(`Não consegui falar com a função "${nome}" do Supabase.`);
+  }
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok || j.erro) throw new Error(j.erro || (res.status === 404 ? `A função "${nome}" ainda não foi publicada no Supabase.` : `Erro ${res.status}`));
+  return j;
+}
+
 function UsuariosView({ session, setErro, meuId }) {
   const [perfis, setPerfis] = useState([]);
+  const [contas, setContas] = useState({}); // dados de login: { id: {ultimo_acesso, bloqueado_ate, ...} }
+  const [semFuncao, setSemFuncao] = useState(false);
   const [areasPorUsuario, setAreasPorUsuario] = useState({}); // { user_id: Set(['ponto','comercial']) }
   const [carregando, setCarregando] = useState(false);
   const [salvandoId, setSalvandoId] = useState(null);
   const [showForm, setShowForm] = useState(false);
-  const [novoEmail, setNovoEmail] = useState("");
-  const [novaSenha, setNovaSenha] = useState("");
+  const novoVazio = { email: "", nome: "", senha: "", areas: [] };
+  const [novo, setNovo] = useState(novoVazio);
   const [criando, setCriando] = useState(false);
-  const [avisoCriacao, setAvisoCriacao] = useState("");
+  const [aviso, setAviso] = useState("");
 
   function carregar() {
     setCarregando(true);
     Promise.all([
       sbRequest("perfis?select=*&order=email.asc", session),
       sbRequest("usuarios_areas?select=*", session),
+      chamarFuncao("usuarios-admin", session, { acao: "listar" }).then((r) => { setSemFuncao(false); return r.usuarios || []; }).catch(() => { setSemFuncao(true); return null; }),
     ])
-      .then(([p, ua]) => {
-        setPerfis(p || []);
+      .then(([p, ua, us]) => {
+        const lista = [...(p || [])];
+        const mapaContas = {};
+        (us || []).forEach((u) => {
+          mapaContas[u.id] = u;
+          // login que existe no Supabase mas ficou sem perfil (acesso removido antes)
+          if (!lista.some((x) => x.id === u.id)) lista.push({ id: u.id, email: u.email, nome: null, is_admin: false, semPerfil: true });
+        });
+        lista.sort((x, y) => (y.is_admin - x.is_admin) || String(x.email).localeCompare(String(y.email)));
+        setPerfis(lista);
+        setContas(mapaContas);
         const mapa = {};
         (ua || []).forEach((row) => {
           if (!mapa[row.user_id]) mapa[row.user_id] = new Set();
@@ -1852,9 +1867,10 @@ function UsuariosView({ session, setErro, meuId }) {
     setSalvandoId(p.id);
     setErro("");
     try {
-      await sbRequest(`perfis?id=eq.${p.id}`, session, { method: "PATCH", body: campos });
+      const r = await sbRequest(`perfis?id=eq.${p.id}`, session, { method: "PATCH", body: campos });
+      if (Array.isArray(r) && r.length === 0) throw new Error("Só administradores podem alterar usuários.");
       setPerfis((ps) => ps.map((x) => (x.id === p.id ? { ...x, ...campos } : x)));
-    } catch (e) { setErro(e.message); }
+    } catch (e) { setErro(msgSupabase(e)); carregar(); }
     finally { setSalvandoId(null); }
   }
 
@@ -1868,68 +1884,74 @@ function UsuariosView({ session, setErro, meuId }) {
         await sbRequest(`usuarios_areas?user_id=eq.${userId}&area=eq.${area}`, session, { method: "DELETE" });
       }
       setAreasPorUsuario((mapa) => {
-        const novo = { ...mapa };
-        const atual = new Set(novo[userId] || []);
+        const novoMapa = { ...mapa };
+        const atual = new Set(novoMapa[userId] || []);
         if (marcado) atual.add(area); else atual.delete(area);
-        novo[userId] = atual;
-        return novo;
+        novoMapa[userId] = atual;
+        return novoMapa;
       });
-    } catch (e) { setErro(e.message); }
+    } catch (e) { setErro(msgSupabase(e)); }
     finally { setSalvandoId(null); }
   }
 
-  async function handleExcluirUsuario(p) {
-    if (p.id === meuId) return;
-    if (!window.confirm(`Remover o acesso de "${p.email}"? Ele(a) não vai mais conseguir ver nenhuma área do sistema.\n\n(O login continua existindo no Supabase — pra apagar de vez a conta, isso só pode ser feito no painel do Supabase em Authentication → Users.)`)) return;
-    setSalvandoId(p.id);
-    setErro("");
+  async function acaoConta(p, acao, extra, msgOk) {
+    setSalvandoId(p.id); setErro(""); setAviso("");
     try {
-      await sbRequest(`usuarios_areas?user_id=eq.${p.id}`, session, { method: "DELETE" });
-      await sbRequest(`perfis?id=eq.${p.id}`, session, { method: "DELETE" });
-      setPerfis((ps) => ps.filter((x) => x.id !== p.id));
-      setAreasPorUsuario((mapa) => {
-        const novo = { ...mapa };
-        delete novo[p.id];
-        return novo;
-      });
+      await chamarFuncao("usuarios-admin", session, { acao, user_id: p.id, ...extra });
+      if (msgOk) setAviso(msgOk);
+      carregar();
     } catch (e) { setErro(e.message); }
     finally { setSalvandoId(null); }
+  }
+  function trocarSenha(p) {
+    const s1 = window.prompt(`Nova senha para ${p.email} (mínimo 6 caracteres):`);
+    if (!s1) return;
+    if (s1.length < 6) { setErro("A senha precisa ter pelo menos 6 caracteres."); return; }
+    acaoConta(p, "senha", { senha: s1 }, `Senha de ${p.email} alterada. Avise a nova senha para a pessoa.`);
+  }
+  function bloquear(p, bloq) {
+    if (bloq && !window.confirm(`Bloquear ${p.email}? Ele(a) não consegue mais entrar até você desbloquear.`)) return;
+    acaoConta(p, "bloquear", { bloquear: bloq }, bloq ? `${p.email} bloqueado.` : `${p.email} desbloqueado.`);
+  }
+  function excluir(p) {
+    if (!window.confirm(`EXCLUIR DE VEZ o usuário ${p.email}?\n\nO login é apagado e não dá para desfazer. Os orçamentos e lançamentos que ele fez continuam no sistema.`)) return;
+    acaoConta(p, "excluir", {}, `${p.email} excluído.`);
   }
 
   async function handleCriarUsuario() {
-    if (!novoEmail || novaSenha.length < 6) {
+    if (!novo.email || novo.senha.length < 6) {
       setErro("Preencha o e-mail e uma senha com pelo menos 6 caracteres.");
       return;
     }
-    setCriando(true);
-    setErro("");
-    setAvisoCriacao("");
+    setCriando(true); setErro(""); setAviso("");
     try {
-      const data = await sbSignup(novoEmail, novaSenha);
-      // Se o Supabase exigir confirmação por e-mail, não vem access_token
-      // ainda — o usuário só consegue logar depois de clicar no link.
-      if (!data.access_token) {
-        setAvisoCriacao(`Usuário "${novoEmail}" criado. Como a confirmação por e-mail está ativada no Supabase, ele só vai conseguir entrar depois de confirmar o e-mail recebido.`);
-      } else {
-        setAvisoCriacao(`Usuário "${novoEmail}" criado e já pode fazer login.`);
-      }
-      setNovoEmail("");
-      setNovaSenha("");
+      await chamarFuncao("usuarios-admin", session, { acao: "criar", email: novo.email, senha: novo.senha, nome: novo.nome, areas: novo.areas });
+      setAviso(`Usuário "${novo.email}" criado e já pode entrar no aplicativo com a senha informada.`);
+      setNovo(novoVazio);
       setShowForm(false);
       carregar();
     } catch (e) { setErro(e.message); }
     finally { setCriando(false); }
   }
 
+  const fmtAcesso = (iso) => (iso ? new Date(iso).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" }) : "nunca entrou");
+  const estaBloqueado = (id) => { const b = contas[id]?.bloqueado_ate; return !!b && new Date(b) > new Date(); };
+  const ativos = perfis.filter((p) => !estaBloqueado(p.id) && !p.semPerfil).length;
+
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Usuários ({perfis.length})</h2>
-        <button onClick={() => { setShowForm(true); setAvisoCriacao(""); }} style={btnPrimary}><Plus size={16} /> Novo usuário</button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18, gap: 10, flexWrap: "wrap" }}>
+        <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Usuários <span style={{ fontWeight: 400, color: MUTED, fontSize: 14 }}>({ativos} ativos)</span></h2>
+        <button onClick={() => { setShowForm(true); setAviso(""); }} disabled={semFuncao} style={btnPrimary}><Plus size={16} /> Novo usuário</button>
       </div>
 
-      {avisoCriacao && (
-        <div style={{ background: "#EAF4EE", color: OK, padding: 12, borderRadius: 8, marginBottom: 14, fontSize: 13 }}>{avisoCriacao}</div>
+      {semFuncao && (
+        <div style={{ background: "#FFF8E6", border: `1px solid ${GOLD}`, padding: 12, borderRadius: 8, marginBottom: 14, fontSize: 13 }}>
+          A função <b>usuarios-admin</b> não respondeu (ela só funciona para administradores e precisa estar publicada no Supabase). Por enquanto dá para mudar só áreas e nomes.
+        </div>
+      )}
+      {aviso && (
+        <div style={{ background: "#EAF4EE", color: OK, padding: 12, borderRadius: 8, marginBottom: 14, fontSize: 13 }}>{aviso}</div>
       )}
 
       {showForm && (
@@ -1938,16 +1960,27 @@ function UsuariosView({ session, setErro, meuId }) {
             <h3 style={{ margin: 0, fontSize: 15 }}>Novo usuário</h3>
             <button onClick={() => setShowForm(false)} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED }}><X size={18} /></button>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="E-mail">
-              <input type="email" style={inputStyle} value={novoEmail} onChange={(e) => setNovoEmail(e.target.value)} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <Field label="E-mail (é o login)">
+              <input type="email" style={inputStyle} value={novo.email} onChange={(e) => setNovo({ ...novo, email: e.target.value })} />
             </Field>
-            <Field label="Senha provisória (mín. 6 caracteres)">
-              <input type="text" style={inputStyle} value={novaSenha} onChange={(e) => setNovaSenha(e.target.value)} />
+            <Field label="Nome">
+              <input style={inputStyle} value={novo.nome} onChange={(e) => setNovo({ ...novo, nome: e.target.value })} />
+            </Field>
+            <Field label="Senha (mín. 6 caracteres)">
+              <input type="text" style={inputStyle} value={novo.senha} onChange={(e) => setNovo({ ...novo, senha: e.target.value })} />
             </Field>
           </div>
+          <div style={{ display: "flex", gap: 18, flexWrap: "wrap", marginTop: 12, fontSize: 13 }}>
+            <span style={{ color: MUTED }}>Acessa:</span>
+            {AREAS_DISPONIVEIS.map((a) => (
+              <label key={a.id} style={{ display: "inline-flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
+                <input type="checkbox" checked={novo.areas.includes(a.id)} onChange={(e) => setNovo({ ...novo, areas: e.target.checked ? [...novo.areas, a.id] : novo.areas.filter((x) => x !== a.id) })} /> {a.label}
+              </label>
+            ))}
+          </div>
           <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
-            Depois de criado, defina aqui embaixo se é admin e quais áreas ele acessa. Avise a senha provisória pra pessoa — ela pode trocar depois fazendo login.
+            O usuário já sai liberado para entrar (sem e-mail de confirmação). Avise a senha para a pessoa.
           </div>
           <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
             <button onClick={() => setShowForm(false)} style={btnGhostSmall}>Cancelar</button>
@@ -1957,7 +1990,7 @@ function UsuariosView({ session, setErro, meuId }) {
       )}
 
       <div style={{ color: MUTED, fontSize: 13, marginBottom: 14 }}>
-        Aqui você define nome, se é administrador (acesso total) e quais áreas cada um pode ver.
+        Aqui você define nome, se é administrador (acesso total) e quais áreas cada um pode ver. Senha, bloqueio e exclusão também são feitos aqui.
       </div>
 
       {carregando ? (
@@ -1968,7 +2001,7 @@ function UsuariosView({ session, setErro, meuId }) {
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
               <thead>
                 <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
-                  {["E-mail", "Nome", "Admin (acesso total)", ...AREAS_DISPONIVEIS.map((a) => a.label), "Ações"].map((h) => (
+                  {["E-mail", "Nome", "Admin", ...AREAS_DISPONIVEIS.map((a) => a.label), "Último acesso", "Ações"].map((h) => (
                     <th key={h} style={{ padding: "10px 14px", fontWeight: 600, color: MUTED, fontSize: 11, textTransform: "uppercase", letterSpacing: 0.4 }}>{h}</th>
                   ))}
                 </tr>
@@ -1977,56 +2010,52 @@ function UsuariosView({ session, setErro, meuId }) {
                 {perfis.map((p) => {
                   const areas = areasPorUsuario[p.id] || new Set();
                   const salvando = salvandoId === p.id;
+                  const bloq = estaBloqueado(p.id);
+                  const eu = p.id === meuId;
                   return (
-                    <tr key={p.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                    <tr key={p.id} style={{ borderTop: `1px solid ${BORDER}`, opacity: bloq || p.semPerfil ? 0.6 : 1 }}>
                       <td style={{ padding: "10px 14px" }}>
-                        {p.email}{p.id === meuId && <span style={{ color: MUTED, fontSize: 11 }}> (você)</span>}
+                        {p.email}{eu && <span style={{ color: MUTED, fontSize: 11 }}> (você)</span>}
+                        {bloq && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: DANGER, borderRadius: 4, padding: "1px 5px" }}>BLOQUEADO</span>}
+                        {p.semPerfil && <div style={{ fontSize: 11, color: DANGER }}>login sem acesso ao sistema (removido antes)</div>}
                       </td>
                       <td style={{ padding: "10px 14px" }}>
-                        <input
-                          style={{ ...inputStyle, width: 160 }}
-                          defaultValue={p.nome || ""}
-                          placeholder="Nome"
-                          onBlur={(e) => {
-                            if (e.target.value !== (p.nome || "")) handleSalvarPerfil(p, { nome: e.target.value || null });
-                          }}
-                        />
+                        {!p.semPerfil && (
+                          <input
+                            style={{ ...inputStyle, width: 160 }}
+                            defaultValue={p.nome || ""}
+                            placeholder="Nome"
+                            onBlur={(e) => { if (e.target.value !== (p.nome || "")) handleSalvarPerfil(p, { nome: e.target.value || null }); }}
+                          />
+                        )}
                       </td>
                       <td style={{ padding: "10px 14px" }}>
-                        <input
-                          type="checkbox"
-                          checked={!!p.is_admin}
-                          disabled={salvando}
-                          onChange={(e) => handleSalvarPerfil(p, { is_admin: e.target.checked })}
-                        />
+                        {!p.semPerfil && <input type="checkbox" checked={!!p.is_admin} disabled={salvando || eu} title={eu ? "Você não pode tirar o seu próprio acesso de admin" : ""} onChange={(e) => handleSalvarPerfil(p, { is_admin: e.target.checked })} />}
                       </td>
                       {AREAS_DISPONIVEIS.map((a) => (
                         <td key={a.id} style={{ padding: "10px 14px" }}>
-                          <input
-                            type="checkbox"
-                            checked={p.is_admin || areas.has(a.id)}
-                            disabled={salvando || p.is_admin}
-                            onChange={(e) => handleToggleArea(p.id, a.id, e.target.checked)}
-                          />
+                          {!p.semPerfil && <input type="checkbox" checked={p.is_admin || areas.has(a.id)} disabled={salvando || p.is_admin} onChange={(e) => handleToggleArea(p.id, a.id, e.target.checked)} />}
                         </td>
                       ))}
-                      <td style={{ padding: "10px 14px" }}>
-                        {p.id !== meuId && (
-                          <button
-                            onClick={() => handleExcluirUsuario(p)}
-                            disabled={salvando}
-                            title="Remover acesso deste usuário"
-                            style={{ ...btnDangerSmall, display: "flex", alignItems: "center", gap: 6 }}
-                          >
-                            <Trash2 size={14} /> Excluir
-                          </button>
+                      <td style={{ padding: "10px 14px", color: MUTED, fontSize: 12, whiteSpace: "nowrap" }}>{contas[p.id] ? fmtAcesso(contas[p.id].ultimo_acesso) : "—"}</td>
+                      <td style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>
+                        {salvando ? <span style={{ color: MUTED, fontSize: 12 }}>Aguarde...</span> : !semFuncao && (
+                          <div style={{ display: "flex", gap: 6 }}>
+                            {!p.semPerfil && <button onClick={() => trocarSenha(p)} style={btnGhostSmall}>Senha</button>}
+                            {!eu && !p.is_admin && !p.semPerfil && <button onClick={() => bloquear(p, !bloq)} style={btnGhostSmall}>{bloq ? "Desbloquear" : "Bloquear"}</button>}
+                            {!eu && !p.is_admin && (
+                              <button onClick={() => excluir(p)} title="Apagar o login de vez" style={{ ...btnDangerSmall, display: "flex", alignItems: "center", gap: 6 }}>
+                                <Trash2 size={14} /> Excluir
+                              </button>
+                            )}
+                          </div>
                         )}
                       </td>
                     </tr>
                   );
                 })}
                 {perfis.length === 0 && (
-                  <tr><td colSpan={4 + AREAS_DISPONIVEIS.length} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum usuário encontrado.</td></tr>
+                  <tr><td colSpan={5 + AREAS_DISPONIVEIS.length} style={{ padding: 20, color: MUTED, textAlign: "center" }}>Nenhum usuário encontrado.</td></tr>
                 )}
               </tbody>
             </table>
@@ -3782,6 +3811,118 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
 // =========================================================
 // Financeiro · fila de faturamento
 // =========================================================
+// =========================================================
+// NFS-e (Emissor Nacional via Focus NFe) — chamadas à função "nfse" do Supabase
+// =========================================================
+async function chamarNfse(session, body) { return chamarFuncao("nfse", session, body); }
+
+const NFSE_STATUS = {
+  processando_autorizacao: { label: "Processando", cor: GOLD },
+  autorizado: { label: "Autorizada", cor: "#2E7D5B" },
+  erro_autorizacao: { label: "Recusada", cor: DANGER },
+  erro_envio: { label: "Não enviada", cor: DANGER },
+  cancelado: { label: "Cancelada", cor: MUTED },
+};
+const nfseStatus = (s) => NFSE_STATUS[s] || { label: s || "—", cor: MUTED };
+
+function NfseConfigPanel({ session, setErro, onFechar }) {
+  const [empresa, setEmpresa] = useState("prosign");
+  const [lista, setLista] = useState([]);
+  const [f, setF] = useState(null);
+  const [salvando, setSalvando] = useState(false);
+  const [aviso, setAviso] = useState("");
+  useEffect(() => {
+    sbRequest("nfse_config?select=*", session)
+      .then((r) => setLista(r || []))
+      .catch((e) => setErro(msgSupabase(e).includes("nfse_config") ? "Rode o SQL migracao_nfse.sql antes de configurar a NFS-e." : msgSupabase(e)));
+  }, []); // eslint-disable-line
+  useEffect(() => { setF(lista.find((x) => x.empresa === empresa) || null); setAviso(""); }, [empresa, lista]);
+  async function salvar() {
+    setSalvando(true); setErro(""); setAviso("");
+    try {
+      const body = {
+        cnpj: (f.cnpj || "").replace(/\D/g, "") || null, inscricao_municipal: f.inscricao_municipal || null,
+        codigo_municipio: (f.codigo_municipio || "").replace(/\D/g, "") || "3205309",
+        opcao_simples: f.opcao_simples, regime_trib_sn: f.opcao_simples === "3" ? (f.regime_trib_sn || null) : null,
+        regime_especial: f.regime_especial || "0",
+        codigo_tributacao_nacional: (f.codigo_tributacao_nacional || "").replace(/\D/g, "") || null,
+        codigo_tributacao_municipal: f.codigo_tributacao_municipal || null, codigo_nbs: (f.codigo_nbs || "").replace(/\D/g, "") || null,
+        iss_retido_padrao: !!f.iss_retido_padrao, descricao_padrao: f.descricao_padrao || null, ambiente: f.ambiente, atualizado_em: new Date().toISOString(),
+      };
+      const r = await sbRequest(`nfse_config?empresa=eq.${empresa}`, session, { method: "PATCH", body });
+      if (!r || r.length === 0) { setErro("Só um administrador pode alterar a configuração fiscal."); return; }
+      setLista((l) => l.map((x) => (x.empresa === empresa ? r[0] : x)));
+      setAviso("Configuração salva.");
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setSalvando(false); }
+  }
+  const campo = (k, label, ph, w) => (
+    <Field label={label}><input style={{ ...inputStyle, width: w || "100%" }} value={f?.[k] ?? ""} placeholder={ph} onChange={(e) => setF({ ...f, [k]: e.target.value })} /></Field>
+  );
+  return (
+    <Card style={{ marginBottom: 20, borderTop: `3px solid ${NAVY}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 10, flexWrap: "wrap" }}>
+        <h4 style={{ margin: 0, fontSize: 14, color: NAVY }}>Configuração da NFS-e (Emissor Nacional)</h4>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <select value={empresa} onChange={(e) => setEmpresa(e.target.value)} style={selStyle}><option value="prosign">Prosign</option><option value="vs">VS</option></select>
+          <button onClick={onFechar} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED }}><X size={18} /></button>
+        </div>
+      </div>
+      {!f ? <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div> : (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+            {campo("cnpj", "CNPJ do prestador", "00.000.000/0000-00")}
+            {campo("inscricao_municipal", "Inscrição municipal (opcional)")}
+            {campo("codigo_municipio", "Município emissor (código IBGE)", "3205309 = Vitória")}
+            <Field label="Simples Nacional">
+              <select style={inputStyle} value={f.opcao_simples} onChange={(e) => setF({ ...f, opcao_simples: e.target.value })}>
+                <option value="1">1 · Não optante</option><option value="2">2 · MEI</option><option value="3">3 · ME/EPP optante</option>
+              </select>
+            </Field>
+            {f.opcao_simples === "3" && (
+              <Field label="Regime de apuração no Simples">
+                <select style={inputStyle} value={f.regime_trib_sn || ""} onChange={(e) => setF({ ...f, regime_trib_sn: e.target.value })}>
+                  <option value="">(não informar)</option>
+                  <option value="1">1 · Federais e ISS pelo Simples</option>
+                  <option value="2">2 · Federais pelo Simples, ISS fora</option>
+                  <option value="3">3 · Federais e ISS fora do Simples</option>
+                </select>
+              </Field>
+            )}
+            <Field label="Regime especial de tributação">
+              <select style={inputStyle} value={f.regime_especial || "0"} onChange={(e) => setF({ ...f, regime_especial: e.target.value })}>
+                <option value="0">0 · Nenhum</option><option value="1">1 · Ato cooperado</option><option value="2">2 · Estimativa</option><option value="3">3 · Microempresa municipal</option>
+                <option value="4">4 · Notário/registrador</option><option value="5">5 · Profissional autônomo</option><option value="6">6 · Sociedade de profissionais</option><option value="9">9 · Outros</option>
+              </select>
+            </Field>
+            {campo("codigo_tributacao_nacional", "Código de tributação nacional (6 dígitos)", "ex.: confirmar com o contador")}
+            {campo("codigo_tributacao_municipal", "Código de tributação municipal (opcional)")}
+            {campo("codigo_nbs", "Código NBS (opcional)")}
+            <Field label="Ambiente">
+              <select style={{ ...inputStyle, color: f.ambiente === "producao" ? DANGER : TEXT, fontWeight: 600 }} value={f.ambiente} onChange={(e) => setF({ ...f, ambiente: e.target.value })}>
+                <option value="homologacao">Homologação (teste, sem valor fiscal)</option>
+                <option value="producao">PRODUÇÃO (nota com valor fiscal)</option>
+              </select>
+            </Field>
+          </div>
+          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 13, marginTop: 12 }}>
+            <input type="checkbox" checked={!!f.iss_retido_padrao} onChange={(e) => setF({ ...f, iss_retido_padrao: e.target.checked })} /> ISS retido pelo tomador (padrão)
+          </label>
+          <div style={{ marginTop: 12 }}>
+            <Field label="Texto fixo no fim da descrição (opcional)">
+              <textarea rows={2} style={{ ...inputStyle, width: "100%", resize: "vertical" }} value={f.descricao_padrao || ""} placeholder="ex.: Dados bancários / Lei da transparência..." onChange={(e) => setF({ ...f, descricao_padrao: e.target.value })} />
+            </Field>
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, alignItems: "center", marginTop: 12 }}>
+            {aviso && <span style={{ fontSize: 12, color: "#2E7D5B" }}>{aviso}</span>}
+            <button onClick={salvar} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar configuração"}</button>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
 function FaturamentoFinanceiroView({ session, setErro }) {
   const hojeLocal = () => {
     const d = new Date();
@@ -3796,14 +3937,20 @@ function FaturamentoFinanceiroView({ session, setErro }) {
   const [salvando, setSalvando] = useState(false);
   const [filtroReceb, setFiltroReceb] = useState("todos");
   const [editReceb, setEditReceb] = useState(null); // { id, previsao, recebido }
+  const [notas, setNotas] = useState([]);
+  const [semNfse, setSemNfse] = useState(false);
+  const [verConfig, setVerConfig] = useState(false);
+  const [emitindo, setEmitindo] = useState(null); // { fat, descricao, retido, municipio, ambiente }
+  const [nfseOcupado, setNfseOcupado] = useState(null); // id do faturamento/nota em operação
 
   function carregar() {
     setCarregando(true);
     Promise.all([
       sbRequest("orcamentos?select=*,clientes:pessoas(nome)&status=eq.autorizado_faturamento&order=autorizado_em.asc", session),
-      sbRequest("faturamento?select=*,clientes:pessoas(nome),orcamentos!inner(evento,numero_or,status)&orcamentos.status=eq.faturado&order=criado_em.desc&limit=150", session),
+      sbRequest("faturamento?select=*,clientes:pessoas(nome,documento),orcamentos!inner(evento,numero_or,status,local,data_evento,empresa)&orcamentos.status=eq.faturado&order=criado_em.desc&limit=150", session),
+      sbRequest("notas_fiscais?select=*&order=criado_em.desc&limit=400", session).then((r) => { setSemNfse(false); return r; }).catch(() => { setSemNfse(true); return []; }),
     ])
-      .then(([a, b]) => { setFila(a || []); setRecentes(b || []); })
+      .then(([a, b, c]) => { setFila(a || []); setRecentes(b || []); setNotas(c || []); })
       .catch((e) => setErro(msgSupabase(e)))
       .finally(() => setCarregando(false));
   }
@@ -3821,12 +3968,15 @@ function FaturamentoFinanceiroView({ session, setErro }) {
     setSalvando(true);
     setErro("");
     try {
-      await sbRequest("rpc/faturar_orcamento", session, {
+      const fat = await sbRequest("rpc/faturar_orcamento", session, {
         method: "POST",
         body: { p_orcamento_id: o.id, p_valor: form.valor, p_data: form.data, p_nf: form.nf || null, p_previsao: form.previsao || null },
       });
       setFaturandoId(null);
       carregar();
+      if (!semNfse && !form.nf && fat?.id && window.confirm("Faturado! Emitir a NFS-e agora?")) {
+        abrirEmissao({ ...fat, clientes: o.clientes, orcamentos: { evento: o.evento, numero_or: o.numero_or, local: o.local, data_evento: o.data_evento, empresa: o.empresa } });
+      }
     } catch (e) { setErro(msgSupabase(e)); }
     finally { setSalvando(false); }
   }
@@ -3839,6 +3989,67 @@ function FaturamentoFinanceiroView({ session, setErro }) {
     } catch (e) { setErro(msgSupabase(e)); }
     finally { setSalvando(false); }
   }
+  // ---------- NFS-e ----------
+  const notaAtiva = (fatId) => notas.find((n) => n.faturamento_id === fatId && ["processando_autorizacao", "autorizado"].includes(n.status));
+  const ultimaNota = (fatId) => notas.find((n) => n.faturamento_id === fatId);
+  async function abrirEmissao(f) {
+    setErro("");
+    let itensTxt = "";
+    try {
+      const its = await sbRequest(`orcamento_cliente_itens?select=tipo,titulo,descricao,qtd,diarias,valor&orcamento_id=eq.${f.orcamento_id}&order=ordem.asc`, session);
+      const lista = (its || []).filter((x) => x.tipo === "lista" && (x.titulo || "").trim());
+      const unico = (its || []).find((x) => x.tipo === "unico");
+      if (lista.length) itensTxt = lista.map((x) => `- ${String(x.titulo).trim()}${Number(x.qtd) > 1 ? ` (${Number(x.qtd)} un)` : ""}`).join("\n");
+      else if (unico && (unico.titulo || unico.descricao)) itensTxt = [unico.titulo, unico.descricao].filter((x) => (x || "").trim()).join(" - ");
+    } catch { /* sem itens do orçamento do cliente */ }
+    const o = f.orcamentos || {};
+    const cab = [o.numero_or ? `PR ${o.numero_or}` : "", o.evento, o.local, o.data_evento ? `em ${fmtData(o.data_evento)}` : ""].filter(Boolean).join(" - ");
+    let cfg = null;
+    try { [cfg] = (await sbRequest(`nfse_config?select=ambiente,codigo_municipio,iss_retido_padrao&empresa=eq.${o.empresa === "vs" ? "vs" : "prosign"}`, session)) || []; } catch { /* */ }
+    setEmitindo({ fat: f, descricao: `Prestação de serviços de comunicação visual: ${cab}${itensTxt ? "\n" + itensTxt : ""}`, retido: !!cfg?.iss_retido_padrao, municipio: cfg?.codigo_municipio || "3205309", ambiente: cfg?.ambiente || "homologacao" });
+  }
+  async function consultarNota(nota, silencioso) {
+    setNfseOcupado(nota.id);
+    try {
+      const { nota: n } = await chamarNfse(session, { acao: "consultar", nota_id: nota.id });
+      setNotas((l) => l.map((x) => (x.id === n.id ? n : x)));
+      if (n.status === "autorizado") setRecentes((l) => l.map((f) => (f.id === n.faturamento_id ? { ...f, nota_fiscal: n.numero } : f)));
+      return n;
+    } catch (e) { if (!silencioso) setErro(e.message); return null; }
+    finally { setNfseOcupado(null); }
+  }
+  async function emitirNota() {
+    const em = emitindo;
+    if (!em.descricao.trim()) { setErro("Escreva a descrição do serviço."); return; }
+    const prod = em.ambiente === "producao";
+    if (!window.confirm(`${prod ? "EMITIR NOTA FISCAL (PRODUÇÃO, com valor fiscal)" : "Emitir nota de TESTE (homologação)"}\n\nCliente: ${em.fat.clientes?.nome || ""}\nValor: ${brl(em.fat.valor)}\n\nConfirma?`)) return;
+    setNfseOcupado(em.fat.id); setErro("");
+    try {
+      const { nota } = await chamarNfse(session, { acao: "emitir", faturamento_id: em.fat.id, descricao: em.descricao, iss_retido: em.retido, municipio_prestacao: em.municipio });
+      setNotas((l) => [nota, ...l]);
+      setEmitindo(null);
+      // a prefeitura/Receita responde em alguns segundos
+      let n = nota;
+      for (let i = 0; i < 8 && n && n.status === "processando_autorizacao"; i++) {
+        await new Promise((r) => setTimeout(r, 4000));
+        n = await consultarNota(n, true);
+      }
+      if (n && n.status === "erro_autorizacao") setErro(`Nota recusada: ${n.mensagem || "veja o detalhe na linha do faturamento"}`);
+    } catch (e) { setErro(e.message); carregar(); }
+    finally { setNfseOcupado(null); }
+  }
+  async function cancelarNota(nota) {
+    const just = window.prompt(`Cancelar a NFS-e nº ${nota.numero || ""}?\n\nEscreva o motivo (mínimo 15 letras):`);
+    if (!just) return;
+    setNfseOcupado(nota.id); setErro("");
+    try {
+      const { nota: n } = await chamarNfse(session, { acao: "cancelar", nota_id: nota.id, justificativa: just });
+      setNotas((l) => l.map((x) => (x.id === n.id ? n : x)));
+      carregar();
+    } catch (e) { setErro(e.message); }
+    finally { setNfseOcupado(null); }
+  }
+
   const hoje = hojeLocal();
   const situacaoReceb = (f) => (f.data_recebimento ? "recebido" : f.previsao_recebimento && f.previsao_recebimento < hoje ? "atrasado" : "a_receber");
   const aReceber = recentes.filter((f) => !f.data_recebimento);
@@ -3851,7 +4062,16 @@ function FaturamentoFinanceiroView({ session, setErro }) {
 
   return (
     <div>
-      <h3 style={{ fontSize: 16, color: NAVY, margin: "0 0 14px" }}>Fila de faturamento</h3>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "0 0 14px" }}>
+        <h3 style={{ fontSize: 16, color: NAVY, margin: 0 }}>Fila de faturamento</h3>
+        <button onClick={() => setVerConfig((v) => !v)} style={btnGhostSmall}>⚙ Configurar NFS-e</button>
+      </div>
+      {verConfig && <NfseConfigPanel session={session} setErro={setErro} onFechar={() => setVerConfig(false)} />}
+      {semNfse && !verConfig && (
+        <div style={{ fontSize: 12, color: MUTED, background: "#F3F7FB", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px", marginBottom: 14 }}>
+          Emissão de NFS-e ainda não ativada: falta rodar o SQL <b>migracao_nfse.sql</b> e publicar a função <b>nfse</b> no Supabase.
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 22 }}>
         <Card><div style={{ fontSize: 12, color: MUTED }}>Aguardando faturamento</div><div style={{ fontSize: 26, fontWeight: 700, color: "#1D6FA5" }}>{fila.length}</div></Card>
         <Card><div style={{ fontSize: 12, color: MUTED }}>Valor a faturar</div><div style={{ fontSize: 26, fontWeight: 700, color: NAVY, fontFamily: FONT_MONO }}>{brl(totalFila)}</div></Card>
@@ -3937,17 +4157,72 @@ function FaturamentoFinanceiroView({ session, setErro }) {
                     <td style={td}>{f.orcamentos?.numero_or || "—"}</td>
                     <td style={td}>🔒 {f.orcamentos?.evento}</td>
                     <td style={td}>{f.clientes?.nome || "—"}</td>
-                    <td style={td}>{f.nota_fiscal || "—"}</td>
+                    <td style={td}>
+                      {(() => {
+                        const nAt = notaAtiva(f.id), nUlt = ultimaNota(f.id), n = nAt || nUlt;
+                        if (!n) return f.nota_fiscal || "—";
+                        const st = nfseStatus(n.status);
+                        return (
+                          <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 110 }}>
+                            <span title={n.mensagem || ""} style={{ fontSize: 11, fontWeight: 700, color: st.cor }}>
+                              {n.numero ? `Nº ${n.numero}` : st.label}{n.numero && n.status !== "autorizado" ? ` · ${st.label}` : ""}{n.ambiente === "homologacao" ? " · teste" : ""}
+                            </span>
+                            {n.status === "autorizado" && (
+                              <span style={{ fontSize: 11, display: "flex", gap: 8 }}>
+                                {n.url_danfse && <a href={n.url_danfse} target="_blank" rel="noreferrer" style={{ color: NAVY }}>PDF</a>}
+                                {n.url_xml && <a href={n.url_xml} target="_blank" rel="noreferrer" style={{ color: NAVY }}>XML</a>}
+                              </span>
+                            )}
+                            {(n.status === "erro_autorizacao" || n.status === "erro_envio") && n.mensagem && <span style={{ fontSize: 10.5, color: DANGER, maxWidth: 220 }}>{n.mensagem}</span>}
+                          </div>
+                        );
+                      })()}
+                    </td>
                     <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(f.valor)}</td>
                     <td style={td}>{fmtData(f.previsao_recebimento)}</td>
                     <td style={td}>{fmtData(f.data_recebimento)}</td>
                     <td style={td}><span style={{ fontSize: 11, fontWeight: 700, color: cor, border: `1px solid ${cor}`, borderRadius: 10, padding: "1px 8px", whiteSpace: "nowrap" }}>{sit === "recebido" ? "Recebido" : sit === "atrasado" ? "Atrasado" : "A receber"}</span></td>
-                    <td style={{ ...td, textAlign: "right" }}>
+                    <td style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
+                      {!semNfse && (() => {
+                        const nAt = notaAtiva(f.id);
+                        const ocup = nfseOcupado === f.id || (nAt && nfseOcupado === nAt.id);
+                        if (ocup) return <span style={{ fontSize: 12, color: MUTED, marginRight: 8 }}>Aguarde...</span>;
+                        if (!nAt) return !f.nota_fiscal || ultimaNota(f.id)?.status === "cancelado" ? <><button onClick={() => (emitindo?.fat.id === f.id ? setEmitindo(null) : abrirEmissao(f))} style={{ ...btnGhostSmall, borderColor: "#2E7D5B", color: "#2E7D5B", fontWeight: 600 }}>{emitindo?.fat.id === f.id ? "Fechar" : "Emitir NFS-e"}</button>{" "}</> : null;
+                        if (nAt.status === "processando_autorizacao") return <><button onClick={() => consultarNota(nAt)} style={btnGhostSmall}>Atualizar NF</button>{" "}</>;
+                        return <><button onClick={() => cancelarNota(nAt)} style={{ ...btnGhostSmall, color: DANGER, borderColor: DANGER }}>Cancelar NF</button>{" "}</>;
+                      })()}
                       <button onClick={() => setEditReceb(editReceb?.id === f.id ? null : { id: f.id, previsao: f.previsao_recebimento || "", recebido: f.data_recebimento || "" })} style={btnGhostSmall}>
                         {editReceb?.id === f.id ? "Cancelar" : f.data_recebimento ? "Editar datas" : "Informar recebimento"}
                       </button>
                     </td>
                   </tr>
+                  {emitindo?.fat.id === f.id && (
+                    <tr style={{ background: "#F1F8F4" }}>
+                      <td colSpan={10} style={{ padding: 16 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 10, fontSize: 13 }}>
+                          <div>
+                            <b>Emitir NFS-e</b> · {f.clientes?.nome || "—"} <span style={{ color: MUTED }}>({f.clientes?.documento || "sem CNPJ/CPF no cadastro!"})</span> · <b style={{ fontFamily: FONT_MONO }}>{brl(f.valor)}</b>
+                          </div>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: emitindo.ambiente === "producao" ? DANGER : GOLD, border: `1px solid currentColor`, borderRadius: 10, padding: "1px 8px" }}>
+                            {emitindo.ambiente === "producao" ? "PRODUÇÃO — nota com valor fiscal" : "HOMOLOGAÇÃO — nota de teste"}
+                          </span>
+                        </div>
+                        <Field label="Descrição do serviço (sai na nota)">
+                          <textarea rows={4} value={emitindo.descricao} onChange={(e) => setEmitindo({ ...emitindo, descricao: e.target.value })} style={{ ...inputStyle, width: "100%", resize: "vertical" }} />
+                        </Field>
+                        <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end", marginTop: 10 }}>
+                          <Field label="Município da prestação (IBGE)">
+                            <input value={emitindo.municipio} onChange={(e) => setEmitindo({ ...emitindo, municipio: e.target.value })} style={{ ...inputStyle, width: 150 }} placeholder="3205309" />
+                          </Field>
+                          <label style={{ display: "inline-flex", gap: 6, alignItems: "center", fontSize: 13, paddingBottom: 10 }}>
+                            <input type="checkbox" checked={emitindo.retido} onChange={(e) => setEmitindo({ ...emitindo, retido: e.target.checked })} /> ISS retido pelo tomador
+                          </label>
+                          <button onClick={emitirNota} disabled={nfseOcupado === f.id} style={{ ...btnPrimary, background: "#2E7D5B" }}>{nfseOcupado === f.id ? "Enviando..." : "Emitir nota"}</button>
+                          <span style={{ fontSize: 12, color: MUTED }}>Vitória = 3205309 · Vila Velha = 3205200 · Serra = 3205002 · Cariacica = 3201308</span>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
                   {editReceb?.id === f.id && (
                     <tr style={{ background: "#F3F7FB" }}>
                       <td colSpan={10} style={{ padding: 14 }}>
