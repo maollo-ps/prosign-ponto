@@ -423,6 +423,40 @@ const AREA_DAS_ABAS = {
   financeiro: "financeiro",
 };
 
+// Layout para celular: ativado automaticamente em telas estreitas, ou à mão pelo botão do cabeçalho.
+const CSS_CELULAR = `
+html.mob body { font-size: 15px; overflow-x: hidden; }
+html.mob input, html.mob select, html.mob textarea { font-size: 16px !important; min-height: 40px; max-width: 100%; }
+html.mob button { min-height: 38px; }
+html.mob main { padding: 14px 12px 80px !important; }
+html.mob header > div { padding: 10px 12px 0 !important; }
+html.mob header h1 { font-size: 15px !important; }
+html.mob header h1 span, html.mob header img[alt="PSView"] { display: none !important; }
+html.mob header nav { overflow-x: auto; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+html.mob header nav button { white-space: nowrap; padding: 9px 12px !important; flex: 0 0 auto; }
+html.mob [style*="display: flex"] { flex-wrap: wrap; }
+html.mob [style*="grid-template-columns"]:not([style*="auto-fit"]):not([style*="auto-fill"]) { grid-template-columns: 1fr !important; }
+html.mob [style*="min-width"]:not(table) { min-width: 0 !important; }
+html.mob [style*="flex: 1"] { flex: 1 1 100% !important; }
+html.mob form[style*="width: 340px"] { width: 92vw !important; padding: 22px !important; }
+html.mob [style*="padding: 22px"] { padding: 14px !important; }
+html.mob h2, html.mob h3 { word-break: break-word; }
+html.mob table { font-size: 12.5px; }
+html.mob td, html.mob th { padding-left: 8px !important; padding-right: 8px !important; }
+html.mob table.tab-cartoes, html.mob table.tab-cartoes tbody, html.mob table.tab-cartoes tfoot { display: block; min-width: 0 !important; }
+html.mob table.tab-cartoes thead { display: none; }
+html.mob table.tab-cartoes tr { display: block; padding: 10px 12px; border-top: 1px solid #E3E6EC; }
+html.mob table.tab-cartoes td { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 3px 0 !important; border: 0 !important; text-align: right !important; }
+html.mob table.tab-cartoes td::before { content: attr(data-label); color: #6B7280; font-size: 11px; text-transform: uppercase; text-align: left; flex: 0 0 auto; }
+html.mob table.tab-cartoes td[data-label=""]::before { content: none; }
+html.mob table.tab-cartoes td[data-label=""] { justify-content: flex-end; flex-wrap: wrap; padding-top: 8px !important; }
+html.mob table.tab-cartoes td[colspan] { display: block; }
+html.mob table.tab-cartoes td[colspan]:empty { display: none; }
+`;
+function modoCelularAtivo(pref) {
+  return pref === "cel" || (pref !== "pc" && typeof window !== "undefined" && window.innerWidth <= 820);
+}
+
 export default function App() {
   const [session, setSession] = useState(null);
   const [tab, setTab] = useState(null);
@@ -435,6 +469,28 @@ export default function App() {
     const d = new Date();
     return `${d.getFullYear()}-${MESES[d.getMonth()]}`;
   });
+
+  // modo celular: "auto" (pela largura da tela), "cel" (forçado) ou "pc"
+  const [prefCelular, setPrefCelular] = useState(() => { try { return localStorage.getItem("modo_celular") || "auto"; } catch { return "auto"; } });
+  const [celAtivo, setCelAtivo] = useState(() => modoCelularAtivo(prefCelular));
+  useEffect(() => {
+    let meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) { meta = document.createElement("meta"); meta.name = "viewport"; document.head.appendChild(meta); }
+    meta.content = "width=device-width, initial-scale=1, viewport-fit=cover";
+    let st = document.getElementById("css-celular");
+    if (!st) { st = document.createElement("style"); st.id = "css-celular"; st.textContent = CSS_CELULAR; document.head.appendChild(st); }
+  }, []);
+  useEffect(() => {
+    const aplicar = () => { const on = modoCelularAtivo(prefCelular); setCelAtivo(on); document.documentElement.classList.toggle("mob", on); };
+    aplicar();
+    window.addEventListener("resize", aplicar);
+    return () => window.removeEventListener("resize", aplicar);
+  }, [prefCelular]);
+  function alternarCelular() {
+    const novo = celAtivo ? "pc" : "cel";
+    setPrefCelular(novo);
+    try { localStorage.setItem("modo_celular", novo); } catch {}
+  }
 
   const [perfil, setPerfil] = useState(null);
   const [areasPermitidas, setAreasPermitidas] = useState([]);
@@ -495,7 +551,7 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: TEXT, fontFamily: FONT_BODY }}>
-      <Header tab={tab} setTab={setTab} onLogout={() => setSession(null)} podeVerAba={podeVerAba} />
+      <Header tab={tab} setTab={setTab} onLogout={() => setSession(null)} podeVerAba={podeVerAba} celAtivo={celAtivo} onAlternarCelular={alternarCelular} />
       <main style={{ maxWidth: 1180, margin: "0 auto", padding: "28px 20px 80px" }}>
         {erro && (
           <div style={{ background: "#FDECEC", color: DANGER, padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
@@ -593,7 +649,7 @@ function LoginScreen({ onLogin }) {
 }
 
 // ---------- Header ----------
-function Header({ tab, setTab, onLogout, podeVerAba }) {
+function Header({ tab, setTab, onLogout, podeVerAba, celAtivo, onAlternarCelular }) {
   const items = [
     { id: "rh", label: "Recursos Humanos", icon: Users },
     { id: "comercial", label: "Comercial", icon: TrendingUp },
@@ -615,9 +671,14 @@ function Header({ tab, setTab, onLogout, podeVerAba }) {
               Prosign <span style={{ fontWeight: 400, color: "#C7CEDB" }}>- Controle de Processos</span>
             </h1>
           </div>
-          <button onClick={onLogout} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: "#C7CEDB", cursor: "pointer", fontSize: 13 }}>
-            <LogOut size={15} /> Sair
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={onAlternarCelular} title={celAtivo ? "Voltar ao layout de computador" : "Usar layout de celular"} style={{ background: "rgba(255,255,255,0.12)", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, borderRadius: 6, padding: "5px 9px" }}>
+              {celAtivo ? "💻 Computador" : "📱 Celular"}
+            </button>
+            <button onClick={onLogout} style={{ display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: "#C7CEDB", cursor: "pointer", fontSize: 13 }}>
+              <LogOut size={15} /> Sair
+            </button>
+          </div>
         </div>
         <nav style={{ display: "flex", gap: 4 }}>
           {items.map((it) => {
@@ -2565,7 +2626,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <table className="tab-cartoes" style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ background: "#F0F2F6", textAlign: "left" }}>
                 {colunas.map((h) => (
@@ -2582,14 +2643,14 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
                 const st = statusInfo(r.status);
                 return (
                   <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}` }}>
-                    <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>{r.dataEvento ? r.dataEvento.slice(8,10)+"/"+r.dataEvento.slice(5,7)+(busca ? "/"+r.dataEvento.slice(2,4) : "") : "-"}</td>
-                    <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, whiteSpace: "nowrap", color: MUTED }}>{r.numeroOr || "-"}</td>
-                    <td style={{ padding: "10px 14px", fontWeight: 600 }}>{r.evento}{r.empresa === "vs" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#7A5C99", borderRadius: 4, padding: "1px 5px" }}>VS</span>}{r.contrato && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#1D6FA5", borderRadius: 4, padding: "1px 5px" }}>CONTRATO</span>}</td>
-                    <td style={{ padding: "10px 14px" }}>{r.clienteNome || "-"}</td>
-                    <td style={{ padding: "10px 14px", color: MUTED }}>{r.local || "-"}</td>
-                    <td style={{ padding: "10px 14px", color: MUTED, fontSize: 12 }} title={r.criadoEm ? `Criado em ${new Date(r.criadoEm).toLocaleDateString("pt-BR")}` : ""}>{r.criadoPor || "-"}</td>
-                    <td style={{ padding: "10px 14px", fontFamily: FONT_MONO }}>{brl(r.valor)}</td>
-                    <td style={{ padding: "10px 14px" }}>
+                    <td data-label="Data" style={{ padding: "10px 14px", fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>{r.dataEvento ? r.dataEvento.slice(8,10)+"/"+r.dataEvento.slice(5,7)+(busca ? "/"+r.dataEvento.slice(2,4) : "") : "-"}</td>
+                    <td data-label="PR" style={{ padding: "10px 14px", fontFamily: FONT_MONO, whiteSpace: "nowrap", color: MUTED }}>{r.numeroOr || "-"}</td>
+                    <td data-label="Evento" style={{ padding: "10px 14px", fontWeight: 600 }}>{r.evento}{r.empresa === "vs" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#7A5C99", borderRadius: 4, padding: "1px 5px" }}>VS</span>}{r.contrato && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#1D6FA5", borderRadius: 4, padding: "1px 5px" }}>CONTRATO</span>}</td>
+                    <td data-label="Cliente" style={{ padding: "10px 14px" }}>{r.clienteNome || "-"}</td>
+                    <td data-label="Local" style={{ padding: "10px 14px", color: MUTED }}>{r.local || "-"}</td>
+                    <td data-label="Criado por" style={{ padding: "10px 14px", color: MUTED, fontSize: 12 }} title={r.criadoEm ? `Criado em ${new Date(r.criadoEm).toLocaleDateString("pt-BR")}` : ""}>{r.criadoPor || "-"}</td>
+                    <td data-label="Valor" style={{ padding: "10px 14px", fontFamily: FONT_MONO }}>{brl(r.valor)}</td>
+                    <td data-label="Status" style={{ padding: "10px 14px" }}>
                       {r.status === "faturado" ? (
                         <span style={{ fontSize: 12, fontWeight: 700, color: st.color }} title="Faturado: ninguém mais altera">🔒 Faturado</span>
                       ) : (
@@ -2602,7 +2663,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
                         </select>
                       )}
                     </td>
-                    <td style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <td data-label="" style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                       {r.status === "aprovado" && (
                         <><button onClick={() => handleAutorizarFaturamento(r)} style={{ ...btnGhostSmall, borderColor: "#1D6FA5", color: "#1D6FA5", fontWeight: 600 }}>Autorizar faturamento</button>{" "}</>
                       )}
