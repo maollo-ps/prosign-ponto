@@ -2895,6 +2895,16 @@ const CATEGORIAS_ITEM = [
 ];
 
 // aceita "1,5" ou "1.5"
+// número digitado no padrão brasileiro: "1.250,50", "1.000", "1250,5" ou "1250.50"
+function numDigitado(v) {
+  if (typeof v === "number") return isNaN(v) ? NaN : v;
+  let t = String(v ?? "").replace(/[R$\s]/g, "");
+  if (!t) return NaN;
+  if (t.includes(",")) t = t.replace(/\./g, "").replace(",", ".");
+  else if (/^\d{1,3}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, ""); // 1.000 = mil
+  return parseFloat(t);
+}
+
 function numBR(v) {
   if (typeof v === "number") return isNaN(v) ? 0 : v;
   const n = parseFloat(String(v ?? "").replace(",", "."));
@@ -6135,10 +6145,9 @@ function ItensCadView({ session, setErro }) {
     if (!e.nome.trim()) { setErro("Informe o nome do item."); return; }
     setSalvando(true); setErro("");
     const id = e.id || crypto.randomUUID();
-    const body = { nome: limparTextoCad(e.nome), categoria: e.categoria, unidade: nulCad(e.unidade), custo_padrao: parseFloat(String(e.custo_padrao).replace(",", ".")) || 0, ativo: !!e.ativo, centro_resultado_id: e.centro_resultado_id || null };
+    const body = { nome: limparTextoCad(e.nome), categoria: e.categoria, unidade: nulCad(e.unidade), custo_padrao: numDigitado(e.custo_padrao) || 0, ativo: !!e.ativo, centro_resultado_id: e.centro_resultado_id || null };
     if (e.item_orcamento || "item_orcamento" in e) {
-      const txt = String(e.valor_venda ?? "").trim();
-      const vv = parseFloat(txt.includes(",") ? txt.replace(/\./g, "").replace(",", ".") : txt); // aceita 1.250,50 e 1250.50
+      const vv = numDigitado(e.valor_venda);
       if (e.item_orcamento && !(vv > 0)) { setErro("Informe o valor de venda do item que compõe o orçamento."); setSalvando(false); return; }
       body.item_orcamento = !!e.item_orcamento;
       body.valor_venda = vv > 0 ? vv : null;
