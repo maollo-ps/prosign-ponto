@@ -2199,7 +2199,7 @@ function orcamentoFromRow(r) {
     id: r.id, evento: r.evento, clienteId: r.cliente_id, clienteNome: r.clientes?.nome || null,
     local: r.local, dataEvento: r.data_evento, valor: Number(r.valor || 0),
     status: r.status, mesRef: r.mes_ref, numeroOr: r.numero_or || "", temComposicao: !!r.tem_composicao, empresa: r.empresa || "prosign", contrato: !!r.contrato,
-    criadoPor: r.criador?.nome || r.criador?.email || "", criadoEm: r.criado_em || null,
+    criadoPor: r.criador?.nome || r.criador?.email || "", criadoEm: r.criado_em || null, responsavel: r.responsavel || "",
   };
 }
 
@@ -2401,7 +2401,19 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   const [totAno, setTotAno] = useState([]);
   const [verAno, setVerAno] = useState(true);
 
-  const blankForm = { evento: "", clienteId: "", local: "", dataEvento: "", valor: 0, status: "orcado", numeroOr: "", empresa: "prosign", contrato: false };
+  const blankForm = { evento: "", clienteId: "", local: "", dataEvento: "", valor: 0, status: "orcado", numeroOr: "", empresa: "prosign", contrato: false, responsavel: "" };
+  const [usuariosNomes, setUsuariosNomes] = useState([]);
+  const [meuNome, setMeuNome] = useState("");
+  useEffect(() => {
+    sbRequest("perfis?select=id,nome,email&order=nome.asc", session)
+      .then((r) => {
+        const lista = r || [];
+        setUsuariosNomes(lista.map((p) => p.nome || p.email).filter(Boolean));
+        const eu = lista.find((p) => p.id === session?.user?.id);
+        setMeuNome(eu ? eu.nome || eu.email : session?.user?.email || "");
+      })
+      .catch(() => setMeuNome(session?.user?.email || ""));
+  }, []); // eslint-disable-line
   const [form, setForm] = useState(blankForm);
 
   const limparTermo = (t) => String(t || "").replace(/[,()*%\\"]/g, " ").trim();
@@ -2443,10 +2455,15 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
       const q = encodeURIComponent(t);
       if (b.escopo === "evento") partes.push(`or=(evento.ilike.*${q}*,numero_or.ilike.*${q}*,local.ilike.*${q}*)`);
       else if (b.escopo === "cliente") { const ids = await idsPessoas(); partes.push(ids.length ? `cliente_id=in.(${ids.join(",")})` : "id=is.null"); }
-      else if (b.escopo === "usuario") { const ids = await idsUsuarios(); partes.push(ids.length ? `criado_por=in.(${ids.join(",")})` : "id=is.null"); }
+      else if (b.escopo === "usuario") {
+        const ids = await idsUsuarios();
+        const or = [`responsavel.ilike.*${q}*`];
+        if (ids.length) or.push(`criado_por.in.(${ids.join(",")})`);
+        partes.push(`or=(${or.join(",")})`);
+      }
       else {
         const [pp, uu] = await Promise.all([idsPessoas(), idsUsuarios()]);
-        const or = [`evento.ilike.*${q}*`, `numero_or.ilike.*${q}*`, `local.ilike.*${q}*`];
+        const or = [`evento.ilike.*${q}*`, `numero_or.ilike.*${q}*`, `local.ilike.*${q}*`, `responsavel.ilike.*${q}*`];
         if (pp.length) or.push(`cliente_id.in.(${pp.join(",")})`);
         if (uu.length) or.push(`criado_por.in.(${uu.join(",")})`);
         // data digitada (dd/mm/aaaa, aaaa-mm-dd ou mm/aaaa)
@@ -2471,8 +2488,14 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
     setCarregando(true);
     try {
       if (busca) {
-        const partes = await montarFiltroBusca(busca);
-        const rows = await consultar(`${partes.join("&")}${partes.length ? "&" : ""}order=data_evento.desc.nullslast&limit=500`);
+        let partes = await montarFiltroBusca(busca);
+        let rows;
+        try { rows = await consultar(`${partes.join("&")}${partes.length ? "&" : ""}order=data_evento.desc.nullslast&limit=500`); }
+        catch (e1) {
+          if (!/responsavel/.test(e1.message)) throw e1;
+          partes = partes.map((x) => x.replace(/,?responsavel\.ilike\.\*[^,)]*\*/g, "").replace("or=(,", "or=(")).map((x) => (x === "or=()" ? "id=is.null" : x));
+          rows = await consultar(`${partes.join("&")}${partes.length ? "&" : ""}order=data_evento.desc.nullslast&limit=500`);
+        }
         setLimitou((rows || []).length >= 500);
         setRegistros((rows || []).map(orcamentoFromRow));
       } else {
@@ -2503,12 +2526,12 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
 
   function abrirNovo() {
     setEditing(null);
-    setForm({ ...blankForm, clienteId: clientes[0]?.id || "" });
+    setForm({ ...blankForm, clienteId: clientes[0]?.id || "", responsavel: meuNome });
     setShowForm(true);
   }
   function abrirEditar(o) {
     setEditing(o);
-    setForm({ evento: o.evento, clienteId: o.clienteId || "", local: o.local || "", dataEvento: o.dataEvento || "", valor: o.valor, status: o.status, numeroOr: o.numeroOr || "", empresa: o.empresa || "prosign", contrato: !!o.contrato });
+    setForm({ evento: o.evento, clienteId: o.clienteId || "", local: o.local || "", dataEvento: o.dataEvento || "", valor: o.valor, status: o.status, numeroOr: o.numeroOr || "", empresa: o.empresa || "prosign", contrato: !!o.contrato, responsavel: o.responsavel || "" });
     setShowForm(true);
   }
 
@@ -2521,12 +2544,18 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
       const body = {
         evento: form.evento, cliente_id: form.clienteId || null, local: form.local || null,
         data_evento: form.dataEvento || null, valor: form.valor, status: form.status, mes_ref: mesRefCalc, numero_or: form.numeroOr || null, empresa: form.empresa, contrato: !!form.contrato,
+        responsavel: (form.responsavel || "").trim() || null,
       };
       let saved;
-      if (editing) {
-        [saved] = await sbRequest(`orcamentos?id=eq.${editing.id}`, session, { method: "PATCH", body });
-      } else {
-        [saved] = await sbRequest("orcamentos", session, { method: "POST", body });
+      const gravar = (b) => (editing
+        ? sbRequest(`orcamentos?id=eq.${editing.id}`, session, { method: "PATCH", body: b })
+        : sbRequest("orcamentos", session, { method: "POST", body: b }));
+      try { [saved] = await gravar(body); }
+      catch (e1) {
+        if (!/responsavel/.test(e1.message)) throw e1;
+        const { responsavel, ...semResp } = body; // SQL ainda não rodado: grava sem o responsável
+        [saved] = await gravar(semResp);
+        setTimeout(() => setErro("Orçamento salvo, mas sem o responsável: rode o SQL migracao_orcamento_venda.sql no Supabase."), 0);
       }
       const eraNovo = !editing;
       // a lista passa a mostrar o mês do orçamento salvo (senão ele "some" quando a data é de outro mês)
@@ -2588,7 +2617,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
     return { ...st, qtd: l.length, total: l.reduce((a, r) => a + r.valor, 0) };
   });
   const vendasMes = registros.filter((r) => ehVenda(r.status)).reduce((a, r) => a + r.valor, 0);
-  const colunas = ["Data", "PR", "Evento", "Cliente", "Local", "Criado por", "Valor", "Status", ""];
+  const colunas = ["Data", "PR", "Evento", "Cliente", "Local", "Atendimento", "Valor", "Status", ""];
   const nCols = colunas.length;
 
   if (custosDe) {
@@ -2764,6 +2793,12 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
               </select>
             </Field>
           </div>
+          <div style={{ marginTop: 12, maxWidth: 420 }}>
+            <Field label="Responsável pelo atendimento">
+              <input style={inputStyle} list="dl-responsaveis" value={form.responsavel} placeholder={meuNome} onChange={(e) => setForm({ ...form, responsavel: e.target.value })} />
+              <datalist id="dl-responsaveis">{usuariosNomes.map((n) => <option key={n} value={n} />)}</datalist>
+            </Field>
+          </div>
           {form.status === "autorizado_faturamento" && (
             <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
               Ao salvar como "Autorizado p/ faturar", o orçamento entra na fila do Financeiro. Quem marca como "Faturado" é o Financeiro.
@@ -2800,7 +2835,7 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
                     <td data-label="Evento" style={{ padding: "10px 14px", fontWeight: 600 }}>{r.evento}{r.empresa === "vs" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#7A5C99", borderRadius: 4, padding: "1px 5px" }}>VS</span>}{r.contrato && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#1D6FA5", borderRadius: 4, padding: "1px 5px" }}>CONTRATO</span>}</td>
                     <td data-label="Cliente" style={{ padding: "10px 14px" }}>{r.clienteNome || "-"}</td>
                     <td data-label="Local" style={{ padding: "10px 14px", color: MUTED }}>{r.local || "-"}</td>
-                    <td data-label="Criado por" style={{ padding: "10px 14px", color: MUTED, fontSize: 12 }} title={r.criadoEm ? `Criado em ${new Date(r.criadoEm).toLocaleDateString("pt-BR")}` : ""}>{r.criadoPor || "-"}</td>
+                    <td data-label="Atendimento" style={{ padding: "10px 14px", color: MUTED, fontSize: 12 }} title={r.criadoEm ? `Criado em ${new Date(r.criadoEm).toLocaleDateString("pt-BR")}` : ""}>{r.responsavel || r.criadoPor || "-"}</td>
                     <td data-label="Valor" style={{ padding: "10px 14px", fontFamily: FONT_MONO }}>{brl(r.valor)}</td>
                     <td data-label="Status" style={{ padding: "10px 14px" }}>
                       {r.status === "faturado" ? (
@@ -3087,7 +3122,7 @@ const RODAPE_EMPRESA = {
 };
 
 // Orçamento para o cliente: um item por centro de resultado, com descrição e valor (sem custos nem margem).
-function gerarOrcamentoCliente({ orc, numeroOr, grupos, total, desconto = 0 }) {
+function gerarOrcamentoCliente({ orc, numeroOr, grupos, total, desconto = 0, observacao = "" }) {
   const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const dataBR = (d) => (d ? `${String(d).slice(8, 10)}/${String(d).slice(5, 7)}/${String(d).slice(0, 4)}` : "");
   const agora = new Date();
@@ -3101,8 +3136,8 @@ function gerarOrcamentoCliente({ orc, numeroOr, grupos, total, desconto = 0 }) {
   const linhaDados = (...pares) => `<tr>${pares.map(([r, v, col]) => `<td class="r">${esc(r)}</td><td ${col ? `colspan="${col}"` : ""}>${esc(v)}</td>`).join("")}</tr>`;
 
   const itensHtml = grupos.map((g, i) => `
-    <tr class="it"><td class="c">${String(i + 1).padStart(3, "0")}</td><td>${esc(String(g.titulo).toUpperCase())}</td><td class="c">un</td><td class="c">${esc(numBR(g.qtd ?? 1).toLocaleString("pt-BR", { maximumFractionDigits: 2 }))}</td><td class="c">${esc(numBR(g.diarias ?? 1).toLocaleString("pt-BR", { maximumFractionDigits: 2 }))}</td><td class="n">${m(g.unitario ?? g.valor)}</td><td class="n">${m(g.valor)}</td></tr>
-    ${g.descricao.trim() ? `<tr><td></td><td colspan="6" class="desc">${esc(g.descricao.trim())}</td></tr>` : ""}`).join("");
+    <tr class="it"><td class="c">${String(i + 1).padStart(3, "0")}</td><td>${esc(String(g.titulo).toUpperCase())}</td><td class="c">${esc(g.unidade || "un")}</td><td class="c">${esc(numBR(g.qtd ?? 1).toLocaleString("pt-BR", { maximumFractionDigits: 2 }))}</td><td class="c">${esc(numBR(g.diarias ?? 1).toLocaleString("pt-BR", { maximumFractionDigits: 2 }))}</td><td class="n">${m(g.unitario ?? g.valor)}</td><td class="n">${m(g.valor)}</td></tr>
+    ${g.descricao.trim() || g.imagem ? `<tr><td></td><td colspan="6" class="desc">${g.imagem ? `<img class="foto" src="${esc(g.imagem)}" alt="">` : ""}${esc(g.descricao.trim())}</td></tr>` : ""}`).join("");
 
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
   <title>Orçamento ${esc(numeroOr || "")} - ${esc(orc.evento)}</title>
@@ -3124,6 +3159,10 @@ function gerarOrcamentoCliente({ orc, numeroOr, grupos, total, desconto = 0 }) {
     .c { text-align: center; } .n { text-align: right; white-space: nowrap; }
     th { background: #BDBDBD; font-size: 9.5px; }
     .desc { white-space: pre-wrap; font-size: 10px; }
+    .desc .foto { float: left; width: 90px; height: 90px; object-fit: cover; margin: 2px 10px 2px 0; border: 1px solid #999; }
+    .obs { margin-top: 10px; border: 1px solid #222; }
+    .obs .t { background: #BDBDBD; color: #A6192E; font-weight: 700; text-align: center; font-size: 12px; padding: 3px; }
+    .obs .x { white-space: pre-wrap; padding: 6px 8px; font-size: 10.5px; }
     .tot td { background: #BDBDBD; font-weight: 700; }
     .tot .vm { color: #A6192E; }
     .rodape { margin-top: 26px; border-top: 1px solid #222; padding-top: 4px; text-align: center; font-size: 9px; }
@@ -3141,6 +3180,7 @@ function gerarOrcamentoCliente({ orc, numeroOr, grupos, total, desconto = 0 }) {
       ${linhaDados(["CELULAR:", c.celular || ""], ["E-MAIL:", c.email || ""])}
       ${linhaDados(["EVENTO:", orc.evento || ""], ["VALIDADE PROPOSTA:", validade])}
       <tr><td class="r">LOCAL:</td><td colspan="3">${esc(orc.local || "")}</td></tr>
+      ${orc.responsavel ? `<tr><td class="r">ATENDIMENTO:</td><td colspan="3">${esc(orc.responsavel)}</td></tr>` : ""}
       <tr><td colspan="4" class="sec">DATAS DO EVENTO</td></tr>
       ${linhaDados(["INÍCIO EVENTO:", dataBR(orc.data_evento)], ["TÉRM. MONTAGEM:", ""])}
       ${linhaDados(["TÉRMINO EVENTO:", ""], ["INÍCIO DESMONTA.:", ""])}
@@ -3156,6 +3196,7 @@ function gerarOrcamentoCliente({ orc, numeroOr, grupos, total, desconto = 0 }) {
         <tr class="tot"><td colspan="5" style="border:none;background:none"></td><td class="n">VALOR FINAL (R$)</td><td class="n">${m(total - desconto)}</td></tr>
       </tbody>
     </table>
+    ${String(observacao || "").trim() ? `<div class="obs"><div class="t">OBSERVAÇÕES</div><div class="x">${esc(String(observacao).trim())}</div></div>` : ""}
     <div class="rodape">${RODAPE_EMPRESA[emp].map((l, i) => (i === 0 ? `<b>${esc(l)}</b>` : esc(l))).join("<br>")}</div>
     <script>window.onload = function () { setTimeout(function () { window.print(); }, 300); };<\/script>
   </body></html>`;
@@ -3188,7 +3229,9 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const [clienteModo, setClienteModo] = useState("texto");
   const [mostrarDesc, setMostrarDesc] = useState(false); // mostrar o desconto concedido no orçamento do cliente
   const [itemUnico, setItemUnico] = useState({ titulo: "", descricao: "" });
-  const [itensCli, setItensCli] = useState([]); // [{ id, titulo, descricao, valor }]
+  const [itensCli, setItensCli] = useState([]); // [{ id, titulo, descricao, qtd, diarias, unitario, itemId, unidade }]
+  const [obsCliente, setObsCliente] = useState("");
+  const [itemVendaSel, setItemVendaSel] = useState("");
   const [centroNovo, setCentroNovo] = useState("");
 
   // sugestões do cadastro (itens e fornecedores); se o usuário não tem acesso, fica vazio e a tela funciona igual
@@ -3208,12 +3251,13 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       .then(([o, its, gs]) => {
         const unico = (gs || []).find((g) => g.tipo === "unico");
         if (unico) setItemUnico({ id: unico.id, titulo: unico.titulo || "", descricao: unico.descricao || "" });
-        setItensCli((gs || []).filter((g) => g.tipo === "lista").map((g) => ({ id: g.id, titulo: g.titulo || "", descricao: g.descricao || "", qtd: String(Number(g.qtd ?? 1)).replace(".", ","), diarias: String(Number(g.diarias ?? 1)).replace(".", ","), unitario: String(Number(g.valor_unitario ?? g.valor ?? 0)).replace(".", ",") })));
+        setItensCli((gs || []).filter((g) => g.tipo === "lista").map((g) => ({ id: g.id, itemId: g.item_id || null, unidade: g.unidade || "", titulo: g.titulo || "", descricao: g.descricao || "", qtd: String(Number(g.qtd ?? 1)).replace(".", ","), diarias: String(Number(g.diarias ?? 1)).replace(".", ","), unitario: String(Number(g.valor_unitario ?? g.valor ?? 0)).replace(".", ",") })));
         const row = (o || [])[0];
         setOrc(row || null);
         if (row) {
           setNumeroOr(row.numero_or || "");
           setClienteModo(row.cliente_modo === "itens" ? "itens" : "texto");
+          setObsCliente(row.obs_cliente || "");
           const pct = (f) => String(Math.round(Number(f || 0) * 10000) / 100).replace(".", ",");
           setBv(pct(row.bv_pct)); setSimples(pct(row.simples_pct)); setComissao(pct(row.comissao_pct)); setMargem(pct(row.margem_pct));
           setAjuste(String(Number(row.ajuste || 0)).replace(".", ","));
@@ -3302,6 +3346,10 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       });
       // orçamento para o cliente: modo escolhido + textos/itens
       await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body: { cliente_modo: clienteModo } });
+      if (obsCliente.trim() || "obs_cliente" in (orc || {})) {
+        try { await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body: { obs_cliente: obsCliente.trim() || null } }); }
+        catch (e1) { if (/obs_cliente/.test(e1.message)) throw new Error("Para gravar a observação do cliente, rode antes o SQL migracao_orcamento_venda.sql no Supabase."); throw e1; }
+      }
       // todas as linhas levam id próprio (linhas sem id viravam NULL e a gravação inteira falhava); grava primeiro, apaga o que sobrou depois
       const idUnico = itemUnico.id || crypto.randomUUID();
       if (!itemUnico.id) setItemUnico((x) => ({ ...x, id: idUnico }));
@@ -3309,14 +3357,32 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         { id: idUnico, tipo: "unico", ordem: 0, titulo: itemUnico.titulo || null, descricao: itemUnico.descricao || null, valor: 0, qtd: 1, diarias: 1, valor_unitario: 0 },
         ...itensCli.map((x, i) => ({ id: x.id, tipo: "lista", ordem: i + 1, titulo: x.titulo || null, descricao: x.descricao || null, qtd: numBR(x.qtd), diarias: numBR(x.diarias), valor_unitario: numBR(x.unitario), valor: totalCli(x) / 100 })),
       ].map((x) => ({ orcamento_id: orcamentoId, ...x }));
+      // item do cadastro (com foto): só manda a coluna quando algum item veio do cadastro (as linhas precisam ter as mesmas chaves)
+      if (itensCli.some((x) => x.itemId)) {
+        const porId = Object.fromEntries(itensCli.map((x) => [x.id, x]));
+        linhasCli.forEach((l) => { l.item_id = porId[l.id]?.itemId || null; l.unidade = porId[l.id]?.unidade || null; });
+      }
       await sbRequest("orcamento_cliente_itens?on_conflict=id", session, { method: "POST", body: linhasCli, extraHeaders: { Prefer: "resolution=merge-duplicates,return=minimal" } });
       await sbRequest(`orcamento_cliente_itens?orcamento_id=eq.${orcamentoId}&id=not.in.(${linhasCli.map((x) => x.id).join(",")})`, session, { method: "DELETE" });
       setSalvo(true);
-    } catch (e) { setErro(msgSupabase(e)); }
+    } catch (e) { setErro(/item_id|unidade/.test(e.message) ? "Para gravar itens puxados do cadastro, rode antes o SQL migracao_orcamento_venda.sql no Supabase." : msgSupabase(e)); }
     finally { setSalvando(false); }
   }
 
   const travado = orc?.status === "faturado";
+  const itensVenda = catalogo.filter((c) => c.item_orcamento);
+  const fotoDoItem = (itemId) => urlImagemItem(catalogo.find((c) => c.id === itemId)?.imagem_path);
+  function puxarItemVenda(id) {
+    const c = catalogo.find((x) => x.id === id);
+    if (!c) return;
+    setSalvo(false);
+    setItensCli((l) => [...l, {
+      id: crypto.randomUUID(), itemId: c.id, unidade: c.unidade || "",
+      titulo: c.nome || "", descricao: c.descricao_venda || "", qtd: "1", diarias: "1",
+      unitario: c.valor_venda != null ? String(Number(c.valor_venda)).replace(".", ",") : "",
+    }]);
+    setItemVendaSel("");
+  }
 
   function abrirPdf(modo) {
     const ok = gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, nomeCentro });
@@ -3337,10 +3403,10 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     } else {
       if (itensCli.length === 0) { setErro("Adicione pelo menos um item no orçamento para o cliente."); return; }
       if (saldoCentavos !== 0 && !window.confirm(`Ainda há ${brl(saldoCentavos / 100)} sem distribuir entre os itens. O total do orçamento vai sair diferente do valor da composição. Gerar mesmo assim?`)) return;
-      gs = itensCli.map((i) => ({ titulo: (i.titulo || "").trim() || "Item", descricao: i.descricao || "", qtd: numBR(i.qtd), diarias: numBR(i.diarias), unitario: numBR(i.unitario), valor: totalCli(i) / 100 }));
+      gs = itensCli.map((i) => ({ titulo: (i.titulo || "").trim() || "Item", descricao: i.descricao || "", qtd: numBR(i.qtd), diarias: numBR(i.diarias), unitario: numBR(i.unitario), valor: totalCli(i) / 100, unidade: i.unidade || "", imagem: i.itemId ? fotoDoItem(i.itemId) : null }));
       total = distribuidoCentavos / 100;
     }
-    const ok = gerarOrcamentoCliente({ orc, numeroOr, grupos: gs, total, desconto: usaDesc ? descontoR : 0 });
+    const ok = gerarOrcamentoCliente({ orc, numeroOr, grupos: gs, total, desconto: usaDesc ? descontoR : 0, observacao: obsCliente });
     if (!ok) setErro("O navegador bloqueou a janela do orçamento. Libere pop-ups para este site e tente de novo.");
   }
 
@@ -3609,7 +3675,13 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
                   {itensCli.map((x, idx) => (
                     <tr key={x.id}>
                       <td style={{ ...td, textAlign: "center", width: 50 }}>{String(idx + 1).padStart(3, "0")}</td>
-                      <td style={{ ...td, width: 210 }}><input style={CELULA_DIGITAVEL} value={x.titulo} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, titulo: e.target.value } : y))); }} /></td>
+                      <td style={{ ...td, width: 230 }}>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          {x.itemId && fotoDoItem(x.itemId) && <img src={fotoDoItem(x.itemId)} alt="" title="Item do cadastro" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 4, border: `1px solid ${BORDER}`, flex: "0 0 auto" }} />}
+                          <input style={CELULA_DIGITAVEL} value={x.titulo} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, titulo: e.target.value } : y))); }} />
+                        </div>
+                        {x.itemId && <div style={{ fontSize: 10, color: GOLD, marginTop: 2 }}>★ do cadastro de itens</div>}
+                      </td>
                       <td style={td}><textarea style={{ ...CELULA_DIGITAVEL, minHeight: 56, resize: "vertical" }} value={x.descricao} onChange={(e) => { setSalvo(false); setItensCli((l) => l.map((y) => (y.id === x.id ? { ...y, descricao: e.target.value } : y))); }} /></td>
                       {[["qtd", 64], ["diarias", 64]].map(([campo, w]) => (
                         <td key={campo} style={{ ...td, width: w }}>
@@ -3631,10 +3703,25 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
               </table>
             </div>
             <div style={{ marginTop: 8 }}>
-              <button type="button" onClick={() => { setSalvo(false); setItensCli((l) => [...l, { id: crypto.randomUUID(), titulo: "", descricao: "", qtd: "1", diarias: "1", unitario: "" }]); }} style={btnGhostSmall}><Plus size={12} style={{ verticalAlign: -2 }} /> Adicionar item</button>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <button type="button" onClick={() => { setSalvo(false); setItensCli((l) => [...l, { id: crypto.randomUUID(), titulo: "", descricao: "", qtd: "1", diarias: "1", unitario: "" }]); }} style={btnGhostSmall}><Plus size={12} style={{ verticalAlign: -2 }} /> Adicionar item</button>
+                <select value={itemVendaSel} onChange={(e) => puxarItemVenda(e.target.value)} style={{ ...selStyle, padding: "6px 10px", fontSize: 13, borderColor: GOLD }} disabled={itensVenda.length === 0}>
+                  <option value="">{itensVenda.length ? "★ Puxar item do cadastro (com valor de venda)..." : "★ Nenhum item de venda no cadastro"}</option>
+                  {itensVenda.map((c) => <option key={c.id} value={c.id}>{c.nome} — {brl(c.valor_venda || 0)}{c.unidade ? ` / ${c.unidade}` : ""}</option>)}
+                </select>
+              </div>
             </div>
           </div>
         )}
+      </div>
+
+      <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, background: "#fff", marginTop: 12, padding: "10px 12px" }}>
+        <Field label="Observação para o cliente (sai no fim do orçamento)">
+          <textarea style={{ ...CELULA_DIGITAVEL, minHeight: 70, resize: "vertical" }} value={obsCliente}
+            placeholder="Ex.: condições de pagamento, prazo de montagem, o que não está incluso..."
+            onChange={(e) => { setSalvo(false); setObsCliente(e.target.value); }} />
+        </Field>
+        {(orc.responsavel || "") && <div style={{ fontSize: 12, color: MUTED, marginTop: 6 }}>Atendimento: <b>{orc.responsavel}</b> (sai no orçamento do cliente)</div>}
       </div>
 
       <div style={{ fontSize: 12, color: MUTED, marginTop: 12 }}>
@@ -6006,6 +6093,14 @@ function ItensCadView({ session, setErro }) {
     setSalvando(true); setErro("");
     const id = e.id || crypto.randomUUID();
     const body = { nome: limparTextoCad(e.nome), categoria: e.categoria, unidade: nulCad(e.unidade), custo_padrao: parseFloat(String(e.custo_padrao).replace(",", ".")) || 0, ativo: !!e.ativo, centro_resultado_id: e.centro_resultado_id || null };
+    if (e.item_orcamento || "item_orcamento" in e) {
+      const txt = String(e.valor_venda ?? "").trim();
+      const vv = parseFloat(txt.includes(",") ? txt.replace(/\./g, "").replace(",", ".") : txt); // aceita 1.250,50 e 1250.50
+      if (e.item_orcamento && !(vv > 0)) { setErro("Informe o valor de venda do item que compõe o orçamento."); setSalvando(false); return; }
+      body.item_orcamento = !!e.item_orcamento;
+      body.valor_venda = vv > 0 ? vv : null;
+      body.descricao_venda = String(e.descricao_venda || "").trim() || null;
+    }
     try {
       const antiga = e.imagem_original || null;
       if (e.arquivoImg) { body.imagem_path = await enviarImagemItem(e.arquivoImg, id, session); }
@@ -6014,7 +6109,7 @@ function ItensCadView({ session, setErro }) {
       else await sbRequest("itens", session, { method: "POST", body: { id, ...body } });
       if ((e.arquivoImg || e.removerImg) && antiga) apagarImagemItem(antiga, session);
       setEditando(null); carregar();
-    } catch (er) { setErro(msgSupabase(er)); }
+    } catch (er) { setErro(/item_orcamento|valor_venda|descricao_venda/.test(er.message) ? "Para usar o valor de venda, rode antes o SQL migracao_orcamento_venda.sql no Supabase." : msgSupabase(er)); }
     finally { setSalvando(false); }
   }
   async function excluir(id) {
@@ -6029,7 +6124,7 @@ function ItensCadView({ session, setErro }) {
   }
 
   const q = busca.trim().toUpperCase();
-  const lista = rows.filter((r) => (cat === "todas" || r.categoria === cat) && (filtroCR === "todos" || (filtroCR === "sem" ? !r.centro_resultado_id : r.centro_resultado_id === filtroCR)) && (!q || r.nome.toUpperCase().includes(q)));
+  const lista = rows.filter((r) => (cat === "todas" || (cat === "venda" ? r.item_orcamento : r.categoria === cat)) && (filtroCR === "todos" || (filtroCR === "sem" ? !r.centro_resultado_id : r.centro_resultado_id === filtroCR)) && (!q || r.nome.toUpperCase().includes(q)));
   const nomeCR = (id) => centrosRes.find((c) => c.id === id)?.nome || "—";
   const novo = () => setEditando({ nome: "", categoria: "outros_gera_lucro", unidade: "diária", custo_padrao: "", ativo: true, centro_resultado_id: "" });
 
@@ -6040,6 +6135,7 @@ function ItensCadView({ session, setErro }) {
         <Field label="Categoria">
           <select style={inputStyle} value={cat} onChange={(e) => setCat(e.target.value)}>
             <option value="todas">Todas</option>
+            <option value="venda">★ Itens de venda (compõem o orçamento)</option>
             {CAT_ITEM.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
         </Field>
@@ -6090,6 +6186,19 @@ function ItensCadView({ session, setErro }) {
               )}
             </div>
           </div>
+          <div style={{ border: `1px solid ${editando.item_orcamento ? GOLD : BORDER}`, background: editando.item_orcamento ? "#FFFBEF" : "transparent", borderRadius: 8, padding: 12, marginBottom: 12 }}>
+            <label style={{ fontSize: 13, display: "inline-flex", gap: 6, alignItems: "center", fontWeight: 600, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!editando.item_orcamento} onChange={(e) => setEditando({ ...editando, item_orcamento: e.target.checked })} /> ★ Item destinado a compor o orçamento do cliente (com valor de venda)
+            </label>
+            {editando.item_orcamento && (
+              <div style={{ display: "grid", gridTemplateColumns: "180px 1fr", gap: 12, marginTop: 10 }}>
+                <CampoTxt label="Valor de venda (R$) *" valor={editando.valor_venda ?? ""} onChange={(v) => setEditando({ ...editando, valor_venda: v })} placeholder="0,00" />
+                <Field label="Descrição para o cliente (sai no orçamento)">
+                  <textarea rows={2} style={{ ...inputStyle, width: "100%", resize: "vertical" }} value={editando.descricao_venda || ""} onChange={(e) => setEditando({ ...editando, descricao_venda: e.target.value })} />
+                </Field>
+              </div>
+            )}
+          </div>
           <label style={{ fontSize: 13, display: "inline-flex", gap: 6, alignItems: "center" }}>
             <input type="checkbox" checked={!!editando.ativo} onChange={(e) => setEditando({ ...editando, ativo: e.target.checked })} /> Item ativo (aparece nas sugestões)
           </label>
@@ -6103,10 +6212,10 @@ function ItensCadView({ session, setErro }) {
       <Card style={{ padding: 0, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
           <thead><tr style={{ background: BG }}>
-            <th style={thS}></th><th style={thS}>Item</th><th style={thS}>Categoria</th><th style={thS}>Centro de resultado</th><th style={thS}>Unidade</th><th style={{ ...thS, textAlign: "right" }}>Custo padrão</th><th style={thS}></th>
+            <th style={thS}></th><th style={thS}>Item</th><th style={thS}>Categoria</th><th style={thS}>Centro de resultado</th><th style={thS}>Unidade</th><th style={{ ...thS, textAlign: "right" }}>Custo padrão</th><th style={{ ...thS, textAlign: "right" }}>Valor de venda</th><th style={thS}></th>
           </tr></thead>
           <tbody>
-            {lista.length === 0 && !carregando && <tr><td colSpan={7} style={{ ...tdS, color: MUTED }}>Nenhum item.</td></tr>}
+            {lista.length === 0 && !carregando && <tr><td colSpan={8} style={{ ...tdS, color: MUTED }}>Nenhum item.</td></tr>}
             {lista.map((r) => (
               <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}`, opacity: r.ativo ? 1 : 0.5 }}>
                 <td style={{ ...tdS, width: 52 }}>
@@ -6114,13 +6223,14 @@ function ItensCadView({ session, setErro }) {
                     ? <a href={urlImagemItem(r.imagem_path)} target="_blank" rel="noreferrer"><img src={urlImagemItem(r.imagem_path)} alt="" style={{ width: 42, height: 42, objectFit: "cover", borderRadius: 4, border: `1px solid ${BORDER}`, display: "block" }} /></a>
                     : <div style={{ width: 42, height: 42, borderRadius: 4, border: `1px dashed ${BORDER}` }} />}
                 </td>
-                <td style={{ ...tdS, fontWeight: 600 }}>{r.nome}</td>
+                <td style={{ ...tdS, fontWeight: 600 }}>{r.nome}{r.item_orcamento && <span title="Compõe o orçamento do cliente" style={{ marginLeft: 6, color: GOLD }}>★</span>}</td>
                 <td style={tdS}>{catItemLabel(r.categoria)}</td>
                 <td style={tdS}>{nomeCR(r.centro_resultado_id)}</td>
                 <td style={tdS}>{r.unidade || "—"}</td>
                 <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(r.custo_padrao)}</td>
+                <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, color: r.item_orcamento ? TEXT : MUTED }}>{r.item_orcamento && r.valor_venda != null ? brl(r.valor_venda) : "—"}</td>
                 <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
-                  <button onClick={() => setEditando({ ...r, custo_padrao: String(r.custo_padrao).replace(".", ","), imagem_original: r.imagem_path || null })} style={btnGhostSmall}>Editar</button>{" "}
+                  <button onClick={() => setEditando({ ...r, custo_padrao: String(r.custo_padrao).replace(".", ","), valor_venda: r.valor_venda != null ? String(r.valor_venda).replace(".", ",") : "", imagem_original: r.imagem_path || null })} style={btnGhostSmall}>Editar</button>{" "}
                   <button onClick={() => excluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
                 </td>
               </tr>
