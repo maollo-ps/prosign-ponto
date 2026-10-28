@@ -3159,7 +3159,7 @@ function gerarOrcamentoCliente({ orc, numeroOr, grupos, total, desconto = 0, obs
     .c { text-align: center; } .n { text-align: right; white-space: nowrap; }
     th { background: #BDBDBD; font-size: 9.5px; }
     .desc { white-space: pre-wrap; font-size: 10px; }
-    .desc .foto { float: left; width: 90px; height: 90px; object-fit: cover; margin: 2px 10px 2px 0; border: 1px solid #999; }
+    .desc .foto { float: left; width: 55px; height: 55px; object-fit: cover; margin: 2px 10px 2px 0; border: 1px solid #999; }
     .obs { margin-top: 10px; border: 1px solid #222; }
     .obs .t { background: #BDBDBD; color: #A6192E; font-weight: 700; text-align: center; font-size: 12px; padding: 3px; }
     .obs .x { white-space: pre-wrap; padding: 6px 8px; font-size: 10.5px; }
@@ -3231,6 +3231,23 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const [itemUnico, setItemUnico] = useState({ titulo: "", descricao: "" });
   const [itensCli, setItensCli] = useState([]); // [{ id, titulo, descricao, qtd, diarias, unitario, itemId, unidade }]
   const [obsCliente, setObsCliente] = useState("");
+  const [atendimento, setAtendimento] = useState("");
+  const [usuariosNomes, setUsuariosNomes] = useState([]);
+  const [meuNomeComp, setMeuNomeComp] = useState("");
+  const [salvandoTextos, setSalvandoTextos] = useState(false);
+  const [salvoTextos, setSalvoTextos] = useState(false);
+  useEffect(() => {
+    sbRequest("perfis?select=id,nome,email&order=nome.asc", session)
+      .then((r) => {
+        const lista = r || [];
+        setUsuariosNomes(lista.map((p) => p.nome || p.email).filter(Boolean));
+        const eu = lista.find((p) => p.id === session?.user?.id);
+        setMeuNomeComp(eu ? eu.nome || eu.email : session?.user?.email || "");
+      })
+      .catch(() => setMeuNomeComp(session?.user?.email || ""));
+  }, []); // eslint-disable-line
+  // orçamento sem responsável: sugere quem está montando
+  useEffect(() => { if (orc && !orc.responsavel && !atendimento && meuNomeComp) setAtendimento(meuNomeComp); }, [orc, meuNomeComp]); // eslint-disable-line
   const [itemVendaSel, setItemVendaSel] = useState("");
   const [centroNovo, setCentroNovo] = useState("");
 
@@ -3258,6 +3275,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
           setNumeroOr(row.numero_or || "");
           setClienteModo(row.cliente_modo === "itens" ? "itens" : "texto");
           setObsCliente(row.obs_cliente || "");
+          setAtendimento(row.responsavel || "");
           const pct = (f) => String(Math.round(Number(f || 0) * 10000) / 100).replace(".", ",");
           setBv(pct(row.bv_pct)); setSimples(pct(row.simples_pct)); setComissao(pct(row.comissao_pct)); setMargem(pct(row.margem_pct));
           setAjuste(String(Number(row.ajuste || 0)).replace(".", ","));
@@ -3346,10 +3364,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       });
       // orçamento para o cliente: modo escolhido + textos/itens
       await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body: { cliente_modo: clienteModo } });
-      if (obsCliente.trim() || "obs_cliente" in (orc || {})) {
-        try { await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body: { obs_cliente: obsCliente.trim() || null } }); }
-        catch (e1) { if (/obs_cliente/.test(e1.message)) throw new Error("Para gravar a observação do cliente, rode antes o SQL migracao_orcamento_venda.sql no Supabase."); throw e1; }
-      }
+      await gravarTextosCliente();
       // todas as linhas levam id próprio (linhas sem id viravam NULL e a gravação inteira falhava); grava primeiro, apaga o que sobrou depois
       const idUnico = itemUnico.id || crypto.randomUUID();
       if (!itemUnico.id) setItemUnico((x) => ({ ...x, id: idUnico }));
@@ -3370,6 +3385,22 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   }
 
   const travado = orc?.status === "faturado";
+  async function gravarTextosCliente() {
+    const body = { obs_cliente: obsCliente.trim() || null, responsavel: atendimento.trim() || null };
+    try { await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body }); }
+    catch (e1) {
+      if (/obs_cliente|responsavel/.test(e1.message)) throw new Error("Para gravar atendimento e observação, rode antes o SQL migracao_orcamento_venda.sql no Supabase.");
+      if (/faturado/i.test(e1.message)) throw new Error("O banco ainda trava alterações em orçamento faturado: rode o SQL migracao_orcamento_obs_faturado.sql no Supabase.");
+      throw e1;
+    }
+    setOrc((o) => (o ? { ...o, ...body } : o));
+    setSalvoTextos(true);
+  }
+  async function salvarTextosCliente() {
+    setSalvandoTextos(true); setErro("");
+    try { await gravarTextosCliente(); } catch (e) { setErro(msgSupabase(e)); }
+    finally { setSalvandoTextos(false); }
+  }
   const itensVenda = catalogo.filter((c) => c.item_orcamento);
   const fotoDoItem = (itemId) => urlImagemItem(catalogo.find((c) => c.id === itemId)?.imagem_path);
   function puxarItemVenda(id) {
@@ -3406,7 +3437,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       gs = itensCli.map((i) => ({ titulo: (i.titulo || "").trim() || "Item", descricao: i.descricao || "", qtd: numBR(i.qtd), diarias: numBR(i.diarias), unitario: numBR(i.unitario), valor: totalCli(i) / 100, unidade: i.unidade || "", imagem: i.itemId ? fotoDoItem(i.itemId) : null }));
       total = distribuidoCentavos / 100;
     }
-    const ok = gerarOrcamentoCliente({ orc, numeroOr, grupos: gs, total, desconto: usaDesc ? descontoR : 0, observacao: obsCliente });
+    const ok = gerarOrcamentoCliente({ orc: { ...orc, responsavel: atendimento.trim() || orc.responsavel }, numeroOr, grupos: gs, total, desconto: usaDesc ? descontoR : 0, observacao: obsCliente });
     if (!ok) setErro("O navegador bloqueou a janela do orçamento. Libere pop-ups para este site e tente de novo.");
   }
 
@@ -3715,19 +3746,31 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         )}
       </div>
 
-      <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, background: "#fff", marginTop: 12, padding: "10px 12px" }}>
-        <Field label="Observação para o cliente (sai no fim do orçamento)">
-          <textarea style={{ ...CELULA_DIGITAVEL, minHeight: 70, resize: "vertical" }} value={obsCliente}
-            placeholder="Ex.: condições de pagamento, prazo de montagem, o que não está incluso..."
-            onChange={(e) => { setSalvo(false); setObsCliente(e.target.value); }} />
-        </Field>
-        {(orc.responsavel || "") && <div style={{ fontSize: 12, color: MUTED, marginTop: 6 }}>Atendimento: <b>{orc.responsavel}</b> (sai no orçamento do cliente)</div>}
-      </div>
-
       <div style={{ fontSize: 12, color: MUTED, marginTop: 12 }}>
         Células amarelas são digitáveis; as cinzas são calculadas. Ao salvar, o valor do orçamento passa a ser o Preço de Venda Final.
       </div>
       </fieldset>
+
+      <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, background: "#fff", marginTop: 14, overflow: "hidden" }}>
+        <Faixa cor="#152A4A">ATENDIMENTO E OBSERVAÇÕES DO ORÇAMENTO DO CLIENTE</Faixa>
+        <div style={{ padding: "10px 12px" }}>
+          <div style={{ maxWidth: 360, marginBottom: 10 }}>
+            <Field label="Atendimento (sai no orçamento do cliente)">
+              <input style={CELULA_DIGITAVEL} list="dl-atendimento" value={atendimento} onChange={(e) => { setSalvo(false); setSalvoTextos(false); setAtendimento(e.target.value); }} />
+              <datalist id="dl-atendimento">{usuariosNomes.map((n) => <option key={n} value={n} />)}</datalist>
+            </Field>
+          </div>
+          <Field label="Observação para o cliente (sai no fim do orçamento)">
+            <textarea style={{ ...CELULA_DIGITAVEL, minHeight: 80, resize: "vertical" }} value={obsCliente}
+              placeholder="Ex.: condições de pagamento, prazo de montagem, o que não está incluso..."
+              onChange={(e) => { setSalvo(false); setSalvoTextos(false); setObsCliente(e.target.value); }} />
+          </Field>
+          <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginTop: 8 }}>
+            <span style={{ fontSize: 12, color: MUTED }}>{travado ? "Pode ser alterado mesmo com o orçamento faturado." : "Também é gravado ao clicar em Salvar composição."}</span>
+            <button type="button" onClick={salvarTextosCliente} disabled={salvandoTextos} style={btnGhostSmall}>{salvandoTextos ? "Salvando..." : salvoTextos ? "Salvo ✓" : "Salvar atendimento e observação"}</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
