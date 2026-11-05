@@ -2406,6 +2406,7 @@ function ComercialView({ session, setErro }) {
     { id: "orcamentos", label: "Orçamentos" },
     { id: "previsao", label: "Previsão Orçamentária" },
     { id: "faturamento", label: "Faturamento" },
+    { id: "ordens", label: "Ordens de pagamento" },
   ];
 
   return (
@@ -2435,6 +2436,7 @@ function ComercialView({ session, setErro }) {
           {subtab === "orcamentos" && <OrcamentosComercialView session={session} setErro={setErro} clientes={clientes} />}
           {subtab === "previsao" && <PrevisaoComercialView session={session} setErro={setErro} />}
           {subtab === "faturamento" && <FaturamentoComercialView session={session} setErro={setErro} clientes={clientes} />}
+          {subtab === "ordens" && <OrdensPagamentoComercialView session={session} setErro={setErro} />}
         </>
       )}
     </div>
@@ -5939,6 +5941,520 @@ function ImportarFinView({ session, setErro, centros }) {
 // ---------------------------------------------------------
 // Financeiro · tela principal com sub-abas
 // ---------------------------------------------------------
+// =========================================================
+// Ordens de pagamento — Comercial gera a partir do orçamento aprovado; Financeiro dá baixa
+// =========================================================
+const FORMAS_PAG = [
+  { id: "pix", label: "PIX" }, { id: "transferencia", label: "Transferência" }, { id: "boleto", label: "Boleto" },
+  { id: "dinheiro", label: "Dinheiro" }, { id: "cartao", label: "Cartão" }, { id: "outro", label: "Outro" },
+];
+const formaPagLabel = (id) => FORMAS_PAG.find((f) => f.id === id)?.label || id || "—";
+const OP_STATUS = {
+  aberta: { label: "Aberta", cor: "#B8902E" },
+  paga: { label: "Paga", cor: "#2F6F4F" },
+  cancelada: { label: "Cancelada", cor: "#6B7280" },
+};
+const hojeISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+const numeroOP = (n) => `OP ${String(n || 0).padStart(4, "0")}`;
+
+// dados bancários do cadastro do fornecedor em texto
+function dadosPagamentoDaPessoa(p) {
+  const bs = Array.isArray(p?.bancos) ? p.bancos : [];
+  const comPix = bs.find((b) => (b.pix || "").trim());
+  if (comPix) return `PIX: ${comPix.pix.trim()}${comPix.titular ? ` (${comPix.titular})` : ""}`;
+  const b = bs.find((x) => x.banco || x.conta);
+  if (!b) return "";
+  return [b.banco && `Banco ${b.banco}`, b.agencia && `Ag ${b.agencia}`, b.conta && `${b.tipo_conta || "Conta"} ${b.conta}`, b.operacao && `Op ${b.operacao}`, b.titular && `Titular: ${b.titular}`].filter(Boolean).join(" · ");
+}
+
+function useMeuNome(session) {
+  const [nome, setNome] = useState("");
+  useEffect(() => {
+    const id = session?.user?.id;
+    if (!id) return;
+    sbRequest(`perfis?select=nome,email&id=eq.${id}`, session)
+      .then((r) => setNome(r?.[0]?.nome || r?.[0]?.email || session?.user?.email || ""))
+      .catch(() => setNome(session?.user?.email || ""));
+  }, [session?.user?.id]); // eslint-disable-line
+  return nome;
+}
+
+function BadgeOP({ status }) {
+  const s = OP_STATUS[status] || { label: status, cor: MUTED };
+  return <span style={{ fontSize: 11, fontWeight: 700, color: s.cor, border: `1px solid ${s.cor}`, borderRadius: 10, padding: "1px 8px", whiteSpace: "nowrap" }}>{s.label}</span>;
+}
+
+function imprimirOrdemPagamento(op) {
+  const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const emp = op.empresa === "vs" ? "vs" : "prosign";
+  const logo = LOGOS_EMPRESA[emp];
+  const o = op.orcamentos || {};
+  const itens = (op.ordem_pagamento_itens || []).filter((i) => i.descricao || Number(i.valor));
+  const linha = (r, v) => `<tr><td class="r">${esc(r)}</td><td>${v}</td></tr>`;
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${esc(numeroOP(op.numero))} - ${esc(op.fornecedor_nome)}</title>
+  <style>
+    @page { size: A4; margin: 14mm; } * { box-sizing: border-box; }
+    body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #111; margin: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .topo { display: flex; justify-content: space-between; align-items: center; border-bottom: 3px solid #B8902E; padding-bottom: 8px; margin-bottom: 14px; }
+    .topo img { height: 48px; } .topo h1 { margin: 0; font-size: 20px; text-align: right; } .topo .n { color: #A6192E; font-size: 16px; display: block; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 12px; }
+    td, th { border: 1px solid #999; padding: 6px 8px; vertical-align: top; }
+    td.r { width: 170px; font-weight: 700; background: #F3F4F6; } th { background: #E5E7EB; text-align: left; }
+    .valor { font-size: 18px; font-weight: 700; } .num { text-align: right; white-space: nowrap; }
+    .status { display: inline-block; padding: 2px 10px; border-radius: 10px; color: #fff; font-weight: 700; background: ${op.status === "paga" ? "#2F6F4F" : op.status === "cancelada" ? "#6B7280" : "#B8902E"}; }
+    .ass { display: flex; gap: 40px; margin-top: 60px; } .ass div { flex: 1; border-top: 1px solid #111; text-align: center; padding-top: 4px; font-size: 11px; }
+  </style></head><body>
+    <div class="topo">${logo ? `<img src="${logo}" alt="">` : `<b>${esc(RODAPE_EMPRESA[emp][0])}</b>`}<h1>ORDEM DE PAGAMENTO<span class="n">${esc(numeroOP(op.numero))}</span></h1></div>
+    <table>
+      ${linha("Situação", `<span class="status">${esc(OP_STATUS[op.status]?.label || op.status)}</span>`)}
+      ${linha("Empresa pagadora", esc(DADOS_EMPRESA[emp].nome))}
+      ${linha("Projeto (PR)", esc([o.numero_or ? `PR ${o.numero_or}` : "", o.evento].filter(Boolean).join(" - ")))}
+      ${linha("Cliente", esc(o.clientes?.nome || "—"))}
+      ${linha("Data do evento", esc(fmtDataBR(o.data_evento)))}
+    </table>
+    <table>
+      ${linha("Favorecido", `<b>${esc(op.fornecedor_nome)}</b>`)}
+      ${linha("Valor", `<span class="valor">${esc(brl(Number(op.valor)))}</span>`)}
+      ${linha("Vencimento", esc(fmtDataBR(op.vencimento)))}
+      ${linha("Forma de pagamento", esc(formaPagLabel(op.forma_pagamento)))}
+      ${linha("Dados para pagamento", esc(op.dados_pagamento || "—"))}
+      ${op.descricao ? linha("Descrição", esc(op.descricao)) : ""}
+      ${op.obs ? linha("Observação", esc(op.obs)) : ""}
+    </table>
+    ${itens.length ? `<table><thead><tr><th>Itens da composição</th><th class="num" style="width:140px">Valor</th></tr></thead><tbody>
+      ${itens.map((i) => `<tr><td>${esc(i.descricao)}</td><td class="num">${esc(brl(Number(i.valor)))}</td></tr>`).join("")}</tbody></table>` : ""}
+    <table>
+      ${linha("Solicitado por", esc(`${op.criado_por_nome || "—"} em ${fmtDataBR(op.criado_em)}`))}
+      ${op.status === "paga" ? linha("Pago em", esc(`${fmtDataBR(op.pago_em)} · ${brl(Number(op.valor_pago ?? op.valor))}${op.conta_saida ? ` · ${op.conta_saida}` : ""}${op.pago_por_nome ? ` · baixa por ${op.pago_por_nome}` : ""}`)) : ""}
+      ${op.status === "paga" && op.obs_pagamento ? linha("Obs. do pagamento", esc(op.obs_pagamento)) : ""}
+      ${op.status === "cancelada" ? linha("Cancelada", esc(op.cancelado_motivo || "")) : ""}
+    </table>
+    <div class="ass"><div>Solicitante (Comercial)</div><div>Autorização</div><div>Financeiro</div></div>
+    <script>window.onload = function () { setTimeout(function () { window.print(); }, 300); };<\/script>
+  </body></html>`;
+  const w = window.open("", "_blank");
+  if (!w) return false;
+  w.document.open(); w.document.write(html); w.document.close();
+  return true;
+}
+const SELECT_OP = "*,orcamentos(evento,numero_or,data_evento,empresa,clientes:pessoas(nome)),ordem_pagamento_itens(id,orcamento_item_id,descricao,valor)";
+const erroOP = (e) => (/ordens_pagamento|ordem_pagamento_itens/.test(String(e?.message)) && /(does not exist|schema cache|relation|Could not find)/i.test(String(e?.message))
+  ? "Rode antes o SQL migracao_ordens_pagamento.sql no Supabase." : msgSupabase(e));
+
+// ---------- Comercial: lista de orçamentos aprovados ----------
+function OrdensPagamentoComercialView({ session, setErro }) {
+  const [mesRef, setMesRef] = useState(() => { const d = new Date(); return `${d.getFullYear()}-${MESES[d.getMonth()]}`; });
+  const [busca, setBusca] = useState("");
+  const [buscaAtiva, setBuscaAtiva] = useState("");
+  const [orcs, setOrcs] = useState([]);
+  const [ops, setOps] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+  const [aberto, setAberto] = useState(null);
+
+  async function carregar() {
+    setCarregando(true); setErro("");
+    try {
+      const filtro = buscaAtiva
+        ? `or=(evento.ilike.*${encodeURIComponent(buscaAtiva)}*,numero_or.ilike.*${encodeURIComponent(buscaAtiva)}*)&order=data_evento.desc.nullslast&limit=200`
+        : `mes_ref=eq.${mesRef}-01&order=data_evento.asc`;
+      const rows = await sbRequest(`orcamentos?select=id,evento,numero_or,data_evento,valor,status,empresa,clientes:pessoas(nome)&status=in.(${STATUS_VENDA.join(",")})&${filtro}`, session);
+      setOrcs(rows || []);
+      const ids = (rows || []).map((r) => r.id);
+      setOps(ids.length ? (await sbRequest(`ordens_pagamento?select=id,orcamento_id,valor,status&orcamento_id=in.(${ids.join(",")})`, session)) || [] : []);
+    } catch (e) { setErro(erroOP(e)); }
+    finally { setCarregando(false); }
+  }
+  useEffect(() => { if (!aberto) carregar(); }, [mesRef, buscaAtiva, aberto]); // eslint-disable-line
+
+  if (aberto) return <OrdemPagamentoOrcamentoView orcamentoId={aberto} session={session} setErro={setErro} onVoltar={() => setAberto(null)} />;
+
+  const resumo = (id) => {
+    const l = ops.filter((o) => o.orcamento_id === id && o.status !== "cancelada");
+    return { n: l.length, gerado: l.reduce((s, o) => s + Number(o.valor), 0), pago: l.filter((o) => o.status === "paga").reduce((s, o) => s + Number(o.valor), 0), abertas: l.filter((o) => o.status === "aberta").length };
+  };
+  const th = { padding: "10px 12px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4, whiteSpace: "nowrap" };
+  const td = { padding: "9px 12px", fontSize: 13 };
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+        {!buscaAtiva && <MesPicker mesRef={mesRef} setMesRef={setMesRef} />}
+        <form onSubmit={(e) => { e.preventDefault(); setBuscaAtiva(busca.trim()); }} style={{ display: "flex", gap: 6 }}>
+          <input style={{ ...inputStyle, minWidth: 240 }} value={busca} placeholder="Buscar evento ou PR em todos os meses" onChange={(e) => setBusca(e.target.value)} />
+          <button type="submit" style={btnGhostSmall}><Search size={14} style={{ verticalAlign: -2 }} /> Buscar</button>
+          {buscaAtiva && <button type="button" onClick={() => { setBusca(""); setBuscaAtiva(""); }} style={btnGhostSmall}>Limpar</button>}
+        </form>
+      </div>
+      <div style={{ fontSize: 13, color: MUTED, marginBottom: 12 }}>
+        Orçamentos aprovados (aprovado, autorizado p/ faturar e faturado). Abra um orçamento para gerar as ordens de pagamento dos fornecedores.
+      </div>
+      <Card style={{ padding: 0, overflowX: "auto" }}>
+        <table className="tab-cartoes" style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
+          <thead><tr style={{ background: BG }}>
+            {["Data", "PR", "Evento", "Cliente", "Venda", "Ordens", "Geradas", "Pagas", ""].map((h) => <th key={h} style={{ ...th, textAlign: ["Venda", "Geradas", "Pagas"].includes(h) ? "right" : "left" }}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {carregando && <tr><td colSpan={9} style={{ ...td, color: MUTED }}>Carregando...</td></tr>}
+            {!carregando && orcs.length === 0 && <tr><td colSpan={9} style={{ ...td, color: MUTED }}>Nenhum orçamento aprovado {buscaAtiva ? "nessa busca" : "neste mês"}.</td></tr>}
+            {!carregando && orcs.map((o) => {
+              const r = resumo(o.id);
+              return (
+                <tr key={o.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <td data-label="Data" style={td}>{fmtDataBR(o.data_evento)}</td>
+                  <td data-label="PR" style={{ ...td, fontFamily: FONT_MONO, color: MUTED }}>{o.numero_or || "—"}</td>
+                  <td data-label="Evento" style={{ ...td, fontWeight: 600 }}>{o.evento}{o.empresa === "vs" && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: "#7A5C99", borderRadius: 4, padding: "1px 5px" }}>VS</span>}</td>
+                  <td data-label="Cliente" style={td}>{o.clientes?.nome || "—"}</td>
+                  <td data-label="Venda" style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(Number(o.valor))}</td>
+                  <td data-label="Ordens" style={td}>{r.n ? `${r.n}${r.abertas ? ` (${r.abertas} aberta${r.abertas > 1 ? "s" : ""})` : ""}` : "—"}</td>
+                  <td data-label="Geradas" style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{r.gerado ? brl(r.gerado) : "—"}</td>
+                  <td data-label="Pagas" style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, color: OK }}>{r.pago ? brl(r.pago) : "—"}</td>
+                  <td data-label="" style={{ ...td, textAlign: "right" }}><button onClick={() => setAberto(o.id)} style={{ ...btnGhostSmall, borderColor: GOLD, color: GOLD, fontWeight: 600 }}>Ordens de pagamento</button></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// ---------- Comercial: gerar ordens de um orçamento ----------
+function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
+  const meuNome = useMeuNome(session);
+  const [orc, setOrc] = useState(null);
+  const [itens, setItens] = useState([]);
+  const [ops, setOps] = useState([]);
+  const [fornecedores, setFornecedores] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [salvando, setSalvando] = useState(false);
+  const [aviso, setAviso] = useState("");
+  const vazio = { selecionados: [], fornecedorNome: "", fornecedorId: null, valor: "", valorManual: false, vencimento: "", forma: "pix", dados: "", descricao: "", obs: "" };
+  const [f, setF] = useState(vazio);
+
+  async function carregar() {
+    setCarregando(true);
+    try {
+      const [o, its, os] = await Promise.all([
+        sbRequest(`orcamentos?select=id,evento,numero_or,data_evento,valor,status,empresa,local,clientes:pessoas(nome)&id=eq.${orcamentoId}`, session),
+        sbRequest(`orcamento_itens?select=*&orcamento_id=eq.${orcamentoId}&order=ordem.asc`, session),
+        sbRequest(`ordens_pagamento?select=${SELECT_OP}&orcamento_id=eq.${orcamentoId}&order=numero.desc`, session),
+      ]);
+      setOrc((o || [])[0] || null);
+      setItens((its || []).map((r) => ({ ...itemFromRow(r), fornecedorTxt: r.fornecedor || "" })));
+      setOps(os || []);
+    } catch (e) { setErro(erroOP(e)); }
+    finally { setCarregando(false); }
+  }
+  useEffect(() => {
+    carregar();
+    sbRequest("pessoas?select=id,nome,razao_social,documento,bancos&fornecedor=eq.true&ativo=eq.true&order=nome.asc&limit=1000", session)
+      .then((r) => setFornecedores(r || [])).catch(() => {});
+  }, [orcamentoId]); // eslint-disable-line
+
+  // item → ordem ativa (aberta ou paga) em que já está
+  const itemNaOrdem = {};
+  ops.filter((o) => o.status !== "cancelada").forEach((o) => (o.ordem_pagamento_itens || []).forEach((i) => { if (i.orcamento_item_id) itemNaOrdem[i.orcamento_item_id] = o; }));
+  const custoPrevisto = itens.reduce((s, i) => s + custoDoItem(i), 0);
+  const ativas = ops.filter((o) => o.status !== "cancelada");
+  const gerado = ativas.reduce((s, o) => s + Number(o.valor), 0);
+  const pago = ativas.filter((o) => o.status === "paga").reduce((s, o) => s + Number(o.valor), 0);
+  const somaSel = itens.filter((i) => f.selecionados.includes(i.id)).reduce((s, i) => s + custoDoItem(i), 0);
+
+  function escolherFornecedor(nome) {
+    const p = fornecedores.find((x) => (x.nome || "").trim().toUpperCase() === nome.trim().toUpperCase() || (x.razao_social || "").trim().toUpperCase() === nome.trim().toUpperCase());
+    setF((x) => ({ ...x, fornecedorNome: nome, fornecedorId: p?.id || null, dados: p ? (dadosPagamentoDaPessoa(p) || x.dados) : x.dados }));
+  }
+  function alternarItem(it) {
+    setF((x) => {
+      const sel = x.selecionados.includes(it.id) ? x.selecionados.filter((id) => id !== it.id) : [...x.selecionados, it.id];
+      const novo = { ...x, selecionados: sel };
+      if (!x.valorManual) {
+        const soma = itens.filter((i) => sel.includes(i.id)).reduce((s, i) => s + custoDoItem(i), 0);
+        novo.valor = soma ? String(Math.round(soma * 100) / 100).replace(".", ",") : "";
+      }
+      return novo;
+    });
+    if (!f.fornecedorNome && it.fornecedorTxt) escolherFornecedor(it.fornecedorTxt);
+  }
+
+  async function gerar() {
+    const valor = numDigitado(f.valor);
+    if (!f.fornecedorNome.trim()) { setErro("Informe o fornecedor (favorecido)."); return; }
+    if (!(valor > 0)) { setErro("Informe o valor da ordem de pagamento."); return; }
+    setSalvando(true); setErro(""); setAviso("");
+    try {
+      const [op] = await sbRequest("ordens_pagamento", session, {
+        method: "POST",
+        body: {
+          orcamento_id: orcamentoId, empresa: orc?.empresa === "vs" ? "vs" : "prosign",
+          fornecedor_id: f.fornecedorId, fornecedor_nome: f.fornecedorNome.trim(), valor: Math.round(valor * 100) / 100,
+          vencimento: f.vencimento || null, forma_pagamento: f.forma, dados_pagamento: f.dados.trim() || null,
+          descricao: f.descricao.trim() || null, obs: f.obs.trim() || null, criado_por_nome: meuNome || null,
+        },
+      });
+      const linhas = itens.filter((i) => f.selecionados.includes(i.id)).map((i) => ({ ordem_id: op.id, orcamento_item_id: i.id, descricao: i.descricao || "", valor: Math.round(custoDoItem(i) * 100) / 100 }));
+      if (linhas.length) await sbRequest("ordem_pagamento_itens", session, { method: "POST", body: linhas, extraHeaders: { Prefer: "return=minimal" } });
+      setAviso(`${numeroOP(op.numero)} gerada para ${op.fornecedor_nome} (${brl(Number(op.valor))}). Ela já aparece para o Financeiro.`);
+      setF(vazio);
+      await carregar();
+    } catch (e) { setErro(erroOP(e)); }
+    finally { setSalvando(false); }
+  }
+  async function cancelar(op) {
+    const motivo = window.prompt(`Cancelar a ${numeroOP(op.numero)} (${op.fornecedor_nome}, ${brl(Number(op.valor))})?\n\nMotivo:`);
+    if (motivo === null) return;
+    setErro("");
+    try {
+      await sbRequest(`ordens_pagamento?id=eq.${op.id}`, session, { method: "PATCH", body: { status: "cancelada", cancelado_motivo: motivo.trim() || "Cancelada pelo comercial" } });
+      await carregar();
+    } catch (e) { setErro(erroOP(e)); }
+  }
+
+  if (carregando) return <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>;
+  if (!orc) return <div style={{ color: MUTED, fontSize: 13 }}>Orçamento não encontrado. <button onClick={onVoltar} style={btnGhostSmall}>Voltar</button></div>;
+  const th = { padding: "8px 10px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4, background: BG, whiteSpace: "nowrap" };
+  const td = { padding: "8px 10px", fontSize: 13, borderTop: `1px solid ${BORDER}`, verticalAlign: "middle" };
+  const catLabel = (c) => CATEGORIAS_ITEM.find((x) => x.id === c)?.label || c;
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <button onClick={onVoltar} style={btnGhostSmall}>← Voltar</button>
+        <div style={{ fontSize: 15, fontWeight: 700, color: NAVY }}>{orc.numero_or ? `PR ${orc.numero_or} · ` : ""}{orc.evento} <span style={{ fontWeight: 400, color: MUTED }}>· {orc.clientes?.nome || "—"} · {fmtDataBR(orc.data_evento)}</span></div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Venda</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO }}>{brl(Number(orc.valor))}</div></Card>
+        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Custo previsto (composição)</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO }}>{brl(custoPrevisto)}</div></Card>
+        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Ordens geradas</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO, color: GOLD }}>{brl(gerado)}</div><div style={{ fontSize: 11, color: MUTED }}>{ativas.length} ordem(ns)</div></Card>
+        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Pago pelo financeiro</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO, color: OK }}>{brl(pago)}</div></Card>
+      </div>
+
+      {aviso && <div style={{ background: "#EAF4EE", color: OK, padding: 12, borderRadius: 8, marginBottom: 14, fontSize: 13 }}>{aviso}</div>}
+
+      <Card style={{ marginBottom: 18 }}>
+        <h4 style={{ margin: "0 0 10px", fontSize: 14, color: NAVY }}>Nova ordem de pagamento</h4>
+        <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>Marque os itens da composição que serão pagos a este fornecedor (opcional) — o valor é somado sozinho e pode ser ajustado.</div>
+        <div style={{ overflowX: "auto", marginBottom: 12, border: `1px solid ${BORDER}`, borderRadius: 8 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
+            <thead><tr><th style={{ ...th, width: 34 }}></th><th style={th}>Item da composição</th><th style={th}>Bloco</th><th style={th}>Fornecedor na composição</th><th style={{ ...th, textAlign: "right" }}>Custo</th><th style={th}>Ordem</th></tr></thead>
+            <tbody>
+              {itens.length === 0 && <tr><td colSpan={6} style={{ ...td, color: MUTED }}>Este orçamento não tem composição. Dá para gerar a ordem informando o valor direto.</td></tr>}
+              {itens.map((i) => {
+                const em = itemNaOrdem[i.id];
+                return (
+                  <tr key={i.id} style={{ opacity: em ? 0.55 : 1 }}>
+                    <td style={td}><input type="checkbox" disabled={!!em} checked={f.selecionados.includes(i.id)} onChange={() => alternarItem(i)} /></td>
+                    <td style={{ ...td, fontWeight: 600 }}>{i.descricao || "—"}</td>
+                    <td style={{ ...td, color: MUTED, fontSize: 12 }}>{catLabel(i.categoria)}</td>
+                    <td style={{ ...td, color: MUTED }}>{i.fornecedorTxt || "—"}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(custoDoItem(i))}</td>
+                    <td style={td}>{em ? <span style={{ fontSize: 12 }}>{numeroOP(em.numero)} <BadgeOP status={em.status} /></span> : ""}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 12 }}>
+          <Field label="Fornecedor / favorecido *">
+            <input style={inputStyle} list="dl-op-fornecedores" value={f.fornecedorNome} onChange={(e) => escolherFornecedor(e.target.value)} placeholder="Nome do cadastro de fornecedores ou digite" />
+            <datalist id="dl-op-fornecedores">{fornecedores.map((p) => <option key={p.id} value={p.nome} />)}</datalist>
+          </Field>
+          <Field label={f.selecionados.length ? `Valor (itens: ${brl(somaSel)}) *` : "Valor (R$) *"}>
+            <input style={{ ...inputStyle, fontFamily: FONT_MONO }} inputMode="decimal" value={f.valor} placeholder="0,00" onChange={(e) => setF({ ...f, valor: e.target.value, valorManual: true })} />
+          </Field>
+          <Field label="Vencimento"><input type="date" style={inputStyle} value={f.vencimento} onChange={(e) => setF({ ...f, vencimento: e.target.value })} /></Field>
+          <Field label="Forma de pagamento">
+            <select style={inputStyle} value={f.forma} onChange={(e) => setF({ ...f, forma: e.target.value })}>{FORMAS_PAG.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}</select>
+          </Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
+          <Field label={f.forma === "boleto" ? "Linha digitável / dados do boleto" : "Dados para pagamento (PIX, banco, agência, conta)"}>
+            <textarea rows={2} style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={f.dados} onChange={(e) => setF({ ...f, dados: e.target.value })} />
+          </Field>
+          <Field label="Descrição / observação para o financeiro">
+            <textarea rows={2} style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={f.descricao} placeholder="Ex.: montagem do estande, 50% na entrega" onChange={(e) => setF({ ...f, descricao: e.target.value })} />
+          </Field>
+        </div>
+        {f.fornecedorNome && !f.fornecedorId && <div style={{ fontSize: 12, color: GOLD, marginTop: 6 }}>Fornecedor fora do cadastro — a ordem sai com o nome digitado.</div>}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+          <button onClick={() => setF(vazio)} style={btnGhostSmall}>Limpar</button>
+          <button onClick={gerar} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Gerando..." : "Gerar ordem de pagamento"}</button>
+        </div>
+      </Card>
+
+      <Card style={{ padding: 0, overflowX: "auto" }}>
+        <div style={{ padding: "12px 16px", fontWeight: 600, color: NAVY }}>Ordens deste orçamento</div>
+        <table className="tab-cartoes" style={{ width: "100%", borderCollapse: "collapse", minWidth: 760 }}>
+          <thead><tr>{["Nº", "Favorecido", "Valor", "Vencimento", "Forma", "Solicitado por", "Situação", ""].map((h) => <th key={h} style={{ ...th, textAlign: h === "Valor" ? "right" : "left" }}>{h}</th>)}</tr></thead>
+          <tbody>
+            {ops.length === 0 && <tr><td colSpan={8} style={{ ...td, color: MUTED }}>Nenhuma ordem gerada ainda.</td></tr>}
+            {ops.map((o) => (
+              <tr key={o.id} style={{ opacity: o.status === "cancelada" ? 0.55 : 1 }}>
+                <td data-label="Nº" style={{ ...td, fontFamily: FONT_MONO }}>{numeroOP(o.numero)}</td>
+                <td data-label="Favorecido" style={{ ...td, fontWeight: 600 }}>{o.fornecedor_nome}{o.descricao && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{o.descricao}</div>}</td>
+                <td data-label="Valor" style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(Number(o.valor))}</td>
+                <td data-label="Vencimento" style={td}>{fmtDataBR(o.vencimento)}</td>
+                <td data-label="Forma" style={td}>{formaPagLabel(o.forma_pagamento)}</td>
+                <td data-label="Solicitado por" style={{ ...td, color: MUTED, fontSize: 12 }}>{o.criado_por_nome || "—"}<div>{fmtDataBR(o.criado_em)}</div></td>
+                <td data-label="Situação" style={td}><BadgeOP status={o.status} />{o.status === "paga" && <div style={{ fontSize: 11, color: MUTED }}>em {fmtDataBR(o.pago_em)}</div>}{o.status === "cancelada" && o.cancelado_motivo && <div style={{ fontSize: 11, color: MUTED }}>{o.cancelado_motivo}</div>}</td>
+                <td data-label="" style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
+                  <button onClick={() => { if (!imprimirOrdemPagamento(o)) setErro("O navegador bloqueou a janela. Libere pop-ups para este site."); }} style={btnGhostSmall}>Imprimir</button>{" "}
+                  {o.status === "aberta" && <button onClick={() => cancelar(o)} style={btnDangerSmall}>Cancelar</button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+// ---------- Financeiro: ordens a pagar e baixa ----------
+function OrdensPagamentoFinanceiroView({ session, setErro }) {
+  const meuNome = useMeuNome(session);
+  const [filtro, setFiltro] = useState("aberta");
+  const [empresa, setEmpresa] = useState("todas");
+  const [busca, setBusca] = useState("");
+  const [rows, setRows] = useState([]);
+  const [resumoAbertas, setResumoAbertas] = useState([]);
+  const [pagasMes, setPagasMes] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+  const [baixa, setBaixa] = useState(null); // { id, pago_em, valor_pago, conta_saida, obs_pagamento }
+  const [detalhe, setDetalhe] = useState(null);
+  const [salvando, setSalvando] = useState(false);
+  const hoje = hojeISO();
+
+  async function carregar() {
+    setCarregando(true);
+    try {
+      const fEmp = empresa === "todas" ? "" : `&empresa=eq.${empresa}`;
+      const fStatus = filtro === "todas" ? "" : `&status=eq.${filtro}`;
+      const ordem = filtro === "paga" ? "pago_em.desc.nullslast" : filtro === "aberta" ? "vencimento.asc.nullslast" : "numero.desc";
+      const [r, ab, pg] = await Promise.all([
+        sbRequest(`ordens_pagamento?select=${SELECT_OP}${fStatus}${fEmp}&order=${ordem}&limit=500`, session),
+        sbRequest(`ordens_pagamento?select=valor,vencimento&status=eq.aberta${fEmp}&limit=2000`, session),
+        sbRequest(`ordens_pagamento?select=valor_pago,valor&status=eq.paga&pago_em=gte.${hoje.slice(0, 7)}-01${fEmp}&limit=2000`, session),
+      ]);
+      setRows(r || []); setResumoAbertas(ab || []); setPagasMes(pg || []);
+    } catch (e) { setErro(erroOP(e)); }
+    finally { setCarregando(false); }
+  }
+  useEffect(() => { carregar(); }, [filtro, empresa]); // eslint-disable-line
+
+  async function confirmarBaixa(op) {
+    const valor = numDigitado(baixa.valor_pago);
+    if (!baixa.pago_em) { setErro("Informe a data do pagamento."); return; }
+    if (!(valor > 0)) { setErro("Informe o valor pago."); return; }
+    setSalvando(true); setErro("");
+    try {
+      await sbRequest(`ordens_pagamento?id=eq.${op.id}`, session, {
+        method: "PATCH",
+        body: { status: "paga", pago_em: baixa.pago_em, valor_pago: Math.round(valor * 100) / 100, conta_saida: baixa.conta_saida.trim() || null, obs_pagamento: baixa.obs_pagamento.trim() || null, pago_por: session?.user?.id || null, pago_por_nome: meuNome || null },
+      });
+      setBaixa(null); await carregar();
+    } catch (e) { setErro(erroOP(e)); }
+    finally { setSalvando(false); }
+  }
+  async function estornar(op) {
+    if (!window.confirm(`Estornar a baixa da ${numeroOP(op.numero)}? Ela volta para "aberta".`)) return;
+    setErro("");
+    try {
+      await sbRequest(`ordens_pagamento?id=eq.${op.id}`, session, { method: "PATCH", body: { status: "aberta", pago_em: null, valor_pago: null, conta_saida: null, obs_pagamento: null, pago_por: null, pago_por_nome: null } });
+      await carregar();
+    } catch (e) { setErro(erroOP(e)); }
+  }
+
+  const q = busca.trim().toUpperCase();
+  const lista = rows.filter((o) => !q || [o.fornecedor_nome, o.orcamentos?.evento, o.orcamentos?.numero_or, numeroOP(o.numero), String(o.numero)].some((x) => String(x || "").toUpperCase().includes(q)));
+  const totAbertas = resumoAbertas.reduce((s, o) => s + Number(o.valor), 0);
+  const vencidas = resumoAbertas.filter((o) => o.vencimento && o.vencimento < hoje);
+  const em7 = (() => { const d = new Date(); d.setDate(d.getDate() + 7); const lim = d.toISOString().slice(0, 10); return resumoAbertas.filter((o) => o.vencimento && o.vencimento >= hoje && o.vencimento <= lim); })();
+  const totPagasMes = pagasMes.reduce((s, o) => s + Number(o.valor_pago ?? o.valor), 0);
+  const th = { padding: "10px 12px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4, whiteSpace: "nowrap" };
+  const td = { padding: "9px 12px", fontSize: 13, verticalAlign: "top" };
+  const soma = (l) => l.reduce((s, o) => s + Number(o.valor), 0);
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 18 }}>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Ordens em aberto</div><div style={{ fontSize: 24, fontWeight: 700, color: GOLD, fontFamily: FONT_MONO }}>{brl(totAbertas)}</div><div style={{ fontSize: 11, color: MUTED }}>{resumoAbertas.length} ordem(ns)</div></Card>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Vencidas</div><div style={{ fontSize: 24, fontWeight: 700, color: vencidas.length ? DANGER : NAVY, fontFamily: FONT_MONO }}>{brl(soma(vencidas))}</div><div style={{ fontSize: 11, color: MUTED }}>{vencidas.length} ordem(ns)</div></Card>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Vencem em 7 dias</div><div style={{ fontSize: 24, fontWeight: 700, color: NAVY, fontFamily: FONT_MONO }}>{brl(soma(em7))}</div><div style={{ fontSize: 11, color: MUTED }}>{em7.length} ordem(ns)</div></Card>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Pagas neste mês</div><div style={{ fontSize: 24, fontWeight: 700, color: OK, fontFamily: FONT_MONO }}>{brl(totPagasMes)}</div><div style={{ fontSize: 11, color: MUTED }}>{pagasMes.length} ordem(ns)</div></Card>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+        <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={selStyle}>
+          <option value="aberta">A pagar (abertas)</option><option value="paga">Pagas</option><option value="cancelada">Canceladas</option><option value="todas">Todas</option>
+        </select>
+        <select value={empresa} onChange={(e) => setEmpresa(e.target.value)} style={selStyle}>
+          <option value="todas">Prosign e VS</option><option value="prosign">Prosign</option><option value="vs">VS</option>
+        </select>
+        <input style={{ ...inputStyle, minWidth: 240 }} value={busca} placeholder="Buscar favorecido, evento, PR ou nº da ordem" onChange={(e) => setBusca(e.target.value)} />
+        {carregando && <span style={{ color: MUTED, fontSize: 13 }}>Carregando...</span>}
+      </div>
+
+      <Card style={{ padding: 0, overflowX: "auto" }}>
+        <table className="tab-cartoes" style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+          <thead><tr style={{ background: BG }}>
+            {["Nº", "Vencimento", "Favorecido", "Projeto", "Valor", "Forma / dados", "Solicitado por", "Situação", ""].map((h) => <th key={h} style={{ ...th, textAlign: h === "Valor" ? "right" : "left" }}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {!carregando && lista.length === 0 && <tr><td colSpan={9} style={{ ...td, color: MUTED }}>Nenhuma ordem de pagamento {filtro === "aberta" ? "em aberto" : "neste filtro"}.</td></tr>}
+            {lista.map((o) => {
+              const venc = o.status === "aberta" && o.vencimento && o.vencimento < hoje;
+              return (
+                <React.Fragment key={o.id}>
+                  <tr style={{ borderTop: `1px solid ${BORDER}`, opacity: o.status === "cancelada" ? 0.55 : 1 }}>
+                    <td data-label="Nº" style={{ ...td, fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>{numeroOP(o.numero)}{o.empresa === "vs" && <div style={{ fontSize: 10, color: "#7A5C99", fontWeight: 700 }}>VS</div>}</td>
+                    <td data-label="Vencimento" style={{ ...td, color: venc ? DANGER : TEXT, fontWeight: venc ? 700 : 400, whiteSpace: "nowrap" }}>{fmtDataBR(o.vencimento)}{venc && <div style={{ fontSize: 10 }}>VENCIDA</div>}</td>
+                    <td data-label="Favorecido" style={{ ...td, fontWeight: 600 }}>{o.fornecedor_nome}{o.descricao && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{o.descricao}</div>}</td>
+                    <td data-label="Projeto" style={td}>{o.orcamentos?.numero_or ? `PR ${o.orcamentos.numero_or} · ` : ""}{o.orcamentos?.evento || "—"}<div style={{ fontSize: 11, color: MUTED }}>{o.orcamentos?.clientes?.nome || ""}</div></td>
+                    <td data-label="Valor" style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(Number(o.valor))}{o.status === "paga" && Number(o.valor_pago) !== Number(o.valor) && o.valor_pago != null && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>pago {brl(Number(o.valor_pago))}</div>}</td>
+                    <td data-label="Forma / dados" style={{ ...td, fontSize: 12, maxWidth: 240 }}><b>{formaPagLabel(o.forma_pagamento)}</b>{o.dados_pagamento && <div style={{ color: MUTED, wordBreak: "break-word" }}>{o.dados_pagamento}</div>}</td>
+                    <td data-label="Solicitado por" style={{ ...td, fontSize: 12, color: MUTED }}>{o.criado_por_nome || "—"}<div>{fmtDataBR(o.criado_em)}</div></td>
+                    <td data-label="Situação" style={td}><BadgeOP status={o.status} />{o.status === "paga" && <div style={{ fontSize: 11, color: MUTED }}>{fmtDataBR(o.pago_em)}{o.conta_saida ? ` · ${o.conta_saida}` : ""}</div>}</td>
+                    <td data-label="" style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
+                      {o.status === "aberta" && <><button onClick={() => setBaixa(baixa?.id === o.id ? null : { id: o.id, pago_em: hoje, valor_pago: String(Number(o.valor)).replace(".", ","), conta_saida: "", obs_pagamento: "" })} style={{ ...btnGhostSmall, borderColor: OK, color: OK, fontWeight: 700 }}>{baixa?.id === o.id ? "Fechar" : "Dar baixa"}</button>{" "}</>}
+                      {o.status === "paga" && <><button onClick={() => estornar(o)} style={btnGhostSmall}>Estornar</button>{" "}</>}
+                      <button onClick={() => setDetalhe(detalhe === o.id ? null : o.id)} style={btnGhostSmall}>{detalhe === o.id ? "Menos" : "Detalhes"}</button>{" "}
+                      <button onClick={() => { if (!imprimirOrdemPagamento(o)) setErro("O navegador bloqueou a janela. Libere pop-ups para este site."); }} style={btnGhostSmall}>Imprimir</button>
+                    </td>
+                  </tr>
+                  {detalhe === o.id && (
+                    <tr style={{ background: "#F8FAFC" }}><td colSpan={9} style={{ padding: "10px 16px", fontSize: 12 }}>
+                      {(o.ordem_pagamento_itens || []).length > 0
+                        ? <div><b>Itens da composição:</b> {o.ordem_pagamento_itens.map((i) => `${i.descricao || "item"} (${brl(Number(i.valor))})`).join(" · ")}</div>
+                        : <div style={{ color: MUTED }}>Ordem sem itens da composição (valor informado direto).</div>}
+                      {o.obs && <div style={{ marginTop: 4 }}><b>Obs.:</b> {o.obs}</div>}
+                      {o.status === "paga" && <div style={{ marginTop: 4 }}><b>Baixa:</b> {fmtDataBR(o.pago_em)} · {brl(Number(o.valor_pago ?? o.valor))}{o.conta_saida ? ` · ${o.conta_saida}` : ""}{o.pago_por_nome ? ` · por ${o.pago_por_nome}` : ""}{o.obs_pagamento ? ` · ${o.obs_pagamento}` : ""}</div>}
+                      {o.status === "cancelada" && <div style={{ marginTop: 4 }}><b>Cancelada:</b> {o.cancelado_motivo || "—"}</div>}
+                    </td></tr>
+                  )}
+                  {baixa?.id === o.id && (
+                    <tr style={{ background: "#F1F8F4" }}><td colSpan={9} style={{ padding: 14 }}>
+                      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
+                        <Field label="Data do pagamento"><input type="date" style={inputStyle} value={baixa.pago_em} onChange={(e) => setBaixa({ ...baixa, pago_em: e.target.value })} /></Field>
+                        <Field label="Valor pago (R$)"><input style={{ ...inputStyle, width: 140, fontFamily: FONT_MONO }} inputMode="decimal" value={baixa.valor_pago} onChange={(e) => setBaixa({ ...baixa, valor_pago: e.target.value })} /></Field>
+                        <Field label="Conta / banco de saída"><input style={{ ...inputStyle, width: 200 }} value={baixa.conta_saida} placeholder="Ex.: Sicoob, Caixa..." onChange={(e) => setBaixa({ ...baixa, conta_saida: e.target.value })} /></Field>
+                        <Field label="Observação"><input style={{ ...inputStyle, width: 260 }} value={baixa.obs_pagamento} placeholder="Ex.: comprovante enviado por e-mail" onChange={(e) => setBaixa({ ...baixa, obs_pagamento: e.target.value })} /></Field>
+                        <button onClick={() => confirmarBaixa(o)} disabled={salvando} style={{ ...btnPrimary, background: OK }}>{salvando ? "Salvando..." : "Confirmar pagamento"}</button>
+                      </div>
+                    </td></tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
 function FinanceiroView({ session, setErro }) {
   const [subtab, setSubtab] = useState("faturamento");
   const [centros, setCentros] = useState([]);
@@ -5954,6 +6470,7 @@ function FinanceiroView({ session, setErro }) {
 
   const SUBABAS = [
     { id: "faturamento", label: "Faturamento" },
+    { id: "ordens", label: "Ordens de pagamento" },
     { id: "lancamentos", label: "Lançamentos" },
     { id: "caixa", label: "Fluxo de caixa" },
     { id: "plano", label: "Plano de contas" },
@@ -5971,7 +6488,8 @@ function FinanceiroView({ session, setErro }) {
         ))}
       </div>
       {subtab === "faturamento" && <FaturamentoFinanceiroView session={session} setErro={setErro} />}
-      {subtab !== "faturamento" && carregandoCentros && <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>}
+      {subtab === "ordens" && <OrdensPagamentoFinanceiroView session={session} setErro={setErro} />}
+      {subtab !== "faturamento" && subtab !== "ordens" && carregandoCentros && <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>}
       {subtab === "lancamentos" && !carregandoCentros && <LancamentosFinView session={session} setErro={setErro} centros={centros} />}
       {subtab === "caixa" && <CaixaFinView session={session} setErro={setErro} />}
       {subtab === "importar" && !carregandoCentros && <ImportarFinView session={session} setErro={setErro} centros={centros} />}
