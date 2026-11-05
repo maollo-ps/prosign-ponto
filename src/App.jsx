@@ -6421,7 +6421,7 @@ function OrdensPagamentoFinanceiroView({ session, setErro }) {
     setCarregando(true);
     try {
       const fEmp = empresa === "todas" ? "" : `&ordem.empresa=eq.${empresa}`;
-      const fOrdem = filtro === "cancelada" ? "&ordem.status=eq.cancelada" : "&ordem.status=neq.cancelada";
+      const fOrdem = filtro === "cancelada" ? "&ordem.status=eq.cancelada" : filtro === "todas" ? "" : "&ordem.status=neq.cancelada";
       const fStatus = filtro === "aberta" || filtro === "paga" ? `&status=eq.${filtro}` : "";
       const ordem = filtro === "paga" ? "pago_em.desc.nullslast" : "vencimento.asc.nullslast";
       const [r, ab, pg] = await Promise.all([
@@ -6479,7 +6479,7 @@ function OrdensPagamentoFinanceiroView({ session, setErro }) {
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={selStyle}>
-          <option value="aberta">A pagar (abertas)</option><option value="paga">Pagas</option><option value="todas">Todas</option><option value="cancelada">Ordens canceladas</option>
+          <option value="aberta">A pagar (abertas)</option><option value="paga">Pagas</option><option value="todas">Todas (inclusive canceladas)</option><option value="cancelada">Ordens canceladas</option>
         </select>
         <select value={empresa} onChange={(e) => setEmpresa(e.target.value)} style={selStyle}>
           <option value="todas">Prosign e VS</option><option value="prosign">Prosign</option><option value="vs">VS</option>
