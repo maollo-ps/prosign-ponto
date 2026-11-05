@@ -317,6 +317,10 @@ function lancamentoFromRow(r) {
   obj.folgasDatas = Array.isArray(r.folgas_datas) ? [...r.folgas_datas].sort() : [];
   obj.temColFolgasObs = "folgas_obs" in r;
   obj.folgasObs = r.folgas_obs && typeof r.folgas_obs === "object" ? r.folgas_obs : {};
+  obj.temColAfast = "afastamentos" in r;
+  obj.afastamentos = Array.isArray(r.afastamentos) ? r.afastamentos : [];
+  obj.temColAtrasos = "atrasos_manual" in r;
+  obj.atrasosManual = !!r.atrasos_manual;
   return obj;
 }
 // DSR perdido: cada semana (segunda a domingo) com pelo menos uma falta não justificada perde o domingo dela.
@@ -327,6 +331,66 @@ function semanaDaData(iso) {
 }
 function calcularDsrPorFaltas(datas) {
   return new Set((datas || []).map(semanaDaData)).size;
+}
+
+// ---------- afastamentos (atestado, férias, licença) ----------
+const TIPOS_AFAST = {
+  atestado: { label: "Atestado", cor: "#7A5C99", bg: "#F1ECF7" },
+  ferias: { label: "Férias", cor: "#2E7D5B", bg: "#E8F4EE" },
+  licenca: { label: "Licença", cor: "#9A6B12", bg: "#FFF6E0" },
+};
+function diasDoAfastamento(a) {
+  const out = [];
+  const n = Math.max(0, Math.min(400, Math.round(Number(a?.dias) || 0)));
+  if (!a?.inicio || !n) return out;
+  const d = new Date(a.inicio + "T12:00:00");
+  for (let i = 0; i < n; i++) { out.push(d.toISOString().slice(0, 10)); d.setDate(d.getDate() + 1); }
+  return out;
+}
+const fmtDiaMes = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : "");
+// todos os afastamentos do funcionário (vêm do mês em que foram lançados) que tocam o mês pedido
+function afastamentosNoMes(lancamentos, funcId, mesRef, atuaisDoMes) {
+  const lista = [];
+  (lancamentos || []).forEach((l) => {
+    if (String(l.funcionarioId) !== String(funcId)) return;
+    if (atuaisDoMes && l.mes === mesRef) return; // os do mês atual vêm do formulário (ainda não salvos)
+    (l.afastamentos || []).forEach((a) => lista.push({ ...a, mesLanc: l.mes }));
+  });
+  (atuaisDoMes || []).forEach((a) => lista.push({ ...a, mesLanc: mesRef }));
+  return lista
+    .map((a) => ({ ...a, diasNoMes: diasDoAfastamento(a).filter((d) => d.slice(0, 7) === mesRef) }))
+    .filter((a) => a.diasNoMes.length > 0 || a.mesLanc === mesRef)
+    .sort((a, b) => String(a.inicio).localeCompare(String(b.inicio)));
+}
+
+// ---------- atrasos / saídas antecipadas pelo ponto ----------
+// Dia útil com horário fixo: o que faltou do horário (sem o almoço) é atraso. Tolerância da CLT: até 10 min no dia não conta.
+const TOLERANCIA_ATRASO_MIN = 10;
+function atrasoDoDia(r) {
+  if (!r?.data || !r.entrada || !r.saida || !diaTemHorarioFixo(r.data, r.feriado)) return 0;
+  const h = HORARIOS_SEMANA[new Date(r.data + "T00:00:00").getDay()];
+  if (!h) return 0;
+  const ini = toMin(h.inicio), fim = toMin(h.fim);
+  const almoco = Math.max(0, Math.min(fim, toMin(ALMOCO.fim)) - Math.max(ini, toMin(ALMOCO.inicio)));
+  const esperadoMin = fim - ini - almoco;
+  const faltouMin = Math.round(esperadoMin - classificarDia(r).normal * 60);
+  return faltouMin > TOLERANCIA_ATRASO_MIN ? faltouMin / 60 : 0;
+}
+function calcularAtrasosMes(registros, excluir) {
+  const dias = [];
+  (registros || []).forEach((r) => {
+    if (excluir && excluir.has(r.data)) return;
+    const h = atrasoDoDia(r);
+    if (h > 0) dias.push({ data: r.data, horas: h });
+  });
+  dias.sort((a, b) => a.data.localeCompare(b.data));
+  return { horas: dias.reduce((s, d) => s + d.horas, 0), dias };
+}
+// dias que não entram no cálculo de atraso: faltas, folgas e afastamentos
+function diasSemAtraso(lanc, afastsNoMes) {
+  const set = new Set([...(lanc?.faltasDatas || []), ...(lanc?.folgasDatas || [])]);
+  (afastsNoMes || []).forEach((a) => a.diasNoMes.forEach((d) => set.add(d)));
+  return set;
 }
 function lancamentoToRow(l) {
   const row = { funcionario_id: l.funcionarioId, mes_referencia: l.mes };
@@ -343,6 +407,8 @@ function lancamentoToRow(l) {
   const obsLimpa = {};
   (l.folgasDatas || []).forEach((d) => { const t = String(l.folgasObs?.[d] || "").trim(); if (t) obsLimpa[d] = t; });
   if (l.temColFolgasObs || Object.keys(obsLimpa).length) row.folgas_obs = obsLimpa;
+  if (l.temColAfast || (l.afastamentos && l.afastamentos.length)) row.afastamentos = l.afastamentos || [];
+  if (l.temColAtrasos || l.atrasosManual) row.atrasos_manual = !!l.atrasosManual;
   return row;
 }
 
@@ -1050,8 +1116,10 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
   };
   const [pontoForm, setPontoForm] = useState(blankPonto);
 
-  const blankFaltas = { funcionarioId: selId, mes: mesRef, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0, faltasDatas: [], dsrManual: false, folgasDatas: [], folgasObs: {} };
+  const blankFaltas = { funcionarioId: selId, mes: mesRef, faltasDias: 0, faltasHoras: 0, dsrDias: 0, atestadoDias: 0, faltasDatas: [], dsrManual: false, folgasDatas: [], folgasObs: {}, afastamentos: [], atrasosManual: false };
   const [novaFalta, setNovaFalta] = useState("");
+  const [novoAfast, setNovoAfast] = useState({ tipo: "atestado", inicio: "", dias: "1", obs: "" });
+  const [atrasoTxt, setAtrasoTxt] = useState("");
   const [novaFolga, setNovaFolga] = useState("");
   const [novaFolgaObs, setNovaFolgaObs] = useState("");
   const [faltasForm, setFaltasForm] = useState(blankFaltas);
@@ -1059,6 +1127,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
   useEffect(() => {
     const ex = lancamentos.find((l) => String(l.funcionarioId) === String(selId) && l.mes === mesRef);
     setFaltasForm(ex || { ...blankFaltas, funcionarioId: selId, mes: mesRef });
+    setAtrasoTxt(ex?.atrasosManual && ex.faltasHoras ? decimalToHHMM(ex.faltasHoras) : "");
     setPontoForm({ ...blankPonto, data: `${mesRef}-01` });
   }, [selId, mesRef]); // eslint-disable-line
 
@@ -1114,6 +1183,8 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
     if (novaFalta.slice(0, 7) !== mesRef) { setErro(`A data da falta precisa ser de ${mesRefExtenso(mesRef)}.`); return; }
     setErro("");
     if ((faltasForm.folgasDatas || []).includes(novaFalta)) { setErro("Esse dia já está lançado como folga."); return; }
+    const afastDoDia = afastamentosNoMes(lancamentos, selId, mesRef, faltasForm.afastamentos || []).find((a) => a.diasNoMes.includes(novaFalta));
+    if (afastDoDia) { setErro(`Esse dia está dentro de ${TIPOS_AFAST[afastDoDia.tipo]?.label.toLowerCase() || "afastamento"}.`); return; }
     aplicarDatas([...(faltasForm.faltasDatas || []), novaFalta]);
     setNovaFalta("");
   }
@@ -1128,11 +1199,37 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
   }
   const folgaComPonto = (faltasForm.folgasDatas || []).filter((d) => registros.some((r) => r.data === d));
 
+  // afastamentos e atrasos
+  const afastsMes = afastamentosNoMes(lancamentos, selId, mesRef, faltasForm.afastamentos || []);
+  const diasAtestadoMes = new Set(afastsMes.filter((a) => a.tipo === "atestado").flatMap((a) => a.diasNoMes)).size;
+  const atrasosCalc = calcularAtrasosMes(registros, diasSemAtraso(faltasForm, afastsMes));
+  const atrasosEfetivo = faltasForm.atrasosManual ? (faltasForm.faltasHoras || 0) : atrasosCalc.horas;
+  const legadoAtestado = !afastsMes.some((a) => a.tipo === "atestado") && faltasForm.atestadoDias > 0;
+  function adicionarAfastamento() {
+    const a = novoAfast;
+    const dias = Math.round(Number(String(a.dias).replace(",", ".")) || 0);
+    if (!a.inicio) { setErro("Informe a data de início."); return; }
+    if (a.inicio.slice(0, 7) !== mesRef) { setErro(`Lance o afastamento no mês em que ele começa (${mesRefExtenso(a.inicio.slice(0, 7) + "")}). Ele aparece sozinho nos meses seguintes.`); return; }
+    if (dias < 1) { setErro("Informe a quantidade de dias."); return; }
+    const novo = { id: crypto.randomUUID(), tipo: a.tipo, inicio: a.inicio, dias, obs: a.obs.trim() };
+    const ds = new Set(diasDoAfastamento(novo));
+    const conflito = (faltasForm.faltasDatas || []).filter((d) => ds.has(d));
+    if (conflito.length) { setErro(`Há falta lançada dentro desse período (${conflito.map(fmtDiaMes).join(", ")}). Tire a falta antes.`); return; }
+    setErro("");
+    setFaltasForm((f) => ({ ...f, afastamentos: [...(f.afastamentos || []), novo] }));
+    setNovoAfast({ tipo: a.tipo, inicio: "", dias: "1", obs: "" });
+  }
+
   async function handleSalvarFaltas() {
     setSalvandoFaltas(true);
     setErro("");
     try {
-      const row = lancamentoToRow(faltasForm);
+      const paraGravar = {
+        ...faltasForm,
+        faltasHoras: faltasForm.atrasosManual ? hhmmToDecimal(atrasoTxt) : atrasosCalc.horas,
+        atestadoDias: legadoAtestado ? faltasForm.atestadoDias : diasAtestadoMes,
+      };
+      const row = lancamentoToRow(paraGravar);
       const [saved] = await sbRequest("lancamentos?on_conflict=funcionario_id,mes_referencia", session, {
         method: "POST", body: row, extraHeaders: { Prefer: "resolution=merge-duplicates,return=representation" },
       });
@@ -1142,8 +1239,9 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
         : [...lancamentos.filter((l) => !(String(l.funcionarioId) === String(selId) && l.mes === mesRef)), novo];
       setLancamentos(next);
       setFaltasForm(novo);
+      setAtrasoTxt(novo.atrasosManual && novo.faltasHoras ? decimalToHHMM(novo.faltasHoras) : "");
     } catch (e) {
-      setErro(/folgas_datas|folgas_obs/.test(e.message) ? "Para salvar as folgas, rode antes o SQL migracao_folgas.sql no Supabase." : /faltas_datas|dsr_manual/.test(e.message) ? "Para salvar as datas das faltas, rode antes o SQL migracao_faltas_datas.sql no Supabase." : e.message);
+      setErro(/afastamentos|atrasos_manual/.test(e.message) ? "Para salvar afastamentos e atrasos, rode antes o SQL migracao_rh_afastamentos.sql no Supabase." : /folgas_datas|folgas_obs/.test(e.message) ? "Para salvar as folgas, rode antes o SQL migracao_folgas.sql no Supabase." : /faltas_datas|dsr_manual/.test(e.message) ? "Para salvar as datas das faltas, rode antes o SQL migracao_faltas_datas.sql no Supabase." : e.message);
     }
     finally { setSalvandoFaltas(false); }
   }
@@ -1169,7 +1267,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
   if (!funcionarios.length) return <div style={{ color: MUTED }}>Cadastre um funcionário primeiro na aba "Funcionários".</div>;
 
   const agregado = agregarMes(registros);
-  const lancParaCalculo = { ...agregado, faltasDias: faltasForm.faltasDias, faltasHoras: faltasForm.faltasHoras, dsrDias: faltasForm.dsrDias };
+  const lancParaCalculo = { ...agregado, faltasDias: faltasForm.faltasDias, faltasHoras: faltasForm.atrasosManual ? hhmmToDecimal(atrasoTxt) : atrasosEfetivo, dsrDias: faltasForm.dsrDias };
   const preview = funcionario ? calcularLancamento(funcionario, cargos, lancParaCalculo) : null;
   const pontoFormSemHorarioFixo = !diaTemHorarioFixo(pontoForm.data, pontoForm.feriado);
 
@@ -1349,7 +1447,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
           </Card>
 
           <Card>
-            <h3 style={{ marginTop: 0, fontSize: 14, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Faltas / DSR / Atestado / Folgas (mês)</h3>
+            <h3 style={{ marginTop: 0, fontSize: 14, color: MUTED, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 }}>Faltas / Atrasos / DSR / Afastamentos / Folgas (mês)</h3>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div style={{ gridColumn: "1 / -1" }}>
                 <Field label="Faltas não justificadas (dia inteiro) — informe as datas">
@@ -1376,7 +1474,21 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
                 )}
               </div>
               <Field label="Faltas não just. (dias)"><div style={{ ...inputStyle, background: "#F3F4F6", fontFamily: FONT_MONO }}>{faltasForm.faltasDias}</div></Field>
-              <Field label="Atrasos / saídas antecipadas (hh:mm)"><input style={inputStyle} placeholder="0:00" defaultValue={decimalToHHMM(faltasForm.faltasHoras)} key={`fh-${selId}-${mesRef}-${faltasForm.id || ""}`} onBlur={(e) => setFaltasForm((s) => ({ ...s, faltasHoras: hhmmToDecimal(e.target.value) }))} /></Field>
+              <Field label={faltasForm.atrasosManual ? "Atrasos / saídas antecipadas (hh:mm) — ajustado à mão" : "Atrasos / saídas antecipadas (hh:mm) — calculado pelo ponto"}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  {faltasForm.atrasosManual
+                    ? <input style={{ ...inputStyle, width: 90 }} placeholder="0:00" value={atrasoTxt} onChange={(e) => setAtrasoTxt(e.target.value)} />
+                    : <div style={{ ...inputStyle, background: "#F3F4F6", fontFamily: FONT_MONO, width: 90 }}>{atrasosCalc.horas ? decimalToHHMM(atrasosCalc.horas) : "0:00"}</div>}
+                  <label style={{ fontSize: 11, color: MUTED, display: "inline-flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
+                    <input type="checkbox" checked={!!faltasForm.atrasosManual} onChange={(e) => { const m = e.target.checked; setFaltasForm((f) => ({ ...f, atrasosManual: m })); if (m) setAtrasoTxt(atrasosCalc.horas ? decimalToHHMM(atrasosCalc.horas) : ""); }} /> ajustar à mão
+                  </label>
+                </div>
+                {!faltasForm.atrasosManual && atrasosCalc.dias.length > 0 && (
+                  <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>
+                    {atrasosCalc.dias.map((d) => `${fmtDiaMes(d.data)} ${decimalToHHMM(d.horas)}`).join(" · ")}
+                  </div>
+                )}
+              </Field>
               <Field label={faltasForm.dsrManual ? "D.S.R. perdido (dias) — ajustado à mão" : "D.S.R. perdido (dias) — calculado"}>
                 <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   {faltasForm.dsrManual
@@ -1387,7 +1499,44 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
                   </label>
                 </div>
               </Field>
-              <Field label="Atestado (dias)"><input type="number" style={inputStyle} value={faltasForm.atestadoDias} onChange={(e) => setFaltasForm({ ...faltasForm, atestadoDias: parseFloat(e.target.value) || 0 })} /></Field>
+              <Field label="Atestado no mês (dias)">
+                <div style={{ ...inputStyle, background: "#F3F4F6", fontFamily: FONT_MONO }}>{legadoAtestado ? faltasForm.atestadoDias : diasAtestadoMes}</div>
+                {legadoAtestado && <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>Lançado antes sem data. Ao lançar o atestado com data abaixo, passa a ser calculado.</div>}
+              </Field>
+              <div style={{ gridColumn: "1 / -1", borderTop: `1px dashed ${BORDER}`, paddingTop: 12 }}>
+                <Field label="Atestado, férias ou licença — data de início e quantidade de dias">
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                    <select style={selStyle} value={novoAfast.tipo} onChange={(e) => setNovoAfast({ ...novoAfast, tipo: e.target.value })}>
+                      {Object.entries(TIPOS_AFAST).map(([k, t]) => <option key={k} value={k}>{t.label}</option>)}
+                    </select>
+                    <input type="date" style={inputStyle} value={novoAfast.inicio} min={`${mesRef}-01`} max={`${mesRef}-31`} onChange={(e) => setNovoAfast({ ...novoAfast, inicio: e.target.value })} />
+                    <input style={{ ...inputStyle, width: 70 }} inputMode="numeric" value={novoAfast.dias} onChange={(e) => setNovoAfast({ ...novoAfast, dias: e.target.value.replace(/[^0-9]/g, "") })} title="Quantidade de dias" />
+                    <span style={{ fontSize: 12, color: MUTED }}>dia(s)</span>
+                    <input style={{ ...inputStyle, flex: 1, minWidth: 180 }} value={novoAfast.obs} placeholder={novoAfast.tipo === "licenca" ? "Tipo de licença (ex.: paternidade, casamento...)" : "Observação (opcional)"} onChange={(e) => setNovoAfast({ ...novoAfast, obs: e.target.value })} onKeyDown={(e) => { if (e.key === "Enter") adicionarAfastamento(); }} />
+                    <button type="button" onClick={adicionarAfastamento} style={btnGhostSmall}><Plus size={13} /> Adicionar</button>
+                  </div>
+                </Field>
+                {afastsMes.length > 0 && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                    {afastsMes.map((a) => {
+                      const t = TIPOS_AFAST[a.tipo] || { label: a.tipo, cor: MUTED, bg: "#F3F4F6" };
+                      const ds = diasDoAfastamento(a);
+                      const deOutroMes = a.mesLanc !== mesRef;
+                      return (
+                        <div key={a.id || a.inicio + a.tipo} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", fontSize: 13 }}>
+                          <span style={{ fontSize: 12, background: t.bg, color: t.cor, borderRadius: 12, padding: "3px 10px", fontWeight: 700 }}>{t.label}</span>
+                          <span>{fmtDiaMes(ds[0])} a {fmtDiaMes(ds[ds.length - 1])} · <b>{a.dias}</b> dia(s){a.diasNoMes.length !== ds.length ? ` (${a.diasNoMes.length} neste mês)` : ""}</span>
+                          {a.obs && <span style={{ color: MUTED }}>— {a.obs}</span>}
+                          {deOutroMes
+                            ? <span style={{ fontSize: 11, color: MUTED }}>(lançado em {mesRefExtenso(a.mesLanc).toLowerCase()})</span>
+                            : <button type="button" onClick={() => setFaltasForm((f) => ({ ...f, afastamentos: (f.afastamentos || []).filter((x) => x.id !== a.id) }))} title="Tirar" style={{ background: "none", border: "none", cursor: "pointer", color: t.cor, padding: 0, display: "flex" }}><X size={15} /></button>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <div style={{ fontSize: 11, color: MUTED, marginTop: 6 }}>Atestado, férias e licença não descontam aqui e os dias deles não contam atraso. Período que passa do mês aparece sozinho no mês seguinte.</div>
+              </div>
               <div style={{ gridColumn: "1 / -1", borderTop: `1px dashed ${BORDER}`, paddingTop: 12 }}>
                 <Field label={`Dias de folga (ex.: compensação de fim de semana trabalhado) — ${(faltasForm.folgasDatas || []).length} no mês`}>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -1426,7 +1575,7 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
               </div>
             )}
             <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
-              <button onClick={handleSalvarFaltas} disabled={salvandoFaltas} style={btnPrimary}><Save size={15} /> {salvandoFaltas ? "Salvando..." : "Salvar faltas/DSR/folgas"}</button>
+              <button onClick={handleSalvarFaltas} disabled={salvandoFaltas} style={btnPrimary}><Save size={15} /> {salvandoFaltas ? "Salvando..." : "Salvar faltas/afastamentos/folgas"}</button>
               <button onClick={handleExcluirFaltas} disabled={salvandoFaltas} style={btnDangerSmall}><Trash2 size={13} /> Excluir lançamento do mês</button>
             </div>
           </Card>
@@ -1492,7 +1641,9 @@ function RelatoriosView({ funcionarios, cargos, lancamentos, mesRef, setMesRef, 
     const lancFaltas = lancamentos.find((l) => String(l.funcionarioId) === String(f.id) && l.mes === mesRef) || {};
     const registrosFunc = registrosMes.filter((r) => r.funcionarioId === f.id);
     const agregado = agregarMes(registrosFunc);
-    const lanc = { ...agregado, faltasDias: lancFaltas.faltasDias || 0, faltasHoras: lancFaltas.faltasHoras || 0, dsrDias: lancFaltas.dsrDias || 0 };
+    const afasts = afastamentosNoMes(lancamentos, f.id, mesRef, null);
+    const atrasos = lancFaltas.atrasosManual ? (lancFaltas.faltasHoras || 0) : calcularAtrasosMes(registrosFunc, diasSemAtraso(lancFaltas, afasts)).horas;
+    const lanc = { ...agregado, faltasDias: lancFaltas.faltasDias || 0, faltasHoras: atrasos, dsrDias: lancFaltas.dsrDias || 0 };
     const calc = calcularLancamento(f, cargos, lanc);
     const cargo = cargos.find((c) => c.id === f.cargoId);
     return { f, cargo, lanc, calc, horasNormais: agregado.normal };
@@ -3126,6 +3277,10 @@ function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, 
 
 // Logos por empresa para o orçamento do cliente (enviar o arquivo e colar aqui como "data:image/png;base64,...")
 const LOGOS_EMPRESA = { prosign: LOGO_PROSIGN, vs: null };
+const DADOS_EMPRESA = {
+  prosign: { nome: "PROSIGN COMUNICAÇÃO VISUAL", cnpj: "07.614.049/0001-83" },
+  vs: { nome: "VS SERVIÇOS AUDIOVISUAIS", cnpj: "" },
+};
 const RODAPE_EMPRESA = {
   prosign: ["PROSIGN COMUNICAÇÃO VISUAL", "RUA JOÃO BASTOS VIEIRA, 304B, BAIRRO MONTE BELO", "VITÓRIA E.S CEP.: 29053 230", "CNPJ.: 07.614.049/0001-83", "TELEFAX: ( 27 ) 3321-7506 / www.prosign.com.br"],
   vs: ["VS SERVIÇOS AUDIOVISUAIS"],
@@ -3191,6 +3346,7 @@ function gerarOrcamentoCliente({ orc, numeroOr, grupos, total, desconto = 0, obs
       ${linhaDados(["EVENTO:", orc.evento || ""], ["VALIDADE PROPOSTA:", validade])}
       <tr><td class="r">LOCAL:</td><td colspan="3">${esc(orc.local || "")}</td></tr>
       ${orc.responsavel ? `<tr><td class="r">ATENDIMENTO:</td><td colspan="3">${esc(orc.responsavel)}</td></tr>` : ""}
+      <tr><td class="r">EMPRESA FATURADORA:</td><td colspan="3"><b>${esc(DADOS_EMPRESA[emp].nome)}</b>${DADOS_EMPRESA[emp].cnpj ? ` — CNPJ ${esc(DADOS_EMPRESA[emp].cnpj)}` : ""}</td></tr>
       <tr><td colspan="4" class="sec">DATAS DO EVENTO</td></tr>
       ${linhaDados(["INÍCIO EVENTO:", dataBR(orc.data_evento)], ["TÉRM. MONTAGEM:", ""])}
       ${linhaDados(["TÉRMINO EVENTO:", ""], ["INÍCIO DESMONTA.:", ""])}
@@ -3241,6 +3397,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   const [itemUnico, setItemUnico] = useState({ titulo: "", descricao: "" });
   const [itensCli, setItensCli] = useState([]); // [{ id, titulo, descricao, qtd, diarias, unitario, itemId, unidade }]
   const [obsCliente, setObsCliente] = useState("");
+  const [empresaFat, setEmpresaFat] = useState("prosign");
   const [atendimento, setAtendimento] = useState("");
   const [usuariosNomes, setUsuariosNomes] = useState([]);
   const [meuNomeComp, setMeuNomeComp] = useState("");
@@ -3285,6 +3442,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
           setNumeroOr(row.numero_or || "");
           setClienteModo(row.cliente_modo === "itens" ? "itens" : "texto");
           setObsCliente(row.obs_cliente || "");
+          setEmpresaFat(row.empresa === "vs" ? "vs" : "prosign");
           setAtendimento(row.responsavel || "");
           const pct = (f) => String(Math.round(Number(f || 0) * 10000) / 100).replace(".", ",");
           setBv(pct(row.bv_pct)); setSimples(pct(row.simples_pct)); setComissao(pct(row.comissao_pct)); setMargem(pct(row.margem_pct));
@@ -3373,7 +3531,8 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         },
       });
       // orçamento para o cliente: modo escolhido + textos/itens
-      await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body: { cliente_modo: clienteModo } });
+      await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body: { cliente_modo: clienteModo, empresa: empresaFat } });
+      setOrc((o) => (o ? { ...o, empresa: empresaFat } : o));
       await gravarTextosCliente();
       // todas as linhas levam id próprio (linhas sem id viravam NULL e a gravação inteira falhava); grava primeiro, apaga o que sobrou depois
       const idUnico = itemUnico.id || crypto.randomUUID();
@@ -3447,7 +3606,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       gs = itensCli.map((i) => ({ titulo: (i.titulo || "").trim() || "Item", descricao: i.descricao || "", qtd: numBR(i.qtd), diarias: numBR(i.diarias), unitario: numBR(i.unitario), valor: totalCli(i) / 100, unidade: i.unidade || "", imagem: i.itemId ? fotoDoItem(i.itemId) : null }));
       total = distribuidoCentavos / 100;
     }
-    const ok = gerarOrcamentoCliente({ orc: { ...orc, responsavel: atendimento.trim() || orc.responsavel }, numeroOr, grupos: gs, total, desconto: usaDesc ? descontoR : 0, observacao: obsCliente });
+    const ok = gerarOrcamentoCliente({ orc: { ...orc, empresa: empresaFat, responsavel: atendimento.trim() || orc.responsavel }, numeroOr, grupos: gs, total, desconto: usaDesc ? descontoR : 0, observacao: obsCliente });
     if (!ok) setErro("O navegador bloqueou a janela do orçamento. Libere pop-ups para este site e tente de novo.");
   }
 
@@ -3655,6 +3814,14 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
 
       <div style={{ border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden", background: "#fff", marginTop: 18 }}>
         <Faixa cor="#152A4A">ORÇAMENTO PARA O CLIENTE</Faixa>
+        <div style={{ padding: "10px 12px 0", fontSize: 13, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <b>Empresa que vai faturar:</b>
+          <select value={empresaFat} onChange={(e) => { setSalvo(false); setEmpresaFat(e.target.value); }} style={{ ...selStyle, padding: "5px 10px", fontSize: 13, fontWeight: 600 }}>
+            <option value="prosign">Prosign</option>
+            <option value="vs">VS</option>
+          </select>
+          <span style={{ color: MUTED, fontSize: 12 }}>Sai no orçamento do cliente (logo, dados e rodapé) e é a empresa que emite a nota.</span>
+        </div>
         <div style={{ padding: "10px 12px", fontSize: 13, display: "flex", gap: 22, flexWrap: "wrap" }}>
           <label style={{ display: "inline-flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
             <input type="radio" name="clienteModo" checked={clienteModo === "texto"} onChange={() => { setSalvo(false); setClienteModo("texto"); }} />
