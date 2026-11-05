@@ -5951,11 +5951,25 @@ const FORMAS_PAG = [
 const formaPagLabel = (id) => FORMAS_PAG.find((f) => f.id === id)?.label || id || "—";
 const OP_STATUS = {
   aberta: { label: "Aberta", cor: "#B8902E" },
+  parcial: { label: "Paga em parte", cor: "#1D6FA5" },
   paga: { label: "Paga", cor: "#2F6F4F" },
   cancelada: { label: "Cancelada", cor: "#6B7280" },
 };
 const hojeISO = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
 const numeroOP = (n) => `OP ${String(n || 0).padStart(4, "0")}`;
+// parcelas da ordem (ordem antiga sem parcela = 1 parcela com o valor todo)
+function parcelasDaOrdem(op) {
+  const ps = Array.isArray(op?.ordem_pagamento_parcelas) ? [...op.ordem_pagamento_parcelas] : [];
+  if (!ps.length) return [{ numero: 1, valor: op?.valor, vencimento: op?.vencimento, status: op?.status === "paga" ? "paga" : "aberta", pago_em: op?.pago_em, valor_pago: op?.valor_pago, conta_saida: op?.conta_saida }];
+  return ps.sort((a, b) => (a.numero || 0) - (b.numero || 0));
+}
+const pagoDaOrdem = (op) => (op?.status === "cancelada" ? 0 : parcelasDaOrdem(op).filter((p) => p.status === "paga").reduce((s, p) => s + Number(p.valor_pago ?? p.valor), 0));
+function situacaoOP(op) {
+  if (op?.status === "cancelada") return "cancelada";
+  const ps = parcelasDaOrdem(op);
+  const pagas = ps.filter((p) => p.status === "paga").length;
+  return pagas === 0 ? "aberta" : pagas === ps.length ? "paga" : "parcial";
+}
 
 // dados bancários do cadastro do fornecedor em texto
 function dadosPagamentoDaPessoa(p) {
@@ -6001,12 +6015,12 @@ function imprimirOrdemPagamento(op) {
     td, th { border: 1px solid #999; padding: 6px 8px; vertical-align: top; }
     td.r { width: 170px; font-weight: 700; background: #F3F4F6; } th { background: #E5E7EB; text-align: left; }
     .valor { font-size: 18px; font-weight: 700; } .num { text-align: right; white-space: nowrap; }
-    .status { display: inline-block; padding: 2px 10px; border-radius: 10px; color: #fff; font-weight: 700; background: ${op.status === "paga" ? "#2F6F4F" : op.status === "cancelada" ? "#6B7280" : "#B8902E"}; }
+    .status { display: inline-block; padding: 2px 10px; border-radius: 10px; color: #fff; font-weight: 700; background: ${OP_STATUS[situacaoOP(op)]?.cor || "#B8902E"}; }
     .ass { display: flex; gap: 40px; margin-top: 60px; } .ass div { flex: 1; border-top: 1px solid #111; text-align: center; padding-top: 4px; font-size: 11px; }
   </style></head><body>
     <div class="topo">${logo ? `<img src="${logo}" alt="">` : `<b>${esc(RODAPE_EMPRESA[emp][0])}</b>`}<h1>ORDEM DE PAGAMENTO<span class="n">${esc(numeroOP(op.numero))}</span></h1></div>
     <table>
-      ${linha("Situação", `<span class="status">${esc(OP_STATUS[op.status]?.label || op.status)}</span>`)}
+      ${linha("Situação", `<span class="status">${esc(OP_STATUS[situacaoOP(op)]?.label || op.status)}</span>`)}
       ${linha("Empresa pagadora", esc(DADOS_EMPRESA[emp].nome))}
       ${linha("Projeto (PR)", esc([o.numero_or ? `PR ${o.numero_or}` : "", o.evento].filter(Boolean).join(" - ")))}
       ${linha("Cliente", esc(o.clientes?.nome || "—"))}
@@ -6015,17 +6029,19 @@ function imprimirOrdemPagamento(op) {
     <table>
       ${linha("Favorecido", `<b>${esc(op.fornecedor_nome)}</b>`)}
       ${linha("Valor", `<span class="valor">${esc(brl(Number(op.valor)))}</span>`)}
-      ${linha("Vencimento", esc(fmtDataBR(op.vencimento)))}
+      ${linha(parcelasDaOrdem(op).length > 1 ? "Parcelas" : "Vencimento", esc(parcelasDaOrdem(op).length > 1 ? `${parcelasDaOrdem(op).length} parcelas (abaixo)` : fmtDataBR(parcelasDaOrdem(op)[0].vencimento)))}
       ${linha("Forma de pagamento", esc(formaPagLabel(op.forma_pagamento)))}
       ${linha("Dados para pagamento", esc(op.dados_pagamento || "—"))}
       ${op.descricao ? linha("Descrição", esc(op.descricao)) : ""}
       ${op.obs ? linha("Observação", esc(op.obs)) : ""}
     </table>
+    ${parcelasDaOrdem(op).length > 1 ? `<table><thead><tr><th style="width:60px">Parcela</th><th>Descrição</th><th style="width:110px">Vencimento</th><th class="num" style="width:120px">Valor</th><th style="width:200px">Pagamento</th></tr></thead><tbody>
+      ${parcelasDaOrdem(op).map((p, i, arr) => `<tr><td>${i + 1}/${arr.length}</td><td>${esc(p.descricao || "")}</td><td>${esc(fmtDataBR(p.vencimento))}</td><td class="num">${esc(brl(Number(p.valor)))}</td><td>${p.status === "paga" ? esc(`Paga em ${fmtDataBR(p.pago_em)}${p.conta_saida ? ` · ${p.conta_saida}` : ""}`) : "Em aberto"}</td></tr>`).join("")}</tbody></table>` : ""}
     ${itens.length ? `<table><thead><tr><th>Itens da composição</th><th class="num" style="width:140px">Valor</th></tr></thead><tbody>
       ${itens.map((i) => `<tr><td>${esc(i.descricao)}</td><td class="num">${esc(brl(Number(i.valor)))}</td></tr>`).join("")}</tbody></table>` : ""}
     <table>
       ${linha("Solicitado por", esc(`${op.criado_por_nome || "—"} em ${fmtDataBR(op.criado_em)}`))}
-      ${op.status === "paga" ? linha("Pago em", esc(`${fmtDataBR(op.pago_em)} · ${brl(Number(op.valor_pago ?? op.valor))}${op.conta_saida ? ` · ${op.conta_saida}` : ""}${op.pago_por_nome ? ` · baixa por ${op.pago_por_nome}` : ""}`)) : ""}
+      ${op.status === "paga" && parcelasDaOrdem(op).length === 1 ? linha("Pago em", esc(`${fmtDataBR(op.pago_em)} · ${brl(Number(op.valor_pago ?? op.valor))}${op.conta_saida ? ` · ${op.conta_saida}` : ""}${op.pago_por_nome ? ` · baixa por ${op.pago_por_nome}` : ""}`)) : ""}
       ${op.status === "paga" && op.obs_pagamento ? linha("Obs. do pagamento", esc(op.obs_pagamento)) : ""}
       ${op.status === "cancelada" ? linha("Cancelada", esc(op.cancelado_motivo || "")) : ""}
     </table>
@@ -6037,9 +6053,14 @@ function imprimirOrdemPagamento(op) {
   w.document.open(); w.document.write(html); w.document.close();
   return true;
 }
-const SELECT_OP = "*,orcamentos(evento,numero_or,data_evento,empresa,clientes:pessoas(nome)),ordem_pagamento_itens(id,orcamento_item_id,descricao,valor)";
-const erroOP = (e) => (/ordens_pagamento|ordem_pagamento_itens/.test(String(e?.message)) && /(does not exist|schema cache|relation|Could not find)/i.test(String(e?.message))
-  ? "Rode antes o SQL migracao_ordens_pagamento.sql no Supabase." : msgSupabase(e));
+const SELECT_OP = "*,orcamentos(evento,numero_or,data_evento,empresa,clientes:pessoas(nome)),ordem_pagamento_itens(id,orcamento_item_id,descricao,valor),ordem_pagamento_parcelas(*)";
+const erroOP = (e) => {
+  const m = String(e?.message || "");
+  const falta = /(does not exist|schema cache|relation|Could not find)/i.test(m);
+  if (falta && /ordem_pagamento_parcelas/.test(m)) return "Rode antes o SQL migracao_ordens_parcelas.sql no Supabase.";
+  if (falta && /ordens_pagamento|ordem_pagamento_itens/.test(m)) return "Rode antes o SQL migracao_ordens_pagamento.sql no Supabase.";
+  return msgSupabase(e);
+};
 
 // ---------- Comercial: lista de orçamentos aprovados ----------
 function OrdensPagamentoComercialView({ session, setErro }) {
@@ -6060,7 +6081,7 @@ function OrdensPagamentoComercialView({ session, setErro }) {
       const rows = await sbRequest(`orcamentos?select=id,evento,numero_or,data_evento,valor,status,empresa,clientes:pessoas(nome)&status=in.(${STATUS_VENDA.join(",")})&${filtro}`, session);
       setOrcs(rows || []);
       const ids = (rows || []).map((r) => r.id);
-      setOps(ids.length ? (await sbRequest(`ordens_pagamento?select=id,orcamento_id,valor,status&orcamento_id=in.(${ids.join(",")})`, session)) || [] : []);
+      setOps(ids.length ? (await sbRequest(`ordens_pagamento?select=id,orcamento_id,valor,status,vencimento,ordem_pagamento_parcelas(valor,valor_pago,status)&orcamento_id=in.(${ids.join(",")})`, session)) || [] : []);
     } catch (e) { setErro(erroOP(e)); }
     finally { setCarregando(false); }
   }
@@ -6070,7 +6091,7 @@ function OrdensPagamentoComercialView({ session, setErro }) {
 
   const resumo = (id) => {
     const l = ops.filter((o) => o.orcamento_id === id && o.status !== "cancelada");
-    return { n: l.length, gerado: l.reduce((s, o) => s + Number(o.valor), 0), pago: l.filter((o) => o.status === "paga").reduce((s, o) => s + Number(o.valor), 0), abertas: l.filter((o) => o.status === "aberta").length };
+    return { n: l.length, gerado: l.reduce((s, o) => s + Number(o.valor), 0), pago: l.reduce((s, o) => s + pagoDaOrdem(o), 0), abertas: l.filter((o) => situacaoOP(o) !== "paga").length };
   };
   const th = { padding: "10px 12px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4, whiteSpace: "nowrap" };
   const td = { padding: "9px 12px", fontSize: 13 };
@@ -6128,7 +6149,7 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
   const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
   const [aviso, setAviso] = useState("");
-  const vazio = { selecionados: [], fornecedorNome: "", fornecedorId: null, valor: "", valorManual: false, vencimento: "", forma: "pix", dados: "", descricao: "", obs: "" };
+  const vazio = { selecionados: [], fornecedorNome: "", fornecedorId: null, valor: "", valorManual: false, vencimento: "", forma: "pix", dados: "", descricao: "", obs: "", parcelado: false, parcelas: [] };
   const [f, setF] = useState(vazio);
 
   async function carregar() {
@@ -6157,7 +6178,7 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
   const custoPrevisto = itens.reduce((s, i) => s + custoDoItem(i), 0);
   const ativas = ops.filter((o) => o.status !== "cancelada");
   const gerado = ativas.reduce((s, o) => s + Number(o.valor), 0);
-  const pago = ativas.filter((o) => o.status === "paga").reduce((s, o) => s + Number(o.valor), 0);
+  const pago = ativas.reduce((s, o) => s + pagoDaOrdem(o), 0);
   const somaSel = itens.filter((i) => f.selecionados.includes(i.id)).reduce((s, i) => s + custoDoItem(i), 0);
 
   function escolherFornecedor(nome) {
@@ -6177,10 +6198,39 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
     if (!f.fornecedorNome && it.fornecedorTxt) escolherFornecedor(it.fornecedorTxt);
   }
 
+  // parcelamento
+  const centavos = (v) => Math.round((numDigitado(v) || 0) * 100);
+  const fmtValor = (c) => String(c / 100).replace(".", ",");
+  function ligarParcelas(on) {
+    if (!on) { setF((x) => ({ ...x, parcelado: false, parcelas: [] })); return; }
+    const tot = centavos(f.valor);
+    const meio = Math.round(tot / 2);
+    setF((x) => ({ ...x, parcelado: true, parcelas: [
+      { descricao: "Adiantamento", valor: tot ? fmtValor(meio) : "", vencimento: x.vencimento || hojeISO() },
+      { descricao: "Restante", valor: tot ? fmtValor(tot - meio) : "", vencimento: "" },
+    ] }));
+  }
+  function dividirIgual(n) {
+    const tot = centavos(f.valor);
+    if (!tot) { setErro("Informe primeiro o valor total da ordem."); return; }
+    const base = Math.floor(tot / n);
+    setF((x) => ({ ...x, parcelas: Array.from({ length: n }, (_, i) => ({ descricao: x.parcelas[i]?.descricao || (i === 0 ? "Adiantamento" : i === n - 1 ? "Restante" : `Parcela ${i + 1}`), valor: fmtValor(i === n - 1 ? tot - base * (n - 1) : base), vencimento: x.parcelas[i]?.vencimento || "" })) }));
+  }
+  const setParcela = (i, campo, v) => setF((x) => ({ ...x, parcelas: x.parcelas.map((p, j) => (j === i ? { ...p, [campo]: v } : p)) }));
+  const somaParcelas = f.parcelas.reduce((s, p) => s + centavos(p.valor), 0);
+
   async function gerar() {
     const valor = numDigitado(f.valor);
     if (!f.fornecedorNome.trim()) { setErro("Informe o fornecedor (favorecido)."); return; }
     if (!(valor > 0)) { setErro("Informe o valor da ordem de pagamento."); return; }
+    const parcelasGravar = f.parcelado
+      ? f.parcelas.map((p, i) => ({ numero: i + 1, descricao: (p.descricao || "").trim() || null, valor: centavos(p.valor) / 100, vencimento: p.vencimento || null }))
+      : [{ numero: 1, descricao: null, valor: Math.round(valor * 100) / 100, vencimento: f.vencimento || null }];
+    if (f.parcelado) {
+      if (parcelasGravar.length < 2) { setErro("Para parcelar, informe pelo menos 2 parcelas."); return; }
+      if (parcelasGravar.some((p) => !(p.valor > 0))) { setErro("Toda parcela precisa ter valor."); return; }
+      if (somaParcelas !== Math.round(valor * 100)) { setErro(`A soma das parcelas (${brl(somaParcelas / 100)}) tem que dar o valor da ordem (${brl(valor)}).`); return; }
+    }
     setSalvando(true); setErro(""); setAviso("");
     try {
       const [op] = await sbRequest("ordens_pagamento", session, {
@@ -6188,13 +6238,19 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
         body: {
           orcamento_id: orcamentoId, empresa: orc?.empresa === "vs" ? "vs" : "prosign",
           fornecedor_id: f.fornecedorId, fornecedor_nome: f.fornecedorNome.trim(), valor: Math.round(valor * 100) / 100,
-          vencimento: f.vencimento || null, forma_pagamento: f.forma, dados_pagamento: f.dados.trim() || null,
+          vencimento: parcelasGravar[0].vencimento, forma_pagamento: f.forma, dados_pagamento: f.dados.trim() || null,
           descricao: f.descricao.trim() || null, obs: f.obs.trim() || null, criado_por_nome: meuNome || null,
         },
       });
       const linhas = itens.filter((i) => f.selecionados.includes(i.id)).map((i) => ({ ordem_id: op.id, orcamento_item_id: i.id, descricao: i.descricao || "", valor: Math.round(custoDoItem(i) * 100) / 100 }));
+      try {
+        await sbRequest("ordem_pagamento_parcelas", session, { method: "POST", body: parcelasGravar.map((p) => ({ ordem_id: op.id, ...p })), extraHeaders: { Prefer: "return=minimal" } });
+      } catch (e2) {
+        await sbRequest(`ordens_pagamento?id=eq.${op.id}`, session, { method: "DELETE" }).catch(() => {});
+        throw e2;
+      }
       if (linhas.length) await sbRequest("ordem_pagamento_itens", session, { method: "POST", body: linhas, extraHeaders: { Prefer: "return=minimal" } });
-      setAviso(`${numeroOP(op.numero)} gerada para ${op.fornecedor_nome} (${brl(Number(op.valor))}). Ela já aparece para o Financeiro.`);
+      setAviso(`${numeroOP(op.numero)} gerada para ${op.fornecedor_nome} (${brl(Number(op.valor))}${parcelasGravar.length > 1 ? ` em ${parcelasGravar.length} parcelas` : ""}). Ela já aparece para o Financeiro.`);
       setF(vazio);
       await carregar();
     } catch (e) { setErro(erroOP(e)); }
@@ -6249,7 +6305,7 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
                     <td style={{ ...td, color: MUTED, fontSize: 12 }}>{catLabel(i.categoria)}</td>
                     <td style={{ ...td, color: MUTED }}>{i.fornecedorTxt || "—"}</td>
                     <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(custoDoItem(i))}</td>
-                    <td style={td}>{em ? <span style={{ fontSize: 12 }}>{numeroOP(em.numero)} <BadgeOP status={em.status} /></span> : ""}</td>
+                    <td style={td}>{em ? <span style={{ fontSize: 12 }}>{numeroOP(em.numero)} <BadgeOP status={situacaoOP(em)} /></span> : ""}</td>
                   </tr>
                 );
               })}
@@ -6264,10 +6320,35 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
           <Field label={f.selecionados.length ? `Valor (itens: ${brl(somaSel)}) *` : "Valor (R$) *"}>
             <input style={{ ...inputStyle, fontFamily: FONT_MONO }} inputMode="decimal" value={f.valor} placeholder="0,00" onChange={(e) => setF({ ...f, valor: e.target.value, valorManual: true })} />
           </Field>
-          <Field label="Vencimento"><input type="date" style={inputStyle} value={f.vencimento} onChange={(e) => setF({ ...f, vencimento: e.target.value })} /></Field>
+          <Field label={f.parcelado ? "Vencimento (ver parcelas)" : "Vencimento"}><input type="date" style={inputStyle} disabled={f.parcelado} value={f.parcelado ? "" : f.vencimento} onChange={(e) => setF({ ...f, vencimento: e.target.value })} /></Field>
           <Field label="Forma de pagamento">
             <select style={inputStyle} value={f.forma} onChange={(e) => setF({ ...f, forma: e.target.value })}>{FORMAS_PAG.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}</select>
           </Field>
+        </div>
+        <div style={{ marginTop: 12, border: `1px solid ${f.parcelado ? "#1D6FA5" : BORDER}`, background: f.parcelado ? "#F3F8FC" : "transparent", borderRadius: 8, padding: "10px 12px" }}>
+          <label style={{ fontSize: 13, fontWeight: 600, display: "inline-flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
+            <input type="checkbox" checked={f.parcelado} onChange={(e) => ligarParcelas(e.target.checked)} /> Pagar em parcelas (ex.: adiantamento agora e o restante depois)
+          </label>
+          {f.parcelado && (
+            <div style={{ marginTop: 10 }}>
+              {f.parcelas.map((p, i) => (
+                <div key={i} style={{ display: "grid", gridTemplateColumns: "60px 1.5fr 1fr 1fr 32px", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                  <span style={{ fontSize: 12, color: MUTED, fontWeight: 700 }}>{i + 1}/{f.parcelas.length}</span>
+                  <input style={inputStyle} value={p.descricao} placeholder="Descrição (ex.: Adiantamento)" onChange={(e) => setParcela(i, "descricao", e.target.value)} />
+                  <input style={{ ...inputStyle, fontFamily: FONT_MONO }} inputMode="decimal" value={p.valor} placeholder="0,00" onChange={(e) => setParcela(i, "valor", e.target.value)} />
+                  <input type="date" style={inputStyle} value={p.vencimento} onChange={(e) => setParcela(i, "vencimento", e.target.value)} />
+                  <button type="button" disabled={f.parcelas.length <= 2} title="Tirar parcela" onClick={() => setF((x) => ({ ...x, parcelas: x.parcelas.filter((_, j) => j !== i) }))} style={{ background: "none", border: "none", cursor: "pointer", color: DANGER, padding: 0 }}><X size={15} /></button>
+                </div>
+              ))}
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginTop: 6 }}>
+                <button type="button" onClick={() => setF((x) => ({ ...x, parcelas: [...x.parcelas, { descricao: "", valor: "", vencimento: "" }] }))} style={btnGhostSmall}><Plus size={12} style={{ verticalAlign: -2 }} /> Parcela</button>
+                <button type="button" onClick={() => dividirIgual(f.parcelas.length)} style={btnGhostSmall}>Dividir igual</button>
+                <span style={{ fontSize: 12, color: somaParcelas === centavos(f.valor) ? OK : DANGER, fontWeight: 600 }}>
+                  Soma das parcelas: {brl(somaParcelas / 100)} {somaParcelas === centavos(f.valor) ? "✓" : `(falta ${brl((centavos(f.valor) - somaParcelas) / 100)})`}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 12 }}>
           <Field label={f.forma === "boleto" ? "Linha digitável / dados do boleto" : "Dados para pagamento (PIX, banco, agência, conta)"}>
@@ -6295,13 +6376,20 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
                 <td data-label="Nº" style={{ ...td, fontFamily: FONT_MONO }}>{numeroOP(o.numero)}</td>
                 <td data-label="Favorecido" style={{ ...td, fontWeight: 600 }}>{o.fornecedor_nome}{o.descricao && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{o.descricao}</div>}</td>
                 <td data-label="Valor" style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(Number(o.valor))}</td>
-                <td data-label="Vencimento" style={td}>{fmtDataBR(o.vencimento)}</td>
+                <td data-label="Vencimento" style={td}>
+                  {parcelasDaOrdem(o).length > 1
+                    ? parcelasDaOrdem(o).map((p, i, arr) => (
+                      <div key={i} style={{ fontSize: 12, whiteSpace: "nowrap", color: p.status === "paga" ? OK : TEXT }}>
+                        {i + 1}/{arr.length} {fmtDataBR(p.vencimento)} · {brl(Number(p.valor))}{p.status === "paga" ? " ✓" : ""}
+                      </div>))
+                    : fmtDataBR(o.vencimento)}
+                </td>
                 <td data-label="Forma" style={td}>{formaPagLabel(o.forma_pagamento)}</td>
                 <td data-label="Solicitado por" style={{ ...td, color: MUTED, fontSize: 12 }}>{o.criado_por_nome || "—"}<div>{fmtDataBR(o.criado_em)}</div></td>
-                <td data-label="Situação" style={td}><BadgeOP status={o.status} />{o.status === "paga" && <div style={{ fontSize: 11, color: MUTED }}>em {fmtDataBR(o.pago_em)}</div>}{o.status === "cancelada" && o.cancelado_motivo && <div style={{ fontSize: 11, color: MUTED }}>{o.cancelado_motivo}</div>}</td>
+                <td data-label="Situação" style={td}><BadgeOP status={situacaoOP(o)} />{situacaoOP(o) === "parcial" && <div style={{ fontSize: 11, color: MUTED }}>pago {brl(pagoDaOrdem(o))}</div>}{o.status === "paga" && <div style={{ fontSize: 11, color: MUTED }}>em {fmtDataBR(o.pago_em)}</div>}{o.status === "cancelada" && o.cancelado_motivo && <div style={{ fontSize: 11, color: MUTED }}>{o.cancelado_motivo}</div>}</td>
                 <td data-label="" style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
                   <button onClick={() => { if (!imprimirOrdemPagamento(o)) setErro("O navegador bloqueou a janela. Libere pop-ups para este site."); }} style={btnGhostSmall}>Imprimir</button>{" "}
-                  {o.status === "aberta" && <button onClick={() => cancelar(o)} style={btnDangerSmall}>Cancelar</button>}
+                  {situacaoOP(o) === "aberta" && <button onClick={() => cancelar(o)} style={btnDangerSmall}>Cancelar</button>}
                 </td>
               </tr>
             ))}
@@ -6312,14 +6400,15 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
   );
 }
 
-// ---------- Financeiro: ordens a pagar e baixa ----------
+// ---------- Financeiro: parcelas das ordens a pagar e baixa ----------
+const SELECT_PARCELA = `*,ordem:ordens_pagamento!inner(${SELECT_OP})`;
 function OrdensPagamentoFinanceiroView({ session, setErro }) {
   const meuNome = useMeuNome(session);
   const [filtro, setFiltro] = useState("aberta");
   const [empresa, setEmpresa] = useState("todas");
   const [busca, setBusca] = useState("");
   const [rows, setRows] = useState([]);
-  const [resumoAbertas, setResumoAbertas] = useState([]);
+  const [abertas, setAbertas] = useState([]);
   const [pagasMes, setPagasMes] = useState([]);
   const [carregando, setCarregando] = useState(false);
   const [baixa, setBaixa] = useState(null); // { id, pago_em, valor_pago, conta_saida, obs_pagamento }
@@ -6330,27 +6419,28 @@ function OrdensPagamentoFinanceiroView({ session, setErro }) {
   async function carregar() {
     setCarregando(true);
     try {
-      const fEmp = empresa === "todas" ? "" : `&empresa=eq.${empresa}`;
-      const fStatus = filtro === "todas" ? "" : `&status=eq.${filtro}`;
-      const ordem = filtro === "paga" ? "pago_em.desc.nullslast" : filtro === "aberta" ? "vencimento.asc.nullslast" : "numero.desc";
+      const fEmp = empresa === "todas" ? "" : `&ordem.empresa=eq.${empresa}`;
+      const fOrdem = filtro === "cancelada" ? "&ordem.status=eq.cancelada" : "&ordem.status=neq.cancelada";
+      const fStatus = filtro === "aberta" || filtro === "paga" ? `&status=eq.${filtro}` : "";
+      const ordem = filtro === "paga" ? "pago_em.desc.nullslast" : "vencimento.asc.nullslast";
       const [r, ab, pg] = await Promise.all([
-        sbRequest(`ordens_pagamento?select=${SELECT_OP}${fStatus}${fEmp}&order=${ordem}&limit=500`, session),
-        sbRequest(`ordens_pagamento?select=valor,vencimento&status=eq.aberta${fEmp}&limit=2000`, session),
-        sbRequest(`ordens_pagamento?select=valor_pago,valor&status=eq.paga&pago_em=gte.${hoje.slice(0, 7)}-01${fEmp}&limit=2000`, session),
+        sbRequest(`ordem_pagamento_parcelas?select=${SELECT_PARCELA}${fOrdem}${fStatus}${fEmp}&order=${ordem}&limit=500`, session),
+        sbRequest(`ordem_pagamento_parcelas?select=valor,vencimento,ordem:ordens_pagamento!inner(status,empresa)&status=eq.aberta&ordem.status=neq.cancelada${fEmp}&limit=3000`, session),
+        sbRequest(`ordem_pagamento_parcelas?select=valor,valor_pago,ordem:ordens_pagamento!inner(empresa)&status=eq.paga&pago_em=gte.${hoje.slice(0, 7)}-01${fEmp}&limit=3000`, session),
       ]);
-      setRows(r || []); setResumoAbertas(ab || []); setPagasMes(pg || []);
+      setRows(r || []); setAbertas(ab || []); setPagasMes(pg || []);
     } catch (e) { setErro(erroOP(e)); }
     finally { setCarregando(false); }
   }
   useEffect(() => { carregar(); }, [filtro, empresa]); // eslint-disable-line
 
-  async function confirmarBaixa(op) {
+  async function confirmarBaixa(p) {
     const valor = numDigitado(baixa.valor_pago);
     if (!baixa.pago_em) { setErro("Informe a data do pagamento."); return; }
     if (!(valor > 0)) { setErro("Informe o valor pago."); return; }
     setSalvando(true); setErro("");
     try {
-      await sbRequest(`ordens_pagamento?id=eq.${op.id}`, session, {
+      await sbRequest(`ordem_pagamento_parcelas?id=eq.${p.id}`, session, {
         method: "PATCH",
         body: { status: "paga", pago_em: baixa.pago_em, valor_pago: Math.round(valor * 100) / 100, conta_saida: baixa.conta_saida.trim() || null, obs_pagamento: baixa.obs_pagamento.trim() || null, pago_por: session?.user?.id || null, pago_por_nome: meuNome || null },
       });
@@ -6358,37 +6448,37 @@ function OrdensPagamentoFinanceiroView({ session, setErro }) {
     } catch (e) { setErro(erroOP(e)); }
     finally { setSalvando(false); }
   }
-  async function estornar(op) {
-    if (!window.confirm(`Estornar a baixa da ${numeroOP(op.numero)}? Ela volta para "aberta".`)) return;
+  async function estornar(p) {
+    if (!window.confirm(`Estornar a baixa desta parcela da ${numeroOP(p.ordem?.numero)}? Ela volta para "aberta".`)) return;
     setErro("");
     try {
-      await sbRequest(`ordens_pagamento?id=eq.${op.id}`, session, { method: "PATCH", body: { status: "aberta", pago_em: null, valor_pago: null, conta_saida: null, obs_pagamento: null, pago_por: null, pago_por_nome: null } });
+      await sbRequest(`ordem_pagamento_parcelas?id=eq.${p.id}`, session, { method: "PATCH", body: { status: "aberta", pago_em: null, valor_pago: null, conta_saida: null, obs_pagamento: null, pago_por: null, pago_por_nome: null } });
       await carregar();
     } catch (e) { setErro(erroOP(e)); }
   }
 
   const q = busca.trim().toUpperCase();
-  const lista = rows.filter((o) => !q || [o.fornecedor_nome, o.orcamentos?.evento, o.orcamentos?.numero_or, numeroOP(o.numero), String(o.numero)].some((x) => String(x || "").toUpperCase().includes(q)));
-  const totAbertas = resumoAbertas.reduce((s, o) => s + Number(o.valor), 0);
-  const vencidas = resumoAbertas.filter((o) => o.vencimento && o.vencimento < hoje);
-  const em7 = (() => { const d = new Date(); d.setDate(d.getDate() + 7); const lim = d.toISOString().slice(0, 10); return resumoAbertas.filter((o) => o.vencimento && o.vencimento >= hoje && o.vencimento <= lim); })();
+  const lista = rows.filter((p) => !q || [p.ordem?.fornecedor_nome, p.ordem?.orcamentos?.evento, p.ordem?.orcamentos?.numero_or, numeroOP(p.ordem?.numero), String(p.ordem?.numero), p.descricao].some((x) => String(x || "").toUpperCase().includes(q)));
+  const soma = (l) => l.reduce((s, o) => s + Number(o.valor), 0);
+  const vencidas = abertas.filter((o) => o.vencimento && o.vencimento < hoje);
+  const em7 = (() => { const d = new Date(); d.setDate(d.getDate() + 7); const lim = d.toISOString().slice(0, 10); return abertas.filter((o) => o.vencimento && o.vencimento >= hoje && o.vencimento <= lim); })();
   const totPagasMes = pagasMes.reduce((s, o) => s + Number(o.valor_pago ?? o.valor), 0);
   const th = { padding: "10px 12px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4, whiteSpace: "nowrap" };
   const td = { padding: "9px 12px", fontSize: 13, verticalAlign: "top" };
-  const soma = (l) => l.reduce((s, o) => s + Number(o.valor), 0);
+  const imprimir = (op) => { if (!imprimirOrdemPagamento(op)) setErro("O navegador bloqueou a janela. Libere pop-ups para este site."); };
 
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 18 }}>
-        <Card><div style={{ fontSize: 12, color: MUTED }}>Ordens em aberto</div><div style={{ fontSize: 24, fontWeight: 700, color: GOLD, fontFamily: FONT_MONO }}>{brl(totAbertas)}</div><div style={{ fontSize: 11, color: MUTED }}>{resumoAbertas.length} ordem(ns)</div></Card>
-        <Card><div style={{ fontSize: 12, color: MUTED }}>Vencidas</div><div style={{ fontSize: 24, fontWeight: 700, color: vencidas.length ? DANGER : NAVY, fontFamily: FONT_MONO }}>{brl(soma(vencidas))}</div><div style={{ fontSize: 11, color: MUTED }}>{vencidas.length} ordem(ns)</div></Card>
-        <Card><div style={{ fontSize: 12, color: MUTED }}>Vencem em 7 dias</div><div style={{ fontSize: 24, fontWeight: 700, color: NAVY, fontFamily: FONT_MONO }}>{brl(soma(em7))}</div><div style={{ fontSize: 11, color: MUTED }}>{em7.length} ordem(ns)</div></Card>
-        <Card><div style={{ fontSize: 12, color: MUTED }}>Pagas neste mês</div><div style={{ fontSize: 24, fontWeight: 700, color: OK, fontFamily: FONT_MONO }}>{brl(totPagasMes)}</div><div style={{ fontSize: 11, color: MUTED }}>{pagasMes.length} ordem(ns)</div></Card>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>A pagar (em aberto)</div><div style={{ fontSize: 24, fontWeight: 700, color: GOLD, fontFamily: FONT_MONO }}>{brl(soma(abertas))}</div><div style={{ fontSize: 11, color: MUTED }}>{abertas.length} parcela(s)</div></Card>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Vencidas</div><div style={{ fontSize: 24, fontWeight: 700, color: vencidas.length ? DANGER : NAVY, fontFamily: FONT_MONO }}>{brl(soma(vencidas))}</div><div style={{ fontSize: 11, color: MUTED }}>{vencidas.length} parcela(s)</div></Card>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Vencem em 7 dias</div><div style={{ fontSize: 24, fontWeight: 700, color: NAVY, fontFamily: FONT_MONO }}>{brl(soma(em7))}</div><div style={{ fontSize: 11, color: MUTED }}>{em7.length} parcela(s)</div></Card>
+        <Card><div style={{ fontSize: 12, color: MUTED }}>Pagas neste mês</div><div style={{ fontSize: 24, fontWeight: 700, color: OK, fontFamily: FONT_MONO }}>{brl(totPagasMes)}</div><div style={{ fontSize: 11, color: MUTED }}>{pagasMes.length} parcela(s)</div></Card>
       </div>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
         <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={selStyle}>
-          <option value="aberta">A pagar (abertas)</option><option value="paga">Pagas</option><option value="cancelada">Canceladas</option><option value="todas">Todas</option>
+          <option value="aberta">A pagar (abertas)</option><option value="paga">Pagas</option><option value="todas">Todas</option><option value="cancelada">Ordens canceladas</option>
         </select>
         <select value={empresa} onChange={(e) => setEmpresa(e.target.value)} style={selStyle}>
           <option value="todas">Prosign e VS</option><option value="prosign">Prosign</option><option value="vs">VS</option>
@@ -6398,50 +6488,69 @@ function OrdensPagamentoFinanceiroView({ session, setErro }) {
       </div>
 
       <Card style={{ padding: 0, overflowX: "auto" }}>
-        <table className="tab-cartoes" style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+        <table className="tab-cartoes" style={{ width: "100%", borderCollapse: "collapse", minWidth: 1000 }}>
           <thead><tr style={{ background: BG }}>
-            {["Nº", "Vencimento", "Favorecido", "Projeto", "Valor", "Forma / dados", "Solicitado por", "Situação", ""].map((h) => <th key={h} style={{ ...th, textAlign: h === "Valor" ? "right" : "left" }}>{h}</th>)}
+            {["Ordem", "Vencimento", "Favorecido", "Projeto", "Valor", "Forma / dados", "Solicitado por", "Situação", ""].map((h) => <th key={h} style={{ ...th, textAlign: h === "Valor" ? "right" : "left" }}>{h}</th>)}
           </tr></thead>
           <tbody>
-            {!carregando && lista.length === 0 && <tr><td colSpan={9} style={{ ...td, color: MUTED }}>Nenhuma ordem de pagamento {filtro === "aberta" ? "em aberto" : "neste filtro"}.</td></tr>}
-            {lista.map((o) => {
-              const venc = o.status === "aberta" && o.vencimento && o.vencimento < hoje;
+            {!carregando && lista.length === 0 && <tr><td colSpan={9} style={{ ...td, color: MUTED }}>Nada {filtro === "aberta" ? "a pagar" : "neste filtro"}.</td></tr>}
+            {lista.map((p) => {
+              const o = p.ordem || {};
+              const ps = parcelasDaOrdem(o);
+              const idx = ps.findIndex((x) => x.id === p.id);
+              const nParc = ps.length;
+              const cancelada = o.status === "cancelada";
+              const venc = !cancelada && p.status === "aberta" && p.vencimento && p.vencimento < hoje;
               return (
-                <React.Fragment key={o.id}>
-                  <tr style={{ borderTop: `1px solid ${BORDER}`, opacity: o.status === "cancelada" ? 0.55 : 1 }}>
-                    <td data-label="Nº" style={{ ...td, fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>{numeroOP(o.numero)}{o.empresa === "vs" && <div style={{ fontSize: 10, color: "#7A5C99", fontWeight: 700 }}>VS</div>}</td>
-                    <td data-label="Vencimento" style={{ ...td, color: venc ? DANGER : TEXT, fontWeight: venc ? 700 : 400, whiteSpace: "nowrap" }}>{fmtDataBR(o.vencimento)}{venc && <div style={{ fontSize: 10 }}>VENCIDA</div>}</td>
-                    <td data-label="Favorecido" style={{ ...td, fontWeight: 600 }}>{o.fornecedor_nome}{o.descricao && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{o.descricao}</div>}</td>
+                <React.Fragment key={p.id}>
+                  <tr style={{ borderTop: `1px solid ${BORDER}`, opacity: cancelada ? 0.55 : 1 }}>
+                    <td data-label="Ordem" style={{ ...td, fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>
+                      {numeroOP(o.numero)}
+                      {nParc > 1 && <div style={{ fontSize: 11, color: "#1D6FA5", fontWeight: 700, fontFamily: FONT_BODY }}>parcela {idx + 1}/{nParc}</div>}
+                      {o.empresa === "vs" && <div style={{ fontSize: 10, color: "#7A5C99", fontWeight: 700 }}>VS</div>}
+                    </td>
+                    <td data-label="Vencimento" style={{ ...td, color: venc ? DANGER : TEXT, fontWeight: venc ? 700 : 400, whiteSpace: "nowrap" }}>{fmtDataBR(p.vencimento)}{venc && <div style={{ fontSize: 10 }}>VENCIDA</div>}</td>
+                    <td data-label="Favorecido" style={{ ...td, fontWeight: 600 }}>{o.fornecedor_nome}{(p.descricao || o.descricao) && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{[p.descricao, o.descricao].filter(Boolean).join(" · ")}</div>}</td>
                     <td data-label="Projeto" style={td}>{o.orcamentos?.numero_or ? `PR ${o.orcamentos.numero_or} · ` : ""}{o.orcamentos?.evento || "—"}<div style={{ fontSize: 11, color: MUTED }}>{o.orcamentos?.clientes?.nome || ""}</div></td>
-                    <td data-label="Valor" style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(Number(o.valor))}{o.status === "paga" && Number(o.valor_pago) !== Number(o.valor) && o.valor_pago != null && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>pago {brl(Number(o.valor_pago))}</div>}</td>
+                    <td data-label="Valor" style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700 }}>
+                      {brl(Number(p.valor))}
+                      {nParc > 1 && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>de {brl(Number(o.valor))}</div>}
+                      {p.status === "paga" && p.valor_pago != null && Number(p.valor_pago) !== Number(p.valor) && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>pago {brl(Number(p.valor_pago))}</div>}
+                    </td>
                     <td data-label="Forma / dados" style={{ ...td, fontSize: 12, maxWidth: 240 }}><b>{formaPagLabel(o.forma_pagamento)}</b>{o.dados_pagamento && <div style={{ color: MUTED, wordBreak: "break-word" }}>{o.dados_pagamento}</div>}</td>
                     <td data-label="Solicitado por" style={{ ...td, fontSize: 12, color: MUTED }}>{o.criado_por_nome || "—"}<div>{fmtDataBR(o.criado_em)}</div></td>
-                    <td data-label="Situação" style={td}><BadgeOP status={o.status} />{o.status === "paga" && <div style={{ fontSize: 11, color: MUTED }}>{fmtDataBR(o.pago_em)}{o.conta_saida ? ` · ${o.conta_saida}` : ""}</div>}</td>
+                    <td data-label="Situação" style={td}>
+                      {cancelada ? <BadgeOP status="cancelada" /> : <BadgeOP status={p.status} />}
+                      {p.status === "paga" && <div style={{ fontSize: 11, color: MUTED }}>{fmtDataBR(p.pago_em)}{p.conta_saida ? ` · ${p.conta_saida}` : ""}</div>}
+                    </td>
                     <td data-label="" style={{ ...td, textAlign: "right", whiteSpace: "nowrap" }}>
-                      {o.status === "aberta" && <><button onClick={() => setBaixa(baixa?.id === o.id ? null : { id: o.id, pago_em: hoje, valor_pago: String(Number(o.valor)).replace(".", ","), conta_saida: "", obs_pagamento: "" })} style={{ ...btnGhostSmall, borderColor: OK, color: OK, fontWeight: 700 }}>{baixa?.id === o.id ? "Fechar" : "Dar baixa"}</button>{" "}</>}
-                      {o.status === "paga" && <><button onClick={() => estornar(o)} style={btnGhostSmall}>Estornar</button>{" "}</>}
-                      <button onClick={() => setDetalhe(detalhe === o.id ? null : o.id)} style={btnGhostSmall}>{detalhe === o.id ? "Menos" : "Detalhes"}</button>{" "}
-                      <button onClick={() => { if (!imprimirOrdemPagamento(o)) setErro("O navegador bloqueou a janela. Libere pop-ups para este site."); }} style={btnGhostSmall}>Imprimir</button>
+                      {!cancelada && p.status === "aberta" && <><button onClick={() => setBaixa(baixa?.id === p.id ? null : { id: p.id, pago_em: hoje, valor_pago: String(Number(p.valor)).replace(".", ","), conta_saida: "", obs_pagamento: "" })} style={{ ...btnGhostSmall, borderColor: OK, color: OK, fontWeight: 700 }}>{baixa?.id === p.id ? "Fechar" : "Dar baixa"}</button>{" "}</>}
+                      {!cancelada && p.status === "paga" && <><button onClick={() => estornar(p)} style={btnGhostSmall}>Estornar</button>{" "}</>}
+                      <button onClick={() => setDetalhe(detalhe === p.id ? null : p.id)} style={btnGhostSmall}>{detalhe === p.id ? "Menos" : "Detalhes"}</button>{" "}
+                      <button onClick={() => imprimir(o)} style={btnGhostSmall}>Imprimir</button>
                     </td>
                   </tr>
-                  {detalhe === o.id && (
+                  {detalhe === p.id && (
                     <tr style={{ background: "#F8FAFC" }}><td colSpan={9} style={{ padding: "10px 16px", fontSize: 12 }}>
+                      {nParc > 1 && (
+                        <div style={{ marginBottom: 4 }}><b>Parcelas:</b> {ps.map((x, i) => `${i + 1}/${nParc} ${x.descricao ? x.descricao + " " : ""}${brl(Number(x.valor))} venc. ${fmtDataBR(x.vencimento)} — ${x.status === "paga" ? `paga em ${fmtDataBR(x.pago_em)}` : "em aberto"}`).join(" · ")}</div>
+                      )}
                       {(o.ordem_pagamento_itens || []).length > 0
                         ? <div><b>Itens da composição:</b> {o.ordem_pagamento_itens.map((i) => `${i.descricao || "item"} (${brl(Number(i.valor))})`).join(" · ")}</div>
                         : <div style={{ color: MUTED }}>Ordem sem itens da composição (valor informado direto).</div>}
                       {o.obs && <div style={{ marginTop: 4 }}><b>Obs.:</b> {o.obs}</div>}
-                      {o.status === "paga" && <div style={{ marginTop: 4 }}><b>Baixa:</b> {fmtDataBR(o.pago_em)} · {brl(Number(o.valor_pago ?? o.valor))}{o.conta_saida ? ` · ${o.conta_saida}` : ""}{o.pago_por_nome ? ` · por ${o.pago_por_nome}` : ""}{o.obs_pagamento ? ` · ${o.obs_pagamento}` : ""}</div>}
-                      {o.status === "cancelada" && <div style={{ marginTop: 4 }}><b>Cancelada:</b> {o.cancelado_motivo || "—"}</div>}
+                      {p.status === "paga" && <div style={{ marginTop: 4 }}><b>Baixa:</b> {fmtDataBR(p.pago_em)} · {brl(Number(p.valor_pago ?? p.valor))}{p.conta_saida ? ` · ${p.conta_saida}` : ""}{p.pago_por_nome ? ` · por ${p.pago_por_nome}` : ""}{p.obs_pagamento ? ` · ${p.obs_pagamento}` : ""}</div>}
+                      {cancelada && <div style={{ marginTop: 4 }}><b>Ordem cancelada:</b> {o.cancelado_motivo || "—"}</div>}
                     </td></tr>
                   )}
-                  {baixa?.id === o.id && (
+                  {baixa?.id === p.id && (
                     <tr style={{ background: "#F1F8F4" }}><td colSpan={9} style={{ padding: 14 }}>
                       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
                         <Field label="Data do pagamento"><input type="date" style={inputStyle} value={baixa.pago_em} onChange={(e) => setBaixa({ ...baixa, pago_em: e.target.value })} /></Field>
                         <Field label="Valor pago (R$)"><input style={{ ...inputStyle, width: 140, fontFamily: FONT_MONO }} inputMode="decimal" value={baixa.valor_pago} onChange={(e) => setBaixa({ ...baixa, valor_pago: e.target.value })} /></Field>
                         <Field label="Conta / banco de saída"><input style={{ ...inputStyle, width: 200 }} value={baixa.conta_saida} placeholder="Ex.: Sicoob, Caixa..." onChange={(e) => setBaixa({ ...baixa, conta_saida: e.target.value })} /></Field>
                         <Field label="Observação"><input style={{ ...inputStyle, width: 260 }} value={baixa.obs_pagamento} placeholder="Ex.: comprovante enviado por e-mail" onChange={(e) => setBaixa({ ...baixa, obs_pagamento: e.target.value })} /></Field>
-                        <button onClick={() => confirmarBaixa(o)} disabled={salvando} style={{ ...btnPrimary, background: OK }}>{salvando ? "Salvando..." : "Confirmar pagamento"}</button>
+                        <button onClick={() => confirmarBaixa(p)} disabled={salvando} style={{ ...btnPrimary, background: OK }}>{salvando ? "Salvando..." : "Confirmar pagamento"}</button>
                       </div>
                     </td></tr>
                   )}
