@@ -595,9 +595,10 @@ export default function App() {
   // Assim que soubermos as permissões, manda pra primeira aba acessível.
   useEffect(() => {
     if (!session || carregandoAcesso || tab) return;
-    if (podeVerAba("rh")) setTab("rh");
-    else if (podeVerAba("comercial")) setTab("comercial");
+    // administrador e comercial: Dashboard do Comercial; financeiro: tela de alertas do Financeiro
+    if (isAdmin || temAcessoArea("comercial")) setTab("comercial");
     else if (podeVerAba("financeiro")) setTab("financeiro");
+    else if (podeVerAba("rh")) setTab("rh");
     else if (podeVerAba("cadastros")) setTab("cadastros");
     else if (podeVerAba("resultados")) setTab("resultados");
     else if (podeVerAba("usuarios")) setTab("usuarios");
@@ -727,11 +728,11 @@ function LoginScreen({ onLogin }) {
 // ---------- Header ----------
 function Header({ tab, setTab, onLogout, podeVerAba, celAtivo, onAlternarCelular }) {
   const items = [
-    { id: "rh", label: "Recursos Humanos", icon: Users },
     { id: "comercial", label: "Comercial", icon: TrendingUp },
     { id: "financeiro", label: "Financeiro", icon: Wallet },
     { id: "cadastros", label: "Cadastros", icon: Briefcase },
     { id: "resultados", label: "Resultados", icon: FileBarChart },
+    { id: "rh", label: "Recursos Humanos", icon: Users },
     { id: "usuarios", label: "Usuários", icon: UserCog },
   ].filter((it) => podeVerAba(it.id));
   return (
@@ -6564,8 +6565,158 @@ function OrdensPagamentoFinanceiroView({ session, setErro }) {
   );
 }
 
+// =========================================================
+// Financeiro · Tela inicial (alertas): ordens de pagamento, contas a pagar e a receber
+// =========================================================
+function faixaVencimento(venc, hoje) {
+  if (!venc) return "sem";
+  if (venc < hoje) return "vencida";
+  if (venc === hoje) return "hoje";
+  const d = new Date(hoje + "T12:00:00"); d.setDate(d.getDate() + 7);
+  return venc <= d.toISOString().slice(0, 10) ? "semana" : "depois";
+}
+const FAIXAS_VENC = [
+  { id: "vencida", label: "Vencidas", cor: "#A6394A" },
+  { id: "hoje", label: "Hoje", cor: "#B8902E" },
+  { id: "semana", label: "Próx. 7 dias", cor: "#1D6FA5" },
+  { id: "depois", label: "Depois", cor: "#6B7280" },
+  { id: "sem", label: "Sem data", cor: "#6B7280" },
+];
+
+function BlocoAlerta({ titulo, cor, itens, hoje, vazio, onVerTodos, rotuloVerTodos, aviso }) {
+  const porFaixa = {};
+  FAIXAS_VENC.forEach((f) => { porFaixa[f.id] = { n: 0, total: 0 }; });
+  itens.forEach((i) => { const f = faixaVencimento(i.venc, hoje); porFaixa[f].n += 1; porFaixa[f].total += Number(i.valor) || 0; });
+  const total = itens.reduce((s, i) => s + (Number(i.valor) || 0), 0);
+  const ordem = { vencida: 0, hoje: 1, semana: 2, sem: 3, depois: 4 };
+  const mostrar = [...itens].sort((a, b) => (ordem[faixaVencimento(a.venc, hoje)] - ordem[faixaVencimento(b.venc, hoje)]) || String(a.venc || "9").localeCompare(String(b.venc || "9"))).slice(0, 8);
+  return (
+    <Card style={{ padding: 0, overflow: "hidden", borderTop: `4px solid ${cor}`, marginBottom: 18 }}>
+      <div style={{ padding: "14px 18px 10px", display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: NAVY }}>{titulo}</div>
+          <div style={{ fontSize: 12, color: MUTED }}>{itens.length} em aberto · <b style={{ fontFamily: FONT_MONO, color: TEXT }}>{brl(total)}</b></div>
+        </div>
+        {onVerTodos && <button onClick={onVerTodos} style={btnGhostSmall}>{rotuloVerTodos || "Ver todos"} →</button>}
+      </div>
+      {aviso && <div style={{ padding: "0 18px 10px", fontSize: 12, color: MUTED }}>{aviso}</div>}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: 8, padding: "0 18px 12px" }}>
+        {FAIXAS_VENC.filter((f) => f.id !== "sem" || porFaixa.sem.n > 0).map((f) => (
+          <div key={f.id} style={{ border: `1px solid ${porFaixa[f.id].n && (f.id === "vencida" || f.id === "hoje") ? f.cor : BORDER}`, background: porFaixa[f.id].n && f.id === "vencida" ? "#FDF2F3" : "#fff", borderRadius: 8, padding: "8px 10px" }}>
+            <div style={{ fontSize: 11, color: f.cor, fontWeight: 700, textTransform: "uppercase", letterSpacing: 0.3 }}>{f.label} · {porFaixa[f.id].n}</div>
+            <div style={{ fontFamily: FONT_MONO, fontWeight: 700, fontSize: 15, color: porFaixa[f.id].n ? TEXT : MUTED }}>{brl(porFaixa[f.id].total)}</div>
+          </div>
+        ))}
+      </div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <tbody>
+          {mostrar.length === 0 && <tr><td style={{ padding: "10px 18px", color: MUTED, borderTop: `1px solid ${BORDER}` }}>{vazio}</td></tr>}
+          {mostrar.map((i) => {
+            const f = faixaVencimento(i.venc, hoje);
+            const fx = FAIXAS_VENC.find((x) => x.id === f);
+            return (
+              <tr key={i.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={{ padding: "8px 18px", whiteSpace: "nowrap", width: 110, color: f === "vencida" ? DANGER : f === "hoje" ? GOLD : TEXT, fontWeight: f === "vencida" || f === "hoje" ? 700 : 400 }}>
+                  {fmtDataBR(i.venc)}
+                  <div style={{ fontSize: 10, color: fx.cor, fontWeight: 700 }}>{f === "vencida" ? "VENCIDA" : f === "hoje" ? "HOJE" : ""}</div>
+                </td>
+                <td style={{ padding: "8px 10px" }}>
+                  <div style={{ fontWeight: 600 }}>{i.titulo}</div>
+                  {i.sub && <div style={{ fontSize: 11, color: MUTED }}>{i.sub}</div>}
+                </td>
+                <td style={{ padding: "8px 18px", textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700, whiteSpace: "nowrap" }}>{brl(Number(i.valor))}</td>
+              </tr>
+            );
+          })}
+          {itens.length > mostrar.length && <tr><td colSpan={3} style={{ padding: "8px 18px", fontSize: 12, color: MUTED, borderTop: `1px solid ${BORDER}` }}>e mais {itens.length - mostrar.length}...</td></tr>}
+        </tbody>
+      </table>
+    </Card>
+  );
+}
+
+function FinanceiroInicioView({ session, setErro, irPara }) {
+  const [carregando, setCarregando] = useState(true);
+  const [parcelas, setParcelas] = useState(null); // null = módulo de ordens ainda não instalado
+  const [contas, setContas] = useState([]);
+  const [faturas, setFaturas] = useState([]);
+  const [fila, setFila] = useState([]);
+  const hoje = hojeISO();
+
+  async function carregar() {
+    setCarregando(true);
+    try {
+      const [pc, lc, ft, fl] = await Promise.all([
+        sbRequest("ordem_pagamento_parcelas?select=id,numero,valor,vencimento,descricao,ordem:ordens_pagamento!inner(numero,fornecedor_nome,status,empresa,valor,orcamentos(evento,numero_or),ordem_pagamento_parcelas(id))&status=eq.aberta&ordem.status=neq.cancelada&order=vencimento.asc.nullslast&limit=1000", session).catch(() => null),
+        sbRequest("lancamentos_fin?select=id,empresa,tipo,vencimento,fornecedor_cliente,historico,valor,situacao,numero_conta&situacao=neq.quitada&order=vencimento.asc.nullslast&limit=2000", session).catch(() => []),
+        sbRequest("faturamento?select=id,valor,previsao_recebimento,data_faturamento,nota_fiscal,clientes:pessoas(nome),orcamentos(evento,numero_or)&data_recebimento=is.null&order=previsao_recebimento.asc.nullslast&limit=1000", session).catch(() => []),
+        sbRequest("orcamentos?select=id,evento,numero_or,valor,autorizado_em,clientes:pessoas(nome)&status=eq.autorizado_faturamento&order=autorizado_em.asc&limit=500", session).catch(() => []),
+      ]);
+      setParcelas(pc); setContas(lc || []); setFaturas(ft || []); setFila(fl || []);
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setCarregando(false); }
+  }
+  useEffect(() => { carregar(); }, []); // eslint-disable-line
+
+  if (carregando) return <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>;
+
+  const itensOP = (parcelas || []).map((p) => {
+    const o = p.ordem || {};
+    const n = (o.ordem_pagamento_parcelas || []).length;
+    return {
+      id: p.id, venc: p.vencimento, valor: p.valor,
+      titulo: `${o.fornecedor_nome || "—"}${n > 1 ? ` · parcela ${p.numero}/${n}` : ""}`,
+      sub: [numeroOP(o.numero), o.orcamentos?.numero_or ? `PR ${o.orcamentos.numero_or}` : "", o.orcamentos?.evento, p.descricao].filter(Boolean).join(" · "),
+    };
+  });
+  const lancItem = (l) => ({ id: l.id, venc: l.vencimento, valor: l.valor, titulo: l.fornecedor_cliente || l.historico || "—", sub: [l.empresa === "vs" ? "VS" : "Prosign", l.numero_conta, l.historico && l.fornecedor_cliente ? l.historico : ""].filter(Boolean).join(" · ") });
+  const pagar = contas.filter((l) => l.tipo === "pagar").map(lancItem);
+  const receber = contas.filter((l) => l.tipo === "receber").map(lancItem);
+  const itensFat = faturas.map((f) => ({ id: f.id, venc: f.previsao_recebimento, valor: f.valor, titulo: f.clientes?.nome || "—", sub: [f.orcamentos?.numero_or ? `PR ${f.orcamentos.numero_or}` : "", f.orcamentos?.evento, f.nota_fiscal ? `NF ${f.nota_fiscal}` : "", `faturado em ${fmtDataBR(f.data_faturamento)}`].filter(Boolean).join(" · ") }));
+
+  const urgente = (l) => l.filter((i) => ["vencida", "hoje"].includes(faixaVencimento(i.venc, hoje)));
+  const somaL = (l) => l.reduce((s, i) => s + Number(i.valor || 0), 0);
+  const pagarUrg = [...urgente(itensOP), ...urgente(pagar)];
+  const receberAtras = [...itensFat, ...receber].filter((i) => faixaVencimento(i.venc, hoje) === "vencida");
+  const totalFila = fila.reduce((s, o) => s + Number(o.valor || 0), 0);
+  const cardTopo = (rot, val, sub, cor, onClick) => (
+    <Card onClick={onClick} style={{ padding: 16, cursor: onClick ? "pointer" : "default", borderLeft: `5px solid ${cor}` }}>
+      <div style={{ fontSize: 12, color: MUTED }}>{rot}</div>
+      <div style={{ fontSize: 24, fontWeight: 700, color: cor, fontFamily: FONT_MONO }}>{val}</div>
+      <div style={{ fontSize: 11, color: MUTED }}>{sub}</div>
+    </Card>
+  );
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, gap: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, color: MUTED }}>Situação de hoje, {fmtDataBR(hoje)}</div>
+        <button onClick={carregar} style={btnGhostSmall}>Atualizar</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, marginBottom: 20 }}>
+        {cardTopo("Pagar hoje ou vencido", brl(somaL(pagarUrg)), `${pagarUrg.length} pagamento(s) — ordens e contas`, pagarUrg.length ? DANGER : OK, () => irPara("ordens"))}
+        {cardTopo("Ordens de pagamento em aberto", brl(somaL(itensOP)), parcelas === null ? "módulo de ordens não instalado" : `${itensOP.length} parcela(s)`, GOLD, () => irPara("ordens"))}
+        {cardTopo("Recebimentos atrasados", brl(somaL(receberAtras)), `${receberAtras.length} conta(s)/faturamento(s)`, receberAtras.length ? DANGER : OK, () => irPara("faturamento"))}
+        {cardTopo("Aguardando faturamento", brl(totalFila), `${fila.length} orçamento(s) autorizado(s)`, "#1D6FA5", () => irPara("faturamento"))}
+      </div>
+
+      <BlocoAlerta titulo="Ordens de pagamento a efetuar" cor={GOLD} itens={itensOP} hoje={hoje}
+        vazio={parcelas === null ? "Rode o SQL das ordens de pagamento para ativar." : "Nenhuma ordem de pagamento em aberto."}
+        onVerTodos={() => irPara("ordens")} rotuloVerTodos="Ir para ordens e dar baixa" />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(420px, 100%), 1fr))", gap: 18 }}>
+        <BlocoAlerta titulo="Contas a pagar" cor={DANGER} itens={pagar} hoje={hoje} vazio="Nenhuma conta a pagar em aberto."
+          onVerTodos={() => irPara("lancamentos")} rotuloVerTodos="Lançamentos" aviso="Lançamentos em aberto do financeiro (importados ou lançados à mão)." />
+        <BlocoAlerta titulo="Contas a receber" cor={OK} itens={receber} hoje={hoje} vazio="Nenhuma conta a receber em aberto."
+          onVerTodos={() => irPara("lancamentos")} rotuloVerTodos="Lançamentos" aviso="Lançamentos em aberto do financeiro (importados ou lançados à mão)." />
+      </div>
+      <BlocoAlerta titulo="Faturamentos a receber" cor="#1D6FA5" itens={itensFat} hoje={hoje} vazio="Nenhum faturamento aguardando recebimento."
+        onVerTodos={() => irPara("faturamento")} rotuloVerTodos="Faturamento" aviso="Pela previsão de recebimento informada no faturamento." />
+    </div>
+  );
+}
+
 function FinanceiroView({ session, setErro }) {
-  const [subtab, setSubtab] = useState("faturamento");
+  const [subtab, setSubtab] = useState("inicio");
   const [centros, setCentros] = useState([]);
   const [carregandoCentros, setCarregandoCentros] = useState(true);
 
@@ -6578,6 +6729,7 @@ function FinanceiroView({ session, setErro }) {
   useEffect(() => { carregarCentros(); }, []); // eslint-disable-line
 
   const SUBABAS = [
+    { id: "inicio", label: "Início (alertas)" },
     { id: "faturamento", label: "Faturamento" },
     { id: "ordens", label: "Ordens de pagamento" },
     { id: "lancamentos", label: "Lançamentos" },
@@ -6597,8 +6749,9 @@ function FinanceiroView({ session, setErro }) {
         ))}
       </div>
       {subtab === "faturamento" && <FaturamentoFinanceiroView session={session} setErro={setErro} />}
+      {subtab === "inicio" && <FinanceiroInicioView session={session} setErro={setErro} irPara={setSubtab} />}
       {subtab === "ordens" && <OrdensPagamentoFinanceiroView session={session} setErro={setErro} />}
-      {subtab !== "faturamento" && subtab !== "ordens" && carregandoCentros && <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>}
+      {!["faturamento", "ordens", "inicio"].includes(subtab) && carregandoCentros && <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>}
       {subtab === "lancamentos" && !carregandoCentros && <LancamentosFinView session={session} setErro={setErro} centros={centros} />}
       {subtab === "caixa" && <CaixaFinView session={session} setErro={setErro} />}
       {subtab === "importar" && !carregandoCentros && <ImportarFinView session={session} setErro={setErro} centros={centros} />}
