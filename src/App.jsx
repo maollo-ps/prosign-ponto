@@ -2363,6 +2363,20 @@ function faturamentoFromRow(r) {
   };
 }
 
+// Soma do faturamento por mês: quando o mês tem o "total do mês" vindo da planilha (sem orçamento e com valor),
+// vale só esse total; os faturamentos detalhados daquele mês já estão dentro dele.
+function somarFaturamentoMes(rows) {
+  const lista = rows || [];
+  const total = lista.filter((r) => !(r.orcamento_id ?? r.orcamentoId) && Number(r.valor) > 0);
+  const base = total.length ? total : lista.filter((r) => (r.orcamento_id ?? r.orcamentoId));
+  return base.reduce((s, r) => s + Number(r.valor || 0), 0);
+}
+function somarFaturamentoPorMes(rows) {
+  const meses = {};
+  (rows || []).forEach((r) => { const k = String(r.mes_ref ?? r.mesRef ?? "").slice(0, 7); (meses[k] = meses[k] || []).push(r); });
+  return Object.fromEntries(Object.entries(meses).map(([k, l]) => [k, somarFaturamentoMes(l)]));
+}
+
 function previsaoFromRow(r) { return { id: r.id, ano: r.ano, mes: r.mes, valor: Number(r.valor_previsto || 0) }; }
 
 const STATUS_ORCAMENTO = [
@@ -4158,7 +4172,8 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
     finally { setSalvando(false); }
   }
 
-  const total = registros.reduce((s, r) => s + r.valor, 0);
+  const total = somarFaturamentoMes(registros);
+  const temTotalPlanilha = registros.some((r) => !r.orcamentoId && r.valor > 0);
 
   return (
     <div>
@@ -4229,7 +4244,7 @@ function FaturamentoComercialView({ session, setErro, clientes }) {
               <tfoot>
                 <tr style={{ borderTop: `2px solid ${BORDER}` }}>
                   <td colSpan={3} style={{ padding: "10px 14px", fontWeight: 700 }}>Total do mês</td>
-                  <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(total)}</td>
+                  <td style={{ padding: "10px 14px", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(total)}{temTotalPlanilha && <div style={{ fontSize: 10, color: MUTED, fontWeight: 400, fontFamily: FONT_BODY }}>vale o total da planilha (detalhes já incluídos)</div>}</td>
                   <td></td>
                 </tr>
               </tfoot>
@@ -4397,6 +4412,17 @@ function FaturamentoFinanceiroView({ session, setErro }) {
   async function confirmarFaturar(o) {
     if (!form.valor || form.valor <= 0) { setErro("Informe o valor faturado."); return; }
     if (!form.data) { setErro("Informe a data do faturamento."); return; }
+    const mesEvento = String(o.mes_ref || "").slice(0, 7);
+    if (mesEvento && form.data.slice(0, 7) > mesEvento && !window.confirm(`O evento é de ${mesRefExtenso(mesEvento)}, mas a data do faturamento está em ${mesRefExtenso(form.data.slice(0, 7))}.\n\nO faturamento vai contar no mês da data informada. Se a nota fiscal foi emitida na época do evento, cancele e coloque a data da nota.\n\nContinuar com ${fmtData(form.data)}?`)) return;
+    // faturamento lançado antes pela tela antiga (sem passar pelo financeiro): substitui para não duplicar
+    try {
+      const antigos = (await sbRequest(`faturamento?select=id,valor,data_faturamento,nota_fiscal&orcamento_id=eq.${o.id}`, session)) || [];
+      if (antigos.length) {
+        const txt = antigos.map((a) => `${brl(Number(a.valor))} em ${fmtData(a.data_faturamento)}${a.nota_fiscal ? ` (NF ${a.nota_fiscal})` : ""}`).join("\n");
+        if (!window.confirm(`Este orçamento já tem faturamento lançado antes:\n${txt}\n\nEle será SUBSTITUÍDO por este novo, para não contar duas vezes. Continuar?`)) return;
+        for (const a of antigos) await sbRequest(`faturamento?id=eq.${a.id}`, session, { method: "DELETE" });
+      }
+    } catch (e) { setErro(msgSupabase(e)); return; }
     if (!window.confirm(`Marcar "${o.evento}" como FATURADO por ${brl(form.valor)}?\n\nDepois disso ninguém mais poderá alterar este orçamento.`)) return;
     setSalvando(true);
     setErro("");
@@ -4541,8 +4567,14 @@ function FaturamentoFinanceiroView({ session, setErro }) {
                   <tr style={{ background: "#F3F7FB" }}>
                     <td colSpan={7} style={{ padding: 16 }}>
                       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
-                        <Field label="Data do faturamento">
+                        <Field label="Data do faturamento (data da nota fiscal)">
                           <input type="date" value={form.data} onChange={(e) => setForm({ ...form, data: e.target.value })} style={inputStyle} />
+                          {String(o.mes_ref || "").slice(0, 7) < hojeLocal().slice(0, 7) && (
+                            <div style={{ fontSize: 11, color: GOLD, marginTop: 4, maxWidth: 260 }}>
+                              Evento de {mesRefExtenso(String(o.mes_ref).slice(0, 7))}. Use a data em que a nota foi emitida.{" "}
+                              {o.data_evento && <button type="button" onClick={() => setForm({ ...form, data: o.data_evento })} style={{ background: "none", border: "none", color: NAVY, textDecoration: "underline", cursor: "pointer", padding: 0, fontSize: 11 }}>usar data do evento</button>}
+                            </div>
+                          )}
                         </Field>
                         <Field label="Valor faturado (R$)">
                           <input type="number" step="0.01" value={form.valor} onChange={(e) => setForm({ ...form, valor: parseFloat(e.target.value) || 0 })} style={{ ...inputStyle, width: 150, fontFamily: FONT_MONO }} />
@@ -6059,6 +6091,7 @@ const erroOP = (e) => {
   const m = String(e?.message || "");
   const falta = /(does not exist|schema cache|relation|Could not find)/i.test(m);
   if (falta && /ordem_pagamento_parcelas/.test(m)) return "Rode antes o SQL migracao_ordens_parcelas.sql no Supabase.";
+  if (/orcamento_id/.test(m) && /null/i.test(m)) return "Para gerar ordem sem orçamento, rode antes o SQL migracao_ordens_avulsas.sql no Supabase.";
   if (falta && /ordens_pagamento|ordem_pagamento_itens/.test(m)) return "Rode antes o SQL migracao_ordens_pagamento.sql no Supabase.";
   return msgSupabase(e);
 };
@@ -6141,46 +6174,30 @@ function OrdensPagamentoComercialView({ session, setErro }) {
 }
 
 // ---------- Comercial: gerar ordens de um orçamento ----------
-function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
+// formulário de nova ordem (usado no Comercial, dentro do orçamento, e no Financeiro, avulsa)
+function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], itemNaOrdem = {}, onGerada, onFechar, modoFinanceiro = false }) {
   const meuNome = useMeuNome(session);
-  const [orc, setOrc] = useState(null);
-  const [itens, setItens] = useState([]);
-  const [ops, setOps] = useState([]);
   const [fornecedores, setFornecedores] = useState([]);
-  const [carregando, setCarregando] = useState(true);
   const [salvando, setSalvando] = useState(false);
-  const [aviso, setAviso] = useState("");
+  const [orcsAprovados, setOrcsAprovados] = useState([]);
+  const [orcTexto, setOrcTexto] = useState("");
+  const [empresaAvulsa, setEmpresaAvulsa] = useState("prosign");
   const vazio = { selecionados: [], fornecedorNome: "", fornecedorId: null, valor: "", valorManual: false, vencimento: "", forma: "pix", dados: "", descricao: "", obs: "", parcelado: false, parcelas: [] };
   const [f, setF] = useState(vazio);
-
-  async function carregar() {
-    setCarregando(true);
-    try {
-      const [o, its, os] = await Promise.all([
-        sbRequest(`orcamentos?select=id,evento,numero_or,data_evento,valor,status,empresa,local,clientes:pessoas(nome)&id=eq.${orcamentoId}`, session),
-        sbRequest(`orcamento_itens?select=*&orcamento_id=eq.${orcamentoId}&order=ordem.asc`, session),
-        sbRequest(`ordens_pagamento?select=${SELECT_OP}&orcamento_id=eq.${orcamentoId}&order=numero.desc`, session),
-      ]);
-      setOrc((o || [])[0] || null);
-      setItens((its || []).map((r) => ({ ...itemFromRow(r), fornecedorTxt: r.fornecedor || "" })));
-      setOps(os || []);
-    } catch (e) { setErro(erroOP(e)); }
-    finally { setCarregando(false); }
-  }
   useEffect(() => {
-    carregar();
     sbRequest("pessoas?select=id,nome,razao_social,documento,bancos&fornecedor=eq.true&ativo=eq.true&order=nome.asc&limit=1000", session)
       .then((r) => setFornecedores(r || [])).catch(() => {});
-  }, [orcamentoId]); // eslint-disable-line
-
-  // item → ordem ativa (aberta ou paga) em que já está
-  const itemNaOrdem = {};
-  ops.filter((o) => o.status !== "cancelada").forEach((o) => (o.ordem_pagamento_itens || []).forEach((i) => { if (i.orcamento_item_id) itemNaOrdem[i.orcamento_item_id] = o; }));
-  const custoPrevisto = itens.reduce((s, i) => s + custoDoItem(i), 0);
-  const ativas = ops.filter((o) => o.status !== "cancelada");
-  const gerado = ativas.reduce((s, o) => s + Number(o.valor), 0);
-  const pago = ativas.reduce((s, o) => s + pagoDaOrdem(o), 0);
+    if (modoFinanceiro) {
+      sbRequest(`orcamentos?select=id,evento,numero_or,empresa,data_evento&status=in.(${STATUS_VENDA.join(",")})&order=data_evento.desc.nullslast&limit=400`, session)
+        .then((r) => setOrcsAprovados(r || [])).catch(() => {});
+    }
+  }, []); // eslint-disable-line
+  const rotuloOrc = (o) => `${o.numero_or ? `PR ${o.numero_or} · ` : ""}${o.evento}${o.data_evento ? ` (${fmtDataBR(o.data_evento)})` : ""}`;
+  const orcVinculado = modoFinanceiro ? orcsAprovados.find((o) => rotuloOrc(o) === orcTexto.trim()) || null : orc;
   const somaSel = itens.filter((i) => f.selecionados.includes(i.id)).reduce((s, i) => s + custoDoItem(i), 0);
+  const th = { padding: "8px 10px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4, background: BG, whiteSpace: "nowrap" };
+  const td = { padding: "8px 10px", fontSize: 13, borderTop: `1px solid ${BORDER}`, verticalAlign: "middle" };
+  const catLabel = (c) => CATEGORIAS_ITEM.find((x) => x.id === c)?.label || c;
 
   function escolherFornecedor(nome) {
     const p = fornecedores.find((x) => (x.nome || "").trim().toUpperCase() === nome.trim().toUpperCase() || (x.razao_social || "").trim().toUpperCase() === nome.trim().toUpperCase());
@@ -6232,12 +6249,13 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
       if (parcelasGravar.some((p) => !(p.valor > 0))) { setErro("Toda parcela precisa ter valor."); return; }
       if (somaParcelas !== Math.round(valor * 100)) { setErro(`A soma das parcelas (${brl(somaParcelas / 100)}) tem que dar o valor da ordem (${brl(valor)}).`); return; }
     }
-    setSalvando(true); setErro(""); setAviso("");
+    if (modoFinanceiro && orcTexto.trim() && !orcVinculado) { setErro("Orçamento não encontrado na lista. Escolha um da lista ou deixe em branco."); return; }
+    setSalvando(true); setErro("");
     try {
       const [op] = await sbRequest("ordens_pagamento", session, {
         method: "POST",
         body: {
-          orcamento_id: orcamentoId, empresa: orc?.empresa === "vs" ? "vs" : "prosign",
+          orcamento_id: orcVinculado?.id || null, empresa: orcVinculado ? (orcVinculado.empresa === "vs" ? "vs" : "prosign") : empresaAvulsa,
           fornecedor_id: f.fornecedorId, fornecedor_nome: f.fornecedorNome.trim(), valor: Math.round(valor * 100) / 100,
           vencimento: parcelasGravar[0].vencimento, forma_pagamento: f.forma, dados_pagamento: f.dados.trim() || null,
           descricao: f.descricao.trim() || null, obs: f.obs.trim() || null, criado_por_nome: meuNome || null,
@@ -6251,48 +6269,32 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
         throw e2;
       }
       if (linhas.length) await sbRequest("ordem_pagamento_itens", session, { method: "POST", body: linhas, extraHeaders: { Prefer: "return=minimal" } });
-      setAviso(`${numeroOP(op.numero)} gerada para ${op.fornecedor_nome} (${brl(Number(op.valor))}${parcelasGravar.length > 1 ? ` em ${parcelasGravar.length} parcelas` : ""}). Ela já aparece para o Financeiro.`);
-      setF(vazio);
-      await carregar();
+      onGerada?.(`${numeroOP(op.numero)} gerada para ${op.fornecedor_nome} (${brl(Number(op.valor))}${parcelasGravar.length > 1 ? ` em ${parcelasGravar.length} parcelas` : ""}). Ela já aparece para o Financeiro.`);
+      setF(vazio); setOrcTexto("");
     } catch (e) { setErro(erroOP(e)); }
     finally { setSalvando(false); }
   }
-  async function cancelar(op) {
-    const motivo = window.prompt(`Cancelar a ${numeroOP(op.numero)} (${op.fornecedor_nome}, ${brl(Number(op.valor))})?\n\nMotivo:`);
-    if (motivo === null) return;
-    setErro("");
-    try {
-      await sbRequest(`ordens_pagamento?id=eq.${op.id}`, session, { method: "PATCH", body: { status: "cancelada", cancelado_motivo: motivo.trim() || "Cancelada pelo comercial" } });
-      await carregar();
-    } catch (e) { setErro(erroOP(e)); }
-  }
-
-  if (carregando) return <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>;
-  if (!orc) return <div style={{ color: MUTED, fontSize: 13 }}>Orçamento não encontrado. <button onClick={onVoltar} style={btnGhostSmall}>Voltar</button></div>;
-  const th = { padding: "8px 10px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4, background: BG, whiteSpace: "nowrap" };
-  const td = { padding: "8px 10px", fontSize: 13, borderTop: `1px solid ${BORDER}`, verticalAlign: "middle" };
-  const catLabel = (c) => CATEGORIAS_ITEM.find((x) => x.id === c)?.label || c;
-
   return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
-        <button onClick={onVoltar} style={btnGhostSmall}>← Voltar</button>
-        <div style={{ fontSize: 15, fontWeight: 700, color: NAVY }}>{orc.numero_or ? `PR ${orc.numero_or} · ` : ""}{orc.evento} <span style={{ fontWeight: 400, color: MUTED }}>· {orc.clientes?.nome || "—"} · {fmtDataBR(orc.data_evento)}</span></div>
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 16 }}>
-        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Venda</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO }}>{brl(Number(orc.valor))}</div></Card>
-        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Custo previsto (composição)</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO }}>{brl(custoPrevisto)}</div></Card>
-        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Ordens geradas</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO, color: GOLD }}>{brl(gerado)}</div><div style={{ fontSize: 11, color: MUTED }}>{ativas.length} ordem(ns)</div></Card>
-        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Pago pelo financeiro</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO, color: OK }}>{brl(pago)}</div></Card>
-      </div>
-
-      {aviso && <div style={{ background: "#EAF4EE", color: OK, padding: 12, borderRadius: 8, marginBottom: 14, fontSize: 13 }}>{aviso}</div>}
-
-      <Card style={{ marginBottom: 18 }}>
-        <h4 style={{ margin: "0 0 10px", fontSize: 14, color: NAVY }}>Nova ordem de pagamento</h4>
-        <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>Marque os itens da composição que serão pagos a este fornecedor (opcional) — o valor é somado sozinho e pode ser ajustado.</div>
-        <div style={{ overflowX: "auto", marginBottom: 12, border: `1px solid ${BORDER}`, borderRadius: 8 }}>
+    <Card style={{ marginBottom: 18 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 10 }}>
+          <h4 style={{ margin: 0, fontSize: 14, color: NAVY }}>Nova ordem de pagamento</h4>
+          {onFechar && <button onClick={onFechar} style={{ background: "none", border: "none", cursor: "pointer", color: MUTED }}><X size={18} /></button>}
+        </div>
+        {modoFinanceiro && (
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginBottom: 12 }}>
+            <Field label="Orçamento / evento (opcional)">
+              <input style={inputStyle} list="dl-op-orcamentos" value={orcTexto} placeholder="Deixe em branco para despesa sem evento" onChange={(e) => setOrcTexto(e.target.value)} />
+              <datalist id="dl-op-orcamentos">{orcsAprovados.map((o) => <option key={o.id} value={rotuloOrc(o)} />)}</datalist>
+            </Field>
+            <Field label="Empresa que paga">
+              <select style={inputStyle} value={orcVinculado ? (orcVinculado.empresa === "vs" ? "vs" : "prosign") : empresaAvulsa} disabled={!!orcVinculado} onChange={(e) => setEmpresaAvulsa(e.target.value)}>
+                <option value="prosign">Prosign</option><option value="vs">VS</option>
+              </select>
+            </Field>
+          </div>
+        )}
+        {itens.length > 0 && <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>Marque os itens da composição que serão pagos a este fornecedor (opcional) — o valor é somado sozinho e pode ser ajustado.</div>}
+        {(itens.length > 0 || !modoFinanceiro) && <div style={{ overflowX: "auto", marginBottom: 12, border: `1px solid ${BORDER}`, borderRadius: 8 }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
             <thead><tr><th style={{ ...th, width: 34 }}></th><th style={th}>Item da composição</th><th style={th}>Bloco</th><th style={th}>Fornecedor na composição</th><th style={{ ...th, textAlign: "right" }}>Custo</th><th style={th}>Ordem</th></tr></thead>
             <tbody>
@@ -6312,7 +6314,7 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
               })}
             </tbody>
           </table>
-        </div>
+        </div>}
         <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 12 }}>
           <Field label="Fornecedor / favorecido *">
             <input style={inputStyle} list="dl-op-fornecedores" value={f.fornecedorNome} onChange={(e) => escolherFornecedor(e.target.value)} placeholder="Nome do cadastro de fornecedores ou digite" />
@@ -6364,7 +6366,73 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
           <button onClick={() => setF(vazio)} style={btnGhostSmall}>Limpar</button>
           <button onClick={gerar} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Gerando..." : "Gerar ordem de pagamento"}</button>
         </div>
-      </Card>
+    </Card>
+  );
+}
+
+function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
+  const [orc, setOrc] = useState(null);
+  const [itens, setItens] = useState([]);
+  const [ops, setOps] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [aviso, setAviso] = useState("");
+
+  async function carregar() {
+    setCarregando(true);
+    try {
+      const [o, its, os] = await Promise.all([
+        sbRequest(`orcamentos?select=id,evento,numero_or,data_evento,valor,status,empresa,local,clientes:pessoas(nome)&id=eq.${orcamentoId}`, session),
+        sbRequest(`orcamento_itens?select=*&orcamento_id=eq.${orcamentoId}&order=ordem.asc`, session),
+        sbRequest(`ordens_pagamento?select=${SELECT_OP}&orcamento_id=eq.${orcamentoId}&order=numero.desc`, session),
+      ]);
+      setOrc((o || [])[0] || null);
+      setItens((its || []).map((r) => ({ ...itemFromRow(r), fornecedorTxt: r.fornecedor || "" })));
+      setOps(os || []);
+    } catch (e) { setErro(erroOP(e)); }
+    finally { setCarregando(false); }
+  }
+  useEffect(() => { carregar(); }, [orcamentoId]); // eslint-disable-line
+
+  // item → ordem ativa (aberta ou paga) em que já está
+  const itemNaOrdem = {};
+  ops.filter((o) => o.status !== "cancelada").forEach((o) => (o.ordem_pagamento_itens || []).forEach((i) => { if (i.orcamento_item_id) itemNaOrdem[i.orcamento_item_id] = o; }));
+  const custoPrevisto = itens.reduce((s, i) => s + custoDoItem(i), 0);
+  const ativas = ops.filter((o) => o.status !== "cancelada");
+  const gerado = ativas.reduce((s, o) => s + Number(o.valor), 0);
+  const pago = ativas.reduce((s, o) => s + pagoDaOrdem(o), 0);
+
+  async function cancelar(op) {
+    const motivo = window.prompt(`Cancelar a ${numeroOP(op.numero)} (${op.fornecedor_nome}, ${brl(Number(op.valor))})?\n\nMotivo:`);
+    if (motivo === null) return;
+    setErro("");
+    try {
+      await sbRequest(`ordens_pagamento?id=eq.${op.id}`, session, { method: "PATCH", body: { status: "cancelada", cancelado_motivo: motivo.trim() || "Cancelada pelo comercial" } });
+      await carregar();
+    } catch (e) { setErro(erroOP(e)); }
+  }
+
+  if (carregando) return <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>;
+  if (!orc) return <div style={{ color: MUTED, fontSize: 13 }}>Orçamento não encontrado. <button onClick={onVoltar} style={btnGhostSmall}>Voltar</button></div>;
+  const th = { padding: "8px 10px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4, background: BG, whiteSpace: "nowrap" };
+  const td = { padding: "8px 10px", fontSize: 13, borderTop: `1px solid ${BORDER}`, verticalAlign: "middle" };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <button onClick={onVoltar} style={btnGhostSmall}>← Voltar</button>
+        <div style={{ fontSize: 15, fontWeight: 700, color: NAVY }}>{orc.numero_or ? `PR ${orc.numero_or} · ` : ""}{orc.evento} <span style={{ fontWeight: 400, color: MUTED }}>· {orc.clientes?.nome || "—"} · {fmtDataBR(orc.data_evento)}</span></div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Venda</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO }}>{brl(Number(orc.valor))}</div></Card>
+        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Custo previsto (composição)</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO }}>{brl(custoPrevisto)}</div></Card>
+        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Ordens geradas</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO, color: GOLD }}>{brl(gerado)}</div><div style={{ fontSize: 11, color: MUTED }}>{ativas.length} ordem(ns)</div></Card>
+        <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Pago pelo financeiro</div><div style={{ fontSize: 20, fontWeight: 700, fontFamily: FONT_MONO, color: OK }}>{brl(pago)}</div></Card>
+      </div>
+
+      {aviso && <div style={{ background: "#EAF4EE", color: OK, padding: 12, borderRadius: 8, marginBottom: 14, fontSize: 13 }}>{aviso}</div>}
+
+      <FormNovaOrdemPagamento session={session} setErro={setErro} orc={orc} itens={itens} itemNaOrdem={itemNaOrdem} onGerada={async (msg) => { setAviso(msg); await carregar(); }} />
 
       <Card style={{ padding: 0, overflowX: "auto" }}>
         <div style={{ padding: "12px 16px", fontWeight: 600, color: NAVY }}>Ordens deste orçamento</div>
@@ -6415,6 +6483,8 @@ function OrdensPagamentoFinanceiroView({ session, setErro }) {
   const [baixa, setBaixa] = useState(null); // { id, pago_em, valor_pago, conta_saida, obs_pagamento }
   const [detalhe, setDetalhe] = useState(null);
   const [salvando, setSalvando] = useState(false);
+  const [nova, setNova] = useState(false);
+  const [aviso, setAviso] = useState("");
   const hoje = hojeISO();
 
   async function carregar() {
@@ -6470,6 +6540,14 @@ function OrdensPagamentoFinanceiroView({ session, setErro }) {
 
   return (
     <div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+        <button onClick={() => { setNova((v) => !v); setAviso(""); }} style={btnPrimary}><Plus size={16} /> Nova ordem de pagamento</button>
+      </div>
+      {nova && (
+        <FormNovaOrdemPagamento session={session} setErro={setErro} modoFinanceiro onFechar={() => setNova(false)}
+          onGerada={async (msg) => { setAviso(msg); setNova(false); await carregar(); }} />
+      )}
+      {aviso && <div style={{ background: "#EAF4EE", color: OK, padding: 12, borderRadius: 8, marginBottom: 14, fontSize: 13 }}>{aviso}</div>}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 18 }}>
         <Card><div style={{ fontSize: 12, color: MUTED }}>A pagar (em aberto)</div><div style={{ fontSize: 24, fontWeight: 700, color: GOLD, fontFamily: FONT_MONO }}>{brl(soma(abertas))}</div><div style={{ fontSize: 11, color: MUTED }}>{abertas.length} parcela(s)</div></Card>
         <Card><div style={{ fontSize: 12, color: MUTED }}>Vencidas</div><div style={{ fontSize: 24, fontWeight: 700, color: vencidas.length ? DANGER : NAVY, fontFamily: FONT_MONO }}>{brl(soma(vencidas))}</div><div style={{ fontSize: 11, color: MUTED }}>{vencidas.length} parcela(s)</div></Card>
@@ -7574,13 +7652,13 @@ function DashboardComercialView({ session, setErro, clientes }) {
     setErro("");
     Promise.all([
       sbRequest(`orcamentos?select=*,clientes:pessoas(nome)&mes_ref=eq.${mesRef}-01`, session),
-      sbRequest(`faturamento?select=valor&mes_ref=eq.${mesRef}-01`, session),
+      sbRequest(`faturamento?select=valor,orcamento_id&mes_ref=eq.${mesRef}-01`, session),
       sbRequest(`orcamentos?select=valor&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=eq.${anoAnterior}-${MESES[mes - 1]}-01`, session),
       sbRequest(`orcamentos?select=valor,clientes:pessoas(nome)&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=gte.${inicioAno}&mes_ref=lte.${mesRef}-01`, session),
     ])
       .then(([oMes, fMes, oAnoAnt, oAcum]) => {
         setOrcMes((oMes || []).map(orcamentoFromRow));
-        setFaturadoMes((fMes || []).reduce((s, r) => s + Number(r.valor || 0), 0));
+        setFaturadoMes(somarFaturamentoMes(fMes));
         setVendidoMesAnoAnterior((oAnoAnt || []).reduce((s, r) => s + Number(r.valor || 0), 0));
         setAcumuladoAno((oAcum || []).map((r) => ({ valor: Number(r.valor || 0), clienteNome: r.clientes?.nome || "Sem cliente" })));
       })
@@ -7722,7 +7800,7 @@ function DashboardAnualComercial({ session, setErro }) {
     setErro("");
     Promise.all([
       sbRequest(`orcamentos?select=*,clientes:pessoas(nome)&mes_ref=gte.${ano}-01-01&mes_ref=lt.${ano + 1}-01-01`, session),
-      sbRequest(`faturamento?select=valor,mes_ref&mes_ref=gte.${ano}-01-01&mes_ref=lt.${ano + 1}-01-01`, session),
+      sbRequest(`faturamento?select=valor,mes_ref,orcamento_id&mes_ref=gte.${ano}-01-01&mes_ref=lt.${ano + 1}-01-01`, session),
       sbRequest(`previsao_orcamentaria?select=*&ano=eq.${ano}`, session),
       sbRequest(`orcamentos?select=valor&status=in.(aprovado,autorizado_faturamento,faturado)&mes_ref=gte.${ano - 1}-01-01&mes_ref=lt.${ano}-01-01`, session),
     ])
@@ -7740,7 +7818,8 @@ function DashboardAnualComercial({ session, setErro }) {
 
   const aprovados = orcAno.filter((o) => ehVenda(o.status));
   const vendidoAno = aprovados.reduce((s, o) => s + o.valor, 0);
-  const faturadoAno = faturamentoAno.reduce((s, r) => s + Number(r.valor || 0), 0);
+  const faturadoPorMes = somarFaturamentoPorMes(faturamentoAno);
+  const faturadoAno = Object.values(faturadoPorMes).reduce((s, v) => s + v, 0);
   const previstoAno = previsaoAno.reduce((s, v) => s + v, 0);
   const variacaoAno = vendidoAnoAnterior > 0 ? (vendidoAno - vendidoAnoAnterior) / vendidoAnoAnterior : null;
 
@@ -7753,7 +7832,7 @@ function DashboardAnualComercial({ session, setErro }) {
   const porMes = MESES.map((m, i) => {
     const mesRefStr = `${ano}-${m}`;
     const vendidoMes = aprovados.filter((o) => o.mesRef === `${mesRefStr}-01`).reduce((s, o) => s + o.valor, 0);
-    const faturadoMes = faturamentoAno.filter((r) => (r.mes_ref || "").slice(0, 7) === mesRefStr).reduce((s, r) => s + Number(r.valor || 0), 0);
+    const faturadoMes = faturadoPorMes[mesRefStr] || 0;
     return { mes: MESES_ABREV[i], previsto: previsaoAno[i] || 0, vendido: vendidoMes, faturado: faturadoMes };
   });
   const trimestres = [0, 1, 2, 3].map((t) => {
