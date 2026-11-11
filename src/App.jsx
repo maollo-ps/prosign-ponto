@@ -364,24 +364,57 @@ function afastamentosNoMes(lancamentos, funcId, mesRef, atuaisDoMes) {
 }
 
 // ---------- atrasos / saídas antecipadas pelo ponto ----------
-// Dia útil com horário fixo: o que faltou do horário (sem o almoço) é atraso. Tolerância da CLT: até 10 min no dia não conta.
+// Dia útil com horário fixo. Soma, em minutos:
+//   - atraso na entrada (1ª batida depois do início do horário);
+//   - saída antecipada (última batida antes do fim do horário);
+//   - almoço além de 1 hora (intervalo real entre os turnos, que pode ser 12:30–13:30, por exemplo).
+// Tolerância: se a soma do dia for de até 10 minutos, não desconta nada; passou de 10, desconta o total.
 const TOLERANCIA_ATRASO_MIN = 10;
-function atrasoDoDia(r) {
-  if (!r?.data || !r.entrada || !r.saida || !diaTemHorarioFixo(r.data, r.feriado)) return 0;
+function detalheAtrasoDia(r) {
+  const vazio = { entrada: 0, saida: 0, almoco: 0, total: 0 };
+  if (!r?.data || !r.entrada || !diaTemHorarioFixo(r.data, r.feriado)) return vazio;
   const h = HORARIOS_SEMANA[new Date(r.data + "T00:00:00").getDay()];
-  if (!h) return 0;
+  if (!h) return vazio;
   const ini = toMin(h.inicio), fim = toMin(h.fim);
-  const almoco = Math.max(0, Math.min(fim, toMin(ALMOCO.fim)) - Math.max(ini, toMin(ALMOCO.inicio)));
-  const esperadoMin = fim - ini - almoco;
-  const faltouMin = Math.round(esperadoMin - classificarDia(r).normal * 60);
-  return faltouMin > TOLERANCIA_ATRASO_MIN ? faltouMin / 60 : 0;
+  const aI = toMin(ALMOCO.inicio), aF = toMin(ALMOCO.fim);
+  const almocoPadrao = aF - aI;
+  // minutos de horário entre a e b, sem o horário de almoço padrão (12h–13h)
+  const semAlmoco = (a, b) => Math.max(0, b - a) - Math.max(0, Math.min(b, aF) - Math.max(a, aI));
+  const e1 = toMin(r.entrada);
+  const entrada = e1 > ini && e1 < fim ? semAlmoco(ini, e1) : 0;
+  // última saída registrada (turno incompleto = não dá para saber a saída)
+  let ultima = null;
+  if (r.entrada3) ultima = r.saida3 || null;
+  else if (r.entrada2) ultima = r.saida2 || null;
+  else ultima = r.saida || null;
+  let saida = 0;
+  if (ultima) {
+    const u = toMin(ultima);
+    if (u >= e1 && u < fim) saida = semAlmoco(Math.max(u, ini), fim);
+  }
+  // intervalos entre turnos dentro do horário: o 1º pode ter até 1h (almoço), os demais não têm folga
+  let almoco = 0;
+  const pares = [[r.saida, r.entrada2], [r.saida2, r.entrada3]];
+  pares.forEach(([sai, volta], i) => {
+    if (!sai || !volta) return;
+    const iniGap = Math.max(toMin(sai), ini), fimGap = Math.min(toMin(volta), fim);
+    if (fimGap <= iniGap) return;
+    almoco += Math.max(0, fimGap - iniGap - (i === 0 ? almocoPadrao : 0));
+  });
+  // turno único com almoço automático: o almoço é o padrão, não conta
+  const total = entrada + saida + almoco;
+  return { entrada, saida, almoco, total };
+}
+function atrasoDoDia(r) {
+  const d = detalheAtrasoDia(r);
+  return d.total > TOLERANCIA_ATRASO_MIN ? d.total / 60 : 0;
 }
 function calcularAtrasosMes(registros, excluir) {
   const dias = [];
   (registros || []).forEach((r) => {
     if (excluir && excluir.has(r.data)) return;
     const h = atrasoDoDia(r);
-    if (h > 0) dias.push({ data: r.data, horas: h });
+    if (h > 0) dias.push({ data: r.data, horas: h, det: detalheAtrasoDia(r) });
   });
   dias.sort((a, b) => a.data.localeCompare(b.data));
   return { horas: dias.reduce((s, d) => s + d.horas, 0), dias };
@@ -1486,7 +1519,11 @@ function LancamentosView({ funcionarios, cargos, lancamentos, setLancamentos, me
                 </div>
                 {!faltasForm.atrasosManual && atrasosCalc.dias.length > 0 && (
                   <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>
-                    {atrasosCalc.dias.map((d) => `${fmtDiaMes(d.data)} ${decimalToHHMM(d.horas)}`).join(" · ")}
+                    {atrasosCalc.dias.map((d) => {
+                      const partes = [d.det?.entrada ? `entrada ${d.det.entrada}min` : "", d.det?.almoco ? `almoço +${d.det.almoco}min` : "", d.det?.saida ? `saída ${d.det.saida}min` : ""].filter(Boolean).join(", ");
+                      return `${fmtDiaMes(d.data)} ${decimalToHHMM(d.horas)}${partes ? ` (${partes})` : ""}`;
+                    }).join(" · ")}
+                    <div style={{ marginTop: 2 }}>Tolerância: até {TOLERANCIA_ATRASO_MIN} min por dia (entrada + almoço + saída) não desconta; passou disso, desconta tudo.</div>
                   </div>
                 )}
               </Field>
