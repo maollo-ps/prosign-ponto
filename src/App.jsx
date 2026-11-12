@@ -6959,6 +6959,276 @@ function FinanceiroInicioView({ session, setErro, irPara }) {
   );
 }
 
+// =========================================================
+// Financeiro · Relatórios (contas a pagar / receber, despesas fixas e variáveis...)
+// =========================================================
+const REL_PRESETS = [
+  { id: "pagar_mes", label: "Contas a pagar do mês", f: { tipo: "pagar", situacao: "todas", campo: "vencimento", classif: "todas", agrupar: "nenhum" } },
+  { id: "pagar_aberto", label: "Contas a pagar em aberto", f: { tipo: "pagar", situacao: "aberto", campo: "vencimento", classif: "todas", agrupar: "nenhum", semPeriodo: true } },
+  { id: "receber_aberto", label: "Contas a receber em aberto", f: { tipo: "receber", situacao: "aberto", campo: "vencimento", classif: "todas", agrupar: "fornecedor", semPeriodo: true } },
+  { id: "vencidas", label: "Vencidas (pagar e receber)", f: { tipo: "ambos", situacao: "vencidas", campo: "vencimento", classif: "todas", agrupar: "tipo", semPeriodo: true } },
+  { id: "fixas", label: "Despesas fixas", f: { tipo: "pagar", situacao: "todas", campo: "competencia", classif: "fixo", agrupar: "centro" } },
+  { id: "variaveis", label: "Despesas variáveis", f: { tipo: "pagar", situacao: "todas", campo: "competencia", classif: "variavel", agrupar: "centro" } },
+  { id: "por_classif", label: "Despesas por classificação", f: { tipo: "pagar", situacao: "todas", campo: "competencia", classif: "todas", agrupar: "classificacao" } },
+  { id: "pagos", label: "Pagamentos realizados", f: { tipo: "pagar", situacao: "quitadas", campo: "pagamento", classif: "todas", agrupar: "dia" } },
+  { id: "recebidos", label: "Recebimentos realizados", f: { tipo: "receber", situacao: "quitadas", campo: "pagamento", classif: "todas", agrupar: "dia" } },
+  { id: "por_evento", label: "Despesas por evento (PR)", f: { tipo: "pagar", situacao: "todas", campo: "competencia", classif: "variavel", agrupar: "evento" } },
+];
+const REL_AGRUPAR = [
+  { id: "nenhum", label: "Sem agrupar (lista)" }, { id: "centro", label: "Conta (plano de contas)" }, { id: "classificacao", label: "Classificação (fixa, variável...)" },
+  { id: "fornecedor", label: "Fornecedor / cliente" }, { id: "mes", label: "Mês" }, { id: "dia", label: "Dia" }, { id: "empresa", label: "Empresa" },
+  { id: "tipo", label: "Pagar × receber" }, { id: "evento", label: "Evento (PR)" }, { id: "situacao", label: "Situação" },
+];
+const REL_CAMPOS = { vencimento: "Vencimento", pagamento: "Pagamento / recebimento", competencia: "Competência" };
+
+function RelatoriosFinView({ session, setErro, centros }) {
+  const hoje = hojeISO();
+  const mes = hoje.slice(0, 7);
+  const fimMes = (m) => { const [a, mm] = m.split("-").map(Number); return new Date(a, mm, 0).toISOString().slice(0, 10); };
+  const inicial = { tipo: "pagar", situacao: "todas", campo: "vencimento", de: `${mes}-01`, ate: fimMes(mes), empresa: "todas", classif: "todas", centro: "", busca: "", agrupar: "nenhum", ordem: "data" };
+  const [f, setF] = useState(inicial);
+  const [preset, setPreset] = useState("pagar_mes");
+  const [rows, setRows] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+  const [gerado, setGerado] = useState(false);
+  const [abertos, setAbertos] = useState({});
+  const porId = useMemo(() => Object.fromEntries((centros || []).map((c) => [c.id, c])), [centros]);
+  const analiticos = useMemo(() => (centros || []).filter((c) => c.tipo === "analitico").sort((a, b) => a.codigo.localeCompare(b.codigo)), [centros]);
+
+  function aplicarPreset(p) {
+    setPreset(p.id);
+    const novo = { ...inicial, ...p.f, empresa: f.empresa };
+    if (p.f.semPeriodo) { novo.de = ""; novo.ate = ""; } else if (f.de || f.ate) { novo.de = f.de; novo.ate = f.ate; }
+    delete novo.semPeriodo;
+    setF(novo);
+    gerar(novo);
+  }
+
+  async function gerar(filtros = f) {
+    setCarregando(true); setErro("");
+    try {
+      const q = [];
+      if (filtros.tipo !== "ambos") q.push(`tipo=eq.${filtros.tipo}`);
+      if (filtros.empresa !== "todas") q.push(`empresa=eq.${filtros.empresa}`);
+      if (filtros.situacao === "quitadas") q.push("situacao=eq.quitada");
+      if (filtros.situacao === "aberto" || filtros.situacao === "vencidas") q.push("situacao=neq.quitada");
+      if (filtros.situacao === "vencidas") q.push(`vencimento=lt.${hoje}`);
+      if (filtros.de) q.push(`${filtros.campo}=gte.${filtros.de}`);
+      if (filtros.ate) q.push(`${filtros.campo}=lte.${filtros.ate}`);
+      if (filtros.centro) q.push(`centro_custo_id=eq.${filtros.centro}`);
+      const base = `lancamentos_fin?select=*,orcamentos(evento,numero_or)&${q.join("&")}&order=${filtros.campo}.asc.nullslast`;
+      let todos = [];
+      for (let off = 0; off < 20000; off += 1000) {
+        const pg = (await sbRequest(`${base}&limit=1000&offset=${off}`, session)) || [];
+        todos = todos.concat(pg);
+        if (pg.length < 1000) break;
+      }
+      setRows(todos); setGerado(true); setAbertos({});
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setCarregando(false); }
+  }
+  useEffect(() => { gerar(); }, []); // eslint-disable-line
+
+  // ----- filtros que dependem do plano de contas / texto -----
+  const classeDe = (l) => porId[l.centro_custo_id]?.classificacao || "a_classificar";
+  const situacaoDe = (l) => (l.situacao === "quitada" ? "quitada" : l.vencimento && l.vencimento < hoje ? "vencida" : "aberta");
+  const termo = f.busca.trim().toUpperCase();
+  const lista = rows.filter((l) => (f.classif === "todas" || classeDe(l) === f.classif)
+    && (!termo || [l.fornecedor_cliente, l.historico, l.numero_conta, l.nota_fiscal, l.orcamentos?.evento, l.orcamentos?.numero_or].some((x) => String(x || "").toUpperCase().includes(termo))))
+    .sort((a, b) => (f.ordem === "valor" ? Number(b.valor) - Number(a.valor) : String(a[f.campo] || "9").localeCompare(String(b[f.campo] || "9"))));
+
+  const chaveGrupo = (l) => {
+    switch (f.agrupar) {
+      case "centro": { const c = porId[l.centro_custo_id]; return c ? `${c.codigo} ${c.nome}` : "Sem conta"; }
+      case "classificacao": return CLASSIF_LABEL[classeDe(l)] || classeDe(l);
+      case "fornecedor": return (l.fornecedor_cliente || "—").trim().toUpperCase();
+      case "mes": return l[f.campo] ? `${MESES_ABREV[Number(l[f.campo].slice(5, 7)) - 1]}/${l[f.campo].slice(0, 4)}` : "Sem data";
+      case "dia": return l[f.campo] ? fmtDataBR(l[f.campo]) : "Sem data";
+      case "empresa": return nomeEmpresa(l.empresa);
+      case "tipo": return l.tipo === "pagar" ? "Contas a pagar" : "Contas a receber";
+      case "evento": return l.orcamentos ? `${l.orcamentos.numero_or ? `PR ${l.orcamentos.numero_or} · ` : ""}${l.orcamentos.evento}` : "Sem evento";
+      case "situacao": return { quitada: "Quitadas", vencida: "Vencidas", aberta: "Em aberto" }[situacaoDe(l)];
+      default: return "";
+    }
+  };
+  const grupos = [];
+  if (f.agrupar === "nenhum") grupos.push({ chave: "", itens: lista });
+  else {
+    const m = new Map();
+    lista.forEach((l) => { const k = chaveGrupo(l); if (!m.has(k)) m.set(k, []); m.get(k).push(l); });
+    m.forEach((itens, chave) => grupos.push({ chave, itens }));
+    const ordemData = (g) => g.itens[0]?.[f.campo] || "9";
+    grupos.sort((a, b) => (["mes", "dia"].includes(f.agrupar) ? ordemData(a).localeCompare(ordemData(b)) : soma(b.itens) - soma(a.itens)));
+  }
+  function soma(l) { return l.reduce((s, x) => s + Number(x.valor || 0), 0); }
+  const totPagar = soma(lista.filter((l) => l.tipo === "pagar"));
+  const totReceber = soma(lista.filter((l) => l.tipo === "receber"));
+  const totAberto = soma(lista.filter((l) => l.situacao !== "quitada"));
+  const totVencido = soma(lista.filter((l) => situacaoDe(l) === "vencida"));
+  const totQuitado = soma(lista.filter((l) => l.situacao === "quitada"));
+
+  const titulo = (REL_PRESETS.find((p) => p.id === preset)?.label) || "Relatório financeiro";
+  const descricaoFiltros = [
+    f.tipo === "ambos" ? "Pagar e receber" : f.tipo === "pagar" ? "Contas a pagar" : "Contas a receber",
+    { todas: "todas as situações", aberto: "em aberto", vencidas: "vencidas", quitadas: "quitadas" }[f.situacao],
+    f.de || f.ate ? `${REL_CAMPOS[f.campo].toLowerCase()} ${f.de ? `de ${fmtDataBR(f.de)}` : ""} ${f.ate ? `até ${fmtDataBR(f.ate)}` : ""}`.trim() : "sem período",
+    f.empresa === "todas" ? "Prosign + VS" : nomeEmpresa(f.empresa),
+    f.classif !== "todas" ? CLASSIF_LABEL[f.classif] : "",
+    f.centro ? `${porId[f.centro]?.codigo} ${porId[f.centro]?.nome}` : "",
+    termo ? `busca "${f.busca.trim()}"` : "",
+  ].filter(Boolean).join(" · ");
+
+  const linhaExport = (l) => ({
+    Tipo: l.tipo === "pagar" ? "Pagar" : "Receber", Empresa: nomeEmpresa(l.empresa), "Nº conta": l.numero_conta,
+    Vencimento: fmtDataBR(l.vencimento), Pagamento: l.pagamento ? fmtDataBR(l.pagamento) : "", Competência: l.competencia ? `${l.competencia.slice(5, 7)}/${l.competencia.slice(0, 4)}` : "",
+    "Fornecedor / cliente": l.fornecedor_cliente || "", Histórico: l.historico || "",
+    Conta: porId[l.centro_custo_id] ? `${porId[l.centro_custo_id].codigo} ${porId[l.centro_custo_id].nome}` : "", Classificação: CLASSIF_LABEL[classeDe(l)] || "",
+    Evento: l.orcamentos ? `${l.orcamentos.numero_or || ""} ${l.orcamentos.evento}`.trim() : "", NF: l.nota_fiscal || "",
+    Situação: { quitada: "Quitada", vencida: "Vencida", aberta: "Em aberto" }[situacaoDe(l)], Valor: Number(l.valor || 0),
+  });
+  async function exportarExcel() {
+    try {
+      const XLSX = await carregarLeitorPlanilha();
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.json_to_sheet(lista.map(linhaExport));
+      ws["!cols"] = [8, 10, 10, 11, 11, 11, 32, 36, 36, 16, 30, 10, 11, 14].map((w) => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws, "Lançamentos");
+      if (f.agrupar !== "nenhum") {
+        const resumo = grupos.map((g) => ({ [REL_AGRUPAR.find((a) => a.id === f.agrupar)?.label || "Grupo"]: g.chave, Quantidade: g.itens.length, Total: soma(g.itens) }));
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(resumo), "Resumo");
+      }
+      XLSX.writeFile(wb, `relatorio-financeiro-${hoje}.xlsx`);
+    } catch (e) { setErro(e.message); }
+  }
+  function imprimir() {
+    const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const corpo = grupos.map((g) => `
+      ${g.chave ? `<tr class="g"><td colspan="5">${esc(g.chave)} <span>(${g.itens.length})</span></td><td class="n">${esc(brl(soma(g.itens)))}</td></tr>` : ""}
+      ${g.itens.map((l) => `<tr><td>${esc(fmtDataBR(l[f.campo]))}</td><td>${esc(l.fornecedor_cliente || "")}<div class="s">${esc(l.historico || "")}</div></td><td>${esc(porId[l.centro_custo_id]?.nome || "")}</td><td>${esc(l.tipo === "pagar" ? "Pagar" : "Receber")} · ${esc(nomeEmpresa(l.empresa))}</td><td>${esc({ quitada: "Quitada", vencida: "Vencida", aberta: "Em aberto" }[situacaoDe(l)])}</td><td class="n">${esc(brl(Number(l.valor)))}</td></tr>`).join("")}`).join("");
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${esc(titulo)}</title><style>
+      @page { size: A4 landscape; margin: 12mm; } body { font-family: Arial, sans-serif; font-size: 11px; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .topo { display:flex; justify-content:space-between; align-items:center; border-bottom: 3px solid #B8902E; padding-bottom: 6px; margin-bottom: 8px; } .topo img { height: 40px; }
+      h1 { font-size: 16px; margin: 0; } .f { color: #555; margin: 4px 0 10px; } .cards { display:flex; gap: 18px; margin-bottom: 10px; } .cards b { display:block; font-size: 14px; }
+      table { width: 100%; border-collapse: collapse; } th, td { border-bottom: 1px solid #ddd; padding: 4px 6px; text-align: left; vertical-align: top; } th { background: #eee; }
+      .n { text-align: right; white-space: nowrap; } tr.g td { background: #F3F4F6; font-weight: 700; } tr.g span { font-weight: 400; color: #666; } .s { color: #666; font-size: 10px; }
+      tfoot td { font-weight: 700; border-top: 2px solid #111; }
+    </style></head><body>
+      <div class="topo"><img src="${LOGO_PROSIGN}" alt=""><div style="text-align:right"><h1>${esc(titulo)}</h1><div>Emitido em ${esc(fmtDataBR(hoje))}</div></div></div>
+      <div class="f">${esc(descricaoFiltros)}</div>
+      <div class="cards">${f.tipo !== "receber" ? `<div>A pagar<b>${esc(brl(totPagar))}</b></div>` : ""}${f.tipo !== "pagar" ? `<div>A receber<b>${esc(brl(totReceber))}</b></div>` : ""}<div>Em aberto<b>${esc(brl(totAberto))}</b></div><div>Vencido<b>${esc(brl(totVencido))}</b></div><div>Quitado<b>${esc(brl(totQuitado))}</b></div><div>Lançamentos<b>${lista.length}</b></div></div>
+      <table><thead><tr><th>${esc(REL_CAMPOS[f.campo])}</th><th>Fornecedor / cliente</th><th>Conta</th><th>Tipo</th><th>Situação</th><th class="n">Valor</th></tr></thead>
+      <tbody>${corpo}</tbody><tfoot><tr><td colspan="5">Total (${lista.length})</td><td class="n">${esc(brl(soma(lista)))}</td></tr></tfoot></table>
+      <script>window.onload = function () { setTimeout(function () { window.print(); }, 300); };<\/script></body></html>`;
+    const w = window.open("", "_blank");
+    if (!w) { setErro("O navegador bloqueou a janela. Libere pop-ups para este site."); return; }
+    w.document.open(); w.document.write(html); w.document.close();
+  }
+
+  const campo = (label, el) => <Field label={label}>{el}</Field>;
+  const set = (k) => (e) => { setPreset(""); setF({ ...f, [k]: e.target.value }); };
+  const td = { ...tdS, borderTop: `1px solid ${BORDER}` };
+  const corSit = { quitada: OK, vencida: DANGER, aberta: GOLD };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+        {REL_PRESETS.map((p) => (
+          <button key={p.id} onClick={() => aplicarPreset(p)} style={{ ...btnGhostSmall, borderColor: preset === p.id ? GOLD : BORDER, background: preset === p.id ? "#FFF8E6" : "#fff", color: preset === p.id ? GOLD : TEXT, fontWeight: 600 }}>{p.label}</button>
+        ))}
+      </div>
+
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
+          {campo("Tipo", <select style={inputStyle} value={f.tipo} onChange={set("tipo")}><option value="pagar">Contas a pagar</option><option value="receber">Contas a receber</option><option value="ambos">Pagar e receber</option></select>)}
+          {campo("Situação", <select style={inputStyle} value={f.situacao} onChange={set("situacao")}><option value="todas">Todas</option><option value="aberto">Em aberto</option><option value="vencidas">Vencidas</option><option value="quitadas">Quitadas (pagas/recebidas)</option></select>)}
+          {campo("Período pela data de", <select style={inputStyle} value={f.campo} onChange={set("campo")}>{Object.entries(REL_CAMPOS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>)}
+          {campo("De", <input type="date" style={inputStyle} value={f.de} onChange={set("de")} />)}
+          {campo("Até", <input type="date" style={inputStyle} value={f.ate} onChange={set("ate")} />)}
+          {campo("Empresa", <select style={inputStyle} value={f.empresa} onChange={set("empresa")}><option value="todas">Prosign + VS</option><option value="prosign">Prosign</option><option value="vs">VS</option></select>)}
+          {campo("Classificação", <select style={inputStyle} value={f.classif} onChange={set("classif")}><option value="todas">Todas</option>{Object.entries(CLASSIF_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>)}
+          {campo("Conta do plano", <select style={inputStyle} value={f.centro} onChange={set("centro")}><option value="">Todas as contas</option>{analiticos.map((c) => <option key={c.id} value={c.id}>{c.codigo} {c.nome}</option>)}</select>)}
+          {campo("Agrupar por", <select style={inputStyle} value={f.agrupar} onChange={(e) => setF({ ...f, agrupar: e.target.value })}>{REL_AGRUPAR.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}</select>)}
+          {campo("Ordenar por", <select style={inputStyle} value={f.ordem} onChange={(e) => setF({ ...f, ordem: e.target.value })}><option value="data">Data</option><option value="valor">Maior valor</option></select>)}
+          {campo("Buscar (fornecedor, histórico, nº, PR)", <input style={inputStyle} value={f.busca} onChange={(e) => setF({ ...f, busca: e.target.value })} placeholder="opcional" />)}
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {[["Mês atual", `${mes}-01`, fimMes(mes)], ["Mês passado", (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 8) + "01"; })(), (() => { const d = new Date(); d.setDate(0); return d.toISOString().slice(0, 10); })()], ["Ano", `${mes.slice(0, 4)}-01-01`, `${mes.slice(0, 4)}-12-31`], ["Sem período", "", ""]].map(([l, de, ate]) => (
+              <button key={l} onClick={() => { setPreset(""); setF({ ...f, de, ate }); }} style={{ ...btnGhostSmall, fontSize: 11 }}>{l}</button>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => gerar()} disabled={carregando} style={btnPrimary}><Search size={15} /> {carregando ? "Gerando..." : "Gerar relatório"}</button>
+            <button onClick={exportarExcel} disabled={!lista.length} style={btnGhostSmall}>Excel</button>
+            <button onClick={imprimir} disabled={!lista.length} style={btnGhostSmall}>Imprimir / PDF</button>
+          </div>
+        </div>
+      </Card>
+
+      {gerado && (
+        <>
+          <div style={{ fontSize: 13, color: MUTED, marginBottom: 10 }}><b style={{ color: NAVY }}>{titulo}</b> — {descricaoFiltros}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12, marginBottom: 16 }}>
+            {f.tipo !== "receber" && <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Contas a pagar</div><div style={{ fontSize: 20, fontWeight: 700, color: DANGER, fontFamily: FONT_MONO }}>{brl(totPagar)}</div></Card>}
+            {f.tipo !== "pagar" && <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Contas a receber</div><div style={{ fontSize: 20, fontWeight: 700, color: OK, fontFamily: FONT_MONO }}>{brl(totReceber)}</div></Card>}
+            {f.tipo === "ambos" && <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Saldo (receber − pagar)</div><div style={{ fontSize: 20, fontWeight: 700, color: totReceber - totPagar >= 0 ? OK : DANGER, fontFamily: FONT_MONO }}>{brl(totReceber - totPagar)}</div></Card>}
+            <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Em aberto</div><div style={{ fontSize: 20, fontWeight: 700, color: GOLD, fontFamily: FONT_MONO }}>{brl(totAberto)}</div></Card>
+            <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Vencido</div><div style={{ fontSize: 20, fontWeight: 700, color: totVencido ? DANGER : NAVY, fontFamily: FONT_MONO }}>{brl(totVencido)}</div></Card>
+            <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Quitado</div><div style={{ fontSize: 20, fontWeight: 700, color: OK, fontFamily: FONT_MONO }}>{brl(totQuitado)}</div><div style={{ fontSize: 11, color: MUTED }}>{lista.length} lançamento(s)</div></Card>
+          </div>
+
+          <Card style={{ padding: 0, overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+              <thead><tr style={{ background: BG }}>
+                <th style={thS}>{REL_CAMPOS[f.campo]}</th><th style={thS}>Fornecedor / cliente</th><th style={thS}>Conta</th><th style={thS}>Tipo</th><th style={thS}>Evento</th><th style={thS}>Situação</th><th style={{ ...thS, textAlign: "right" }}>Valor</th>
+              </tr></thead>
+              <tbody>
+                {lista.length === 0 && <tr><td colSpan={7} style={{ ...td, color: MUTED }}>Nenhum lançamento com esses filtros.</td></tr>}
+                {grupos.map((g) => {
+                  const aberto = f.agrupar === "nenhum" || abertos[g.chave];
+                  const pct = soma(lista) ? (soma(g.itens) / soma(lista)) * 100 : 0;
+                  return (
+                    <React.Fragment key={g.chave || "lista"}>
+                      {f.agrupar !== "nenhum" && (
+                        <tr onClick={() => setAbertos((a) => ({ ...a, [g.chave]: !a[g.chave] }))} style={{ background: "#F3F4F6", cursor: "pointer", borderTop: `1px solid ${BORDER}` }}>
+                          <td colSpan={6} style={{ ...tdS, fontWeight: 700, color: NAVY }}>{aberto ? "▾" : "▸"} {g.chave} <span style={{ fontWeight: 400, color: MUTED, fontSize: 12 }}>· {g.itens.length} lanç. · {pct.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%</span></td>
+                          <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(soma(g.itens))}</td>
+                        </tr>
+                      )}
+                      {aberto && g.itens.map((l) => {
+                        const sit = situacaoDe(l);
+                        const c = porId[l.centro_custo_id];
+                        return (
+                          <tr key={l.id}>
+                            <td style={{ ...td, whiteSpace: "nowrap" }}>{fmtDataBR(l[f.campo])}</td>
+                            <td style={td}><b>{l.fornecedor_cliente || "—"}</b>{l.historico && <div style={{ fontSize: 11, color: MUTED }}>{l.historico}</div>}</td>
+                            <td style={{ ...td, fontSize: 12 }}>{c ? <>{c.codigo} {c.nome} <ChipClassif valor={c.classificacao} /></> : <ChipClassif valor="a_classificar" />}</td>
+                            <td style={{ ...td, fontSize: 12, whiteSpace: "nowrap" }}>{l.tipo === "pagar" ? "Pagar" : "Receber"} <ChipEmpresa id={l.empresa} /></td>
+                            <td style={{ ...td, fontSize: 12 }}>{l.orcamentos ? `${l.orcamentos.numero_or ? `PR ${l.orcamentos.numero_or} · ` : ""}${l.orcamentos.evento}` : "—"}</td>
+                            <td style={{ ...td, fontSize: 12, fontWeight: 700, color: corSit[sit] }}>{{ quitada: "Quitada", vencida: "Vencida", aberta: "Em aberto" }[sit]}{sit === "quitada" && l.pagamento && <div style={{ fontWeight: 400, color: MUTED }}>{fmtDataBR(l.pagamento)}</div>}</td>
+                            <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, color: l.tipo === "pagar" ? DANGER : OK }}>{brl(Number(l.valor))}</td>
+                          </tr>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+              {lista.length > 0 && (
+                <tfoot><tr style={{ borderTop: `2px solid ${BORDER}` }}>
+                  <td colSpan={6} style={{ ...tdS, fontWeight: 700 }}>Total ({lista.length} lançamentos)</td>
+                  <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700 }}>{brl(soma(lista))}</td>
+                </tr></tfoot>
+              )}
+            </table>
+          </Card>
+          {f.agrupar !== "nenhum" && <div style={{ fontSize: 12, color: MUTED, marginTop: 6 }}>Clique num grupo para ver os lançamentos dele.</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function FinanceiroView({ session, setErro }) {
   const [subtab, setSubtab] = useState("inicio");
   const [centros, setCentros] = useState([]);
@@ -6978,6 +7248,7 @@ function FinanceiroView({ session, setErro }) {
     { id: "ordens", label: "Ordens de pagamento" },
     { id: "lancamentos", label: "Lançamentos" },
     { id: "caixa", label: "Fluxo de caixa" },
+    { id: "relatorios", label: "Relatórios" },
     { id: "plano", label: "Plano de contas" },
     { id: "importar", label: "Importar" },
   ];
@@ -6998,6 +7269,7 @@ function FinanceiroView({ session, setErro }) {
       {!["faturamento", "ordens", "inicio"].includes(subtab) && carregandoCentros && <div style={{ color: MUTED, fontSize: 13 }}>Carregando...</div>}
       {subtab === "lancamentos" && !carregandoCentros && <LancamentosFinView session={session} setErro={setErro} centros={centros} />}
       {subtab === "caixa" && <CaixaFinView session={session} setErro={setErro} />}
+      {subtab === "relatorios" && !carregandoCentros && <RelatoriosFinView session={session} setErro={setErro} centros={centros} />}
       {subtab === "importar" && !carregandoCentros && <ImportarFinView session={session} setErro={setErro} centros={centros} />}
       {subtab === "plano" && !carregandoCentros && <PlanoContasFinView session={session} setErro={setErro} centros={centros} recarregar={carregarCentros} />}
     </div>
