@@ -4427,23 +4427,25 @@ function FaturamentoFinanceiroView({ session, setErro }) {
   const [verConfig, setVerConfig] = useState(false);
   const [emitindo, setEmitindo] = useState(null); // { fat, descricao, retido, municipio, ambiente }
   const [nfseOcupado, setNfseOcupado] = useState(null); // id do faturamento/nota em operação
+  const [busca, setBusca] = useState("");
+  const [buscaAtiva, setBuscaAtiva] = useState("");
 
   function carregar() {
     setCarregando(true);
     Promise.all([
       sbRequest("orcamentos?select=*,clientes:pessoas(nome)&status=eq.autorizado_faturamento&order=autorizado_em.asc", session),
-      sbRequest("faturamento?select=*,clientes:pessoas(nome,documento),orcamentos!inner(evento,numero_or,status,local,data_evento,empresa)&orcamentos.status=eq.faturado&order=criado_em.desc&limit=150", session),
+      sbRequest(`faturamento?select=*,clientes:pessoas(nome,documento),orcamentos!inner(evento,numero_or,status,local,data_evento,empresa)&orcamentos.status=eq.faturado${buscaAtiva ? `&orcamentos.or=(evento.ilike.*${encodeURIComponent(buscaAtiva)}*,numero_or.ilike.*${encodeURIComponent(buscaAtiva)}*)` : ""}&order=criado_em.desc&limit=${buscaAtiva ? 500 : 150}`, session),
       sbRequest("notas_fiscais?select=*&order=criado_em.desc&limit=400", session).then((r) => { setSemNfse(false); return r; }).catch(() => { setSemNfse(true); return []; }),
     ])
       .then(([a, b, c]) => { setFila(a || []); setRecentes(b || []); setNotas(c || []); })
       .catch((e) => setErro(msgSupabase(e)))
       .finally(() => setCarregando(false));
   }
-  useEffect(() => { carregar(); }, []); // eslint-disable-line
+  useEffect(() => { carregar(); }, [buscaAtiva]); // eslint-disable-line
 
   function abrirFaturar(o) {
     setFaturandoId(o.id);
-    setForm({ valor: Number(o.valor) || 0, data: hojeLocal(), nf: "", previsao: "" });
+    setForm({ valor: Number(o.valor) || 0, data: hojeLocal(), nf: "", previsao: "", empresa: o.empresa === "vs" ? "vs" : "prosign" });
   }
 
   async function confirmarFaturar(o) {
@@ -4460,10 +4462,14 @@ function FaturamentoFinanceiroView({ session, setErro }) {
         for (const a of antigos) await sbRequest(`faturamento?id=eq.${a.id}`, session, { method: "DELETE" });
       }
     } catch (e) { setErro(msgSupabase(e)); return; }
-    if (!window.confirm(`Marcar "${o.evento}" como FATURADO por ${brl(form.valor)}?\n\nDepois disso ninguém mais poderá alterar este orçamento.`)) return;
+    if (!window.confirm(`Marcar "${o.evento}" como FATURADO por ${brl(form.valor)}, pela ${form.empresa === "vs" ? "VS" : "Prosign"}?\n\nDepois disso ninguém mais poderá alterar este orçamento.`)) return;
     setSalvando(true);
     setErro("");
     try {
+      if (form.empresa && form.empresa !== (o.empresa === "vs" ? "vs" : "prosign")) {
+        await sbRequest(`orcamentos?id=eq.${o.id}`, session, { method: "PATCH", body: { empresa: form.empresa } });
+        o = { ...o, empresa: form.empresa };
+      }
       const fat = await sbRequest("rpc/faturar_orcamento", session, {
         method: "POST",
         body: { p_orcamento_id: o.id, p_valor: form.valor, p_data: form.data, p_nf: form.nf || null, p_previsao: form.previsao || null },
@@ -4553,6 +4559,9 @@ function FaturamentoFinanceiroView({ session, setErro }) {
   const totalAtrasado = recentes.filter((f) => situacaoReceb(f) === "atrasado").reduce((x, f) => x + (Number(f.valor) || 0), 0);
   const recentesVis = recentes.filter((f) => filtroReceb === "todos" || (filtroReceb === "recebidos" ? !!f.data_recebimento : !f.data_recebimento));
   const totalFila = fila.reduce((s, o) => s + (Number(o.valor) || 0), 0);
+  const termo = buscaAtiva.trim().toUpperCase();
+  const filaVis = termo ? fila.filter((o) => [o.evento, o.numero_or, o.clientes?.nome].some((x) => String(x || "").toUpperCase().includes(termo))) : fila;
+  const BadgeEmp = ({ e }) => <span style={{ fontSize: 10, fontWeight: 700, color: "#fff", background: e === "vs" ? "#7A5C99" : NAVY, borderRadius: 4, padding: "1px 6px" }}>{e === "vs" ? "VS" : "PROSIGN"}</span>;
   const th = { padding: "10px 14px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4 };
   const td = { padding: "10px 14px", fontSize: 13 };
 
@@ -4568,6 +4577,12 @@ function FaturamentoFinanceiroView({ session, setErro }) {
           Emissão de NFS-e ainda não ativada: falta rodar o SQL <b>migracao_nfse.sql</b> e publicar a função <b>nfse</b> no Supabase.
         </div>
       )}
+      <form onSubmit={(e) => { e.preventDefault(); setBuscaAtiva(busca.trim()); }} style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+        <input style={{ ...inputStyle, minWidth: 280, flex: "0 1 380px" }} value={busca} placeholder="Pesquisar por PR ou evento (fila e faturados)" onChange={(e) => setBusca(e.target.value)} />
+        <button type="submit" style={btnGhostSmall}><Search size={14} style={{ verticalAlign: -2 }} /> Pesquisar</button>
+        {buscaAtiva && <button type="button" onClick={() => { setBusca(""); setBuscaAtiva(""); }} style={btnGhostSmall}>Limpar</button>}
+        {buscaAtiva && <span style={{ fontSize: 12, color: MUTED }}>Mostrando "{buscaAtiva}": {filaVis.length} na fila · {recentes.length} faturado(s), em todos os meses</span>}
+      </form>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14, marginBottom: 22 }}>
         <Card><div style={{ fontSize: 12, color: MUTED }}>Aguardando faturamento</div><div style={{ fontSize: 26, fontWeight: 700, color: "#1D6FA5" }}>{fila.length}</div></Card>
         <Card><div style={{ fontSize: 12, color: MUTED }}>Valor a faturar</div><div style={{ fontSize: 26, fontWeight: 700, color: NAVY, fontFamily: FONT_MONO }}>{brl(totalFila)}</div></Card>
@@ -4580,12 +4595,12 @@ function FaturamentoFinanceiroView({ session, setErro }) {
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead><tr style={{ background: BG }}>
             <th style={th}>Autorizado em</th><th style={th}>PR</th><th style={th}>Evento</th><th style={th}>Cliente</th>
-            <th style={th}>Data evento</th><th style={{ ...th, textAlign: "right" }}>Valor</th><th style={th}></th>
+            <th style={th}>Data evento</th><th style={th}>Empresa</th><th style={{ ...th, textAlign: "right" }}>Valor</th><th style={th}></th>
           </tr></thead>
           <tbody>
-            {carregando && <tr><td colSpan={7} style={{ ...td, color: MUTED }}>Carregando...</td></tr>}
-            {!carregando && fila.length === 0 && <tr><td colSpan={7} style={{ ...td, color: MUTED }}>Nenhum orçamento aguardando faturamento.</td></tr>}
-            {fila.map((o) => (
+            {carregando && <tr><td colSpan={8} style={{ ...td, color: MUTED }}>Carregando...</td></tr>}
+            {!carregando && filaVis.length === 0 && <tr><td colSpan={8} style={{ ...td, color: MUTED }}>{termo ? "Nada na fila com essa pesquisa." : "Nenhum orçamento aguardando faturamento."}</td></tr>}
+            {filaVis.map((o) => (
               <React.Fragment key={o.id}>
                 <tr style={{ borderTop: `1px solid ${BORDER}` }}>
                   <td style={td}>{fmtData(o.autorizado_em)}</td>
@@ -4593,6 +4608,7 @@ function FaturamentoFinanceiroView({ session, setErro }) {
                   <td style={{ ...td, fontWeight: 600 }}>{o.evento}</td>
                   <td style={td}>{o.clientes?.nome || "—"}</td>
                   <td style={td}>{fmtData(o.data_evento)}</td>
+                  <td style={td}><BadgeEmp e={o.empresa} /></td>
                   <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(o.valor)}</td>
                   <td style={{ ...td, textAlign: "right" }}>
                     <button onClick={() => (faturandoId === o.id ? setFaturandoId(null) : abrirFaturar(o))} style={{ ...btnGhostSmall, borderColor: NAVY, color: NAVY, fontWeight: 600 }}>
@@ -4602,8 +4618,14 @@ function FaturamentoFinanceiroView({ session, setErro }) {
                 </tr>
                 {faturandoId === o.id && (
                   <tr style={{ background: "#F3F7FB" }}>
-                    <td colSpan={7} style={{ padding: 16 }}>
+                    <td colSpan={8} style={{ padding: 16 }}>
                       <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
+                        <Field label="Empresa que fatura">
+                          <select value={form.empresa || "prosign"} onChange={(e) => setForm({ ...form, empresa: e.target.value })} style={{ ...inputStyle, fontWeight: 700, color: form.empresa === "vs" ? "#7A5C99" : NAVY }}>
+                            <option value="prosign">Prosign</option>
+                            <option value="vs">VS</option>
+                          </select>
+                        </Field>
                         <Field label="Data do faturamento (data da nota fiscal)">
                           <input type="date" value={form.data} onChange={(e) => setForm({ ...form, data: e.target.value })} style={inputStyle} />
                           {String(o.mes_ref || "").slice(0, 7) < hojeLocal().slice(0, 7) && (
