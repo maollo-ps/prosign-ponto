@@ -6252,7 +6252,7 @@ function OrdensPagamentoComercialView({ session, setErro }) {
 
 // ---------- Comercial: gerar ordens de um orçamento ----------
 // formulário de nova ordem (usado no Comercial, dentro do orçamento, e no Financeiro, avulsa)
-function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], itemNaOrdem = {}, onGerada, onFechar, modoFinanceiro = false }) {
+function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], porItem = {}, semItem = null, onGerada, onFechar, modoFinanceiro = false }) {
   const meuNome = useMeuNome(session);
   const [fornecedores, setFornecedores] = useState([]);
   const [funcionarios, setFuncionarios] = useState([]);
@@ -6274,7 +6274,10 @@ function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], item
   }, []); // eslint-disable-line
   const rotuloOrc = (o) => `${o.numero_or ? `PR ${o.numero_or} · ` : ""}${o.evento}${o.data_evento ? ` (${fmtDataBR(o.data_evento)})` : ""}`;
   const orcVinculado = modoFinanceiro ? orcsAprovados.find((o) => rotuloOrc(o) === orcTexto.trim()) || null : orc;
-  const somaSel = itens.filter((i) => f.selecionados.includes(i.id)).reduce((s, i) => s + custoDoItem(i), 0);
+  // previsto (composição) x já em ordens: o que falta de cada item
+  const saldoItem = (i) => Math.round((custoDoItem(i) - (porItem[i.id]?.gerado || 0)) * 100) / 100;
+  const sugestao = (i) => Math.max(0, saldoItem(i));
+  const somaSel = itens.filter((i) => f.selecionados.includes(i.id)).reduce((s, i) => s + sugestao(i), 0);
   const th = { padding: "8px 10px", textAlign: "left", fontSize: 11, color: MUTED, textTransform: "uppercase", letterSpacing: 0.4, background: BG, whiteSpace: "nowrap" };
   const td = { padding: "8px 10px", fontSize: 13, borderTop: `1px solid ${BORDER}`, verticalAlign: "middle" };
   const catLabel = (c) => CATEGORIAS_ITEM.find((x) => x.id === c)?.label || c;
@@ -6292,7 +6295,7 @@ function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], item
       const sel = x.selecionados.includes(it.id) ? x.selecionados.filter((id) => id !== it.id) : [...x.selecionados, it.id];
       const novo = { ...x, selecionados: sel };
       if (!x.valorManual) {
-        const soma = itens.filter((i) => sel.includes(i.id)).reduce((s, i) => s + custoDoItem(i), 0);
+        const soma = itens.filter((i) => sel.includes(i.id)).reduce((s, i) => s + sugestao(i), 0);
         novo.valor = soma ? String(Math.round(soma * 100) / 100).replace(".", ",") : "";
       }
       return novo;
@@ -6346,7 +6349,17 @@ function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], item
           descricao: f.descricao.trim() || null, obs: f.obs.trim() || null, criado_por_nome: meuNome || null,
         },
       });
-      const linhas = itens.filter((i) => f.selecionados.includes(i.id)).map((i) => ({ ordem_id: op.id, orcamento_item_id: i.id, descricao: i.descricao || "", valor: Math.round(custoDoItem(i) * 100) / 100 }));
+      // o valor da ordem é repartido entre os itens marcados (pelo saldo de cada um), para o previsto x realizado
+      const marcados = itens.filter((i) => f.selecionados.includes(i.id));
+      const totCent = Math.round(Number(op.valor) * 100);
+      const pesos = marcados.map((i) => sugestao(i) || custoDoItem(i) || 1);
+      const somaPesos = pesos.reduce((x, y) => x + y, 0) || 1;
+      let usado = 0;
+      const linhas = marcados.map((i, k) => {
+        const cent = k === marcados.length - 1 ? totCent - usado : Math.round(totCent * pesos[k] / somaPesos);
+        usado += cent;
+        return { ordem_id: op.id, orcamento_item_id: i.id, descricao: i.descricao || "", valor: cent / 100 };
+      });
       try {
         await sbRequest("ordem_pagamento_parcelas", session, { method: "POST", body: parcelasGravar.map((p) => ({ ordem_id: op.id, ...p })), extraHeaders: { Prefer: "return=minimal" } });
       } catch (e2) {
@@ -6378,26 +6391,66 @@ function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], item
             </Field>
           </div>
         )}
-        {itens.length > 0 && <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>Marque os itens da composição que serão pagos a este fornecedor (opcional) — o valor é somado sozinho e pode ser ajustado.</div>}
+        {itens.length > 0 && <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>
+          <b style={{ color: NAVY }}>Previsto × realizado.</b> Marque o item da composição a que esta ordem se refere (ex.: Alimentação). Um item pode ter várias ordens — o valor sugerido é o saldo que falta.
+        </div>}
         {(itens.length > 0 || !modoFinanceiro) && <div style={{ overflowX: "auto", marginBottom: 12, border: `1px solid ${BORDER}`, borderRadius: 8 }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 640 }}>
-            <thead><tr><th style={{ ...th, width: 34 }}></th><th style={th}>Item da composição</th><th style={th}>Bloco</th><th style={th}>Fornecedor na composição</th><th style={{ ...th, textAlign: "right" }}>Custo</th><th style={th}>Ordem</th></tr></thead>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
+            <thead><tr>
+              <th style={{ ...th, width: 34 }}></th><th style={th}>Item da composição</th><th style={th}>Bloco</th>
+              <th style={{ ...th, textAlign: "right" }}>Previsto</th><th style={{ ...th, textAlign: "right" }}>Em ordens</th>
+              <th style={{ ...th, textAlign: "right" }}>Pago</th><th style={{ ...th, textAlign: "right" }}>Saldo</th><th style={th}>Ordens</th>
+            </tr></thead>
             <tbody>
-              {itens.length === 0 && <tr><td colSpan={6} style={{ ...td, color: MUTED }}>Este orçamento não tem composição. Dá para gerar a ordem informando o valor direto.</td></tr>}
+              {itens.length === 0 && <tr><td colSpan={8} style={{ ...td, color: MUTED }}>Este orçamento não tem composição. Dá para gerar a ordem informando o valor direto.</td></tr>}
               {itens.map((i) => {
-                const em = itemNaOrdem[i.id];
+                const r = porItem[i.id] || { gerado: 0, pago: 0, ops: [] };
+                const prev = custoDoItem(i);
+                const saldo = saldoItem(i);
+                const estourou = saldo < -0.005;
                 return (
-                  <tr key={i.id} style={{ opacity: em ? 0.55 : 1 }}>
-                    <td style={td}><input type="checkbox" disabled={!!em} checked={f.selecionados.includes(i.id)} onChange={() => alternarItem(i)} /></td>
-                    <td style={{ ...td, fontWeight: 600 }}>{i.descricao || "—"}</td>
+                  <tr key={i.id} style={{ background: f.selecionados.includes(i.id) ? "#FFFBEF" : "transparent" }}>
+                    <td style={td}><input type="checkbox" checked={f.selecionados.includes(i.id)} onChange={() => alternarItem(i)} /></td>
+                    <td style={{ ...td, fontWeight: 600 }}>{i.descricao || "—"}{i.fornecedorTxt && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{i.fornecedorTxt}</div>}</td>
                     <td style={{ ...td, color: MUTED, fontSize: 12 }}>{catLabel(i.categoria)}</td>
-                    <td style={{ ...td, color: MUTED }}>{i.fornecedorTxt || "—"}</td>
-                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(custoDoItem(i))}</td>
-                    <td style={td}>{em ? <span style={{ fontSize: 12 }}>{numeroOP(em.numero)} <BadgeOP status={situacaoOP(em)} /></span> : ""}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(prev)}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, color: r.gerado ? GOLD : MUTED }}>{r.gerado ? brl(r.gerado) : "—"}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, color: r.pago ? OK : MUTED }}>{r.pago ? brl(r.pago) : "—"}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700, color: estourou ? DANGER : r.gerado ? OK : TEXT }}>
+                      {estourou ? `− ${brl(-saldo)}` : brl(saldo)}
+                      {estourou && <div style={{ fontSize: 10, fontWeight: 700 }}>ESTOUROU</div>}
+                    </td>
+                    <td style={{ ...td, fontSize: 11, color: MUTED }}>{r.ops.map((n) => numeroOP(n)).join(", ") || ""}</td>
                   </tr>
                 );
               })}
             </tbody>
+            {itens.length > 0 && (() => {
+              const tPrev = itens.reduce((x, i) => x + custoDoItem(i), 0);
+              const tGer = itens.reduce((x, i) => x + (porItem[i.id]?.gerado || 0), 0);
+              const tPago = itens.reduce((x, i) => x + (porItem[i.id]?.pago || 0), 0);
+              const tSaldo = tPrev - tGer;
+              return (
+                <tfoot>
+                  <tr style={{ borderTop: `2px solid ${BORDER}`, fontWeight: 700 }}>
+                    <td style={td}></td><td style={td} colSpan={2}>Total da composição</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(tPrev)}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, color: GOLD }}>{brl(tGer)}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, color: OK }}>{brl(tPago)}</td>
+                    <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, color: tSaldo < -0.005 ? DANGER : OK }}>{tSaldo < -0.005 ? `− ${brl(-tSaldo)}` : brl(tSaldo)}</td>
+                    <td style={td}></td>
+                  </tr>
+                  {semItem && semItem.gerado > 0 && (
+                    <tr>
+                      <td style={td}></td><td style={{ ...td, color: MUTED }} colSpan={3}>Ordens sem item da composição (não previstas)</td>
+                      <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, color: DANGER }}>{brl(semItem.gerado)}</td>
+                      <td style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, color: OK }}>{semItem.pago ? brl(semItem.pago) : "—"}</td>
+                      <td style={td} colSpan={2}></td>
+                    </tr>
+                  )}
+                </tfoot>
+              );
+            })()}
           </table>
         </div>}
         <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 8, fontSize: 13 }}>
@@ -6422,7 +6475,7 @@ function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], item
               </>
             )}
           </Field>
-          <Field label={f.selecionados.length ? `Valor (itens: ${brl(somaSel)}) *` : "Valor (R$) *"}>
+          <Field label={f.selecionados.length ? `Valor (saldo dos itens: ${brl(somaSel)}) *` : "Valor (R$) *"}>
             <input style={{ ...inputStyle, fontFamily: FONT_MONO }} inputMode="decimal" value={f.valor} placeholder="0,00" onChange={(e) => setF({ ...f, valor: e.target.value, valorManual: true })} />
           </Field>
           <Field label={f.parcelado ? "Vencimento (ver parcelas)" : "Vencimento"}><input type="date" style={inputStyle} disabled={f.parcelado} value={f.parcelado ? "" : f.vencimento} onChange={(e) => setF({ ...f, vencimento: e.target.value })} /></Field>
@@ -6495,9 +6548,20 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
   }
   useEffect(() => { carregar(); }, [orcamentoId]); // eslint-disable-line
 
-  // item → ordem ativa (aberta ou paga) em que já está
-  const itemNaOrdem = {};
-  ops.filter((o) => o.status !== "cancelada").forEach((o) => (o.ordem_pagamento_itens || []).forEach((i) => { if (i.orcamento_item_id) itemNaOrdem[i.orcamento_item_id] = o; }));
+  // previsto x realizado por item: valor em ordens (abertas + pagas) e quanto já foi pago
+  const porItem = {};
+  const semItem = { gerado: 0, pago: 0 };
+  ops.filter((o) => o.status !== "cancelada").forEach((o) => {
+    const fracPago = Number(o.valor) > 0 ? pagoDaOrdem(o) / Number(o.valor) : 0;
+    const linhas = (o.ordem_pagamento_itens || []).filter((i) => i.orcamento_item_id);
+    if (!linhas.length) { semItem.gerado += Number(o.valor); semItem.pago += pagoDaOrdem(o); return; }
+    linhas.forEach((i) => {
+      const r = porItem[i.orcamento_item_id] || (porItem[i.orcamento_item_id] = { gerado: 0, pago: 0, ops: [] });
+      r.gerado += Number(i.valor);
+      r.pago += Number(i.valor) * fracPago;
+      if (!r.ops.includes(o.numero)) r.ops.push(o.numero);
+    });
+  });
   const custoPrevisto = itens.reduce((s, i) => s + custoDoItem(i), 0);
   const ativas = ops.filter((o) => o.status !== "cancelada");
   const gerado = ativas.reduce((s, o) => s + Number(o.valor), 0);
@@ -6534,7 +6598,7 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
 
       {aviso && <div style={{ background: "#EAF4EE", color: OK, padding: 12, borderRadius: 8, marginBottom: 14, fontSize: 13 }}>{aviso}</div>}
 
-      <FormNovaOrdemPagamento session={session} setErro={setErro} orc={orc} itens={itens} itemNaOrdem={itemNaOrdem} onGerada={async (msg) => { setAviso(msg); await carregar(); }} />
+      <FormNovaOrdemPagamento session={session} setErro={setErro} orc={orc} itens={itens} porItem={porItem} semItem={semItem} onGerada={async (msg) => { setAviso(msg); await carregar(); }} />
 
       <Card style={{ padding: 0, overflowX: "auto" }}>
         <div style={{ padding: "12px 16px", fontWeight: 600, color: NAVY }}>Ordens deste orçamento</div>
