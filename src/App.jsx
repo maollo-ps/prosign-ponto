@@ -4902,11 +4902,21 @@ function CartaoNumero({ rotulo, valor, cor, sub }) {
 // Seletor de conta (centro de custo) — só contas analíticas, filtradas por natureza
 // ---------------------------------------------------------
 function SelectConta({ centros, value, onChange, natureza, style }) {
-  const lista = centros.filter((c) => c.tipo === "analitico" && c.ativo !== false && (!natureza || c.natureza === natureza));
+  const lista = centros.filter((c) => c.tipo === "analitico" && (c.ativo !== false || String(c.id) === String(value)) && (!natureza || c.natureza === natureza));
+  const nomeCurto = (c) => c.nome.replace(/^Despesas? (Administrativas?|com Insumos|com Evento|Folha de Pagamento( Pessoal)?|Impostos|com Máquinas e Equipamentos|Financiamento e Empréstimo) - /i, "");
+  // agrupa por classificação (Fixas, Variáveis, ...) para ficar fácil trocar uma despesa de fixa para variável
+  const ordemGrupos = ["variavel", "fixo", "operacional", "nao_operacional", "a_classificar"];
+  const grupos = {};
+  lista.forEach((c) => { const k = c.classificacao || "a_classificar"; (grupos[k] = grupos[k] || []).push(c); });
+  const chaves = Object.keys(grupos).sort((a, b) => (ordemGrupos.indexOf(a) + 99 * (ordemGrupos.indexOf(a) < 0)) - (ordemGrupos.indexOf(b) + 99 * (ordemGrupos.indexOf(b) < 0)));
   return (
     <select value={value || ""} onChange={(e) => onChange(e.target.value || null)} style={{ ...selStyle, ...style }}>
       <option value="">— sem conta —</option>
-      {lista.map((c) => <option key={c.id} value={c.id}>{c.codigo} · {c.nome.replace(/^Despesas? (Administrativas?|com Insumos|com Evento|Folha de Pagamento( Pessoal)?|Impostos|com Máquinas e Equipamentos|Financiamento e Empréstimo) - /i, "")}</option>)}
+      {chaves.map((k) => (
+        <optgroup key={k} label={(CLASSIF_LABEL[k] || k).toUpperCase()}>
+          {grupos[k].map((c) => <option key={c.id} value={c.id}>{c.codigo} · {nomeCurto(c)}</option>)}
+        </optgroup>
+      ))}
     </select>
   );
 }
@@ -5028,10 +5038,26 @@ function LancamentosFinView({ session, setErro, centros }) {
   const [editId, setEditId] = useState(null);
   const [novo, setNovo] = useState(false);
   const [salvando, setSalvando] = useState(false);
+  const [classif, setClassif] = useState("todas");
+  const [marcados, setMarcados] = useState({});
+  const [contaLote, setContaLote] = useState(null);
+  const [trocando, setTrocando] = useState(null);
   const porId = useMemo(() => Object.fromEntries(centros.map((c) => [c.id, c])), [centros]);
 
+  async function trocarConta(ids, centroId) {
+    if (!ids.length) return;
+    setTrocando(ids.length === 1 ? ids[0] : "lote"); setErro("");
+    try {
+      await sbRequest(`lancamentos_fin?id=in.(${ids.join(",")})`, session, { method: "PATCH", body: { centro_custo_id: centroId || null } });
+      const alvo = ids.map(String);
+      setRegs((rs) => rs.map((r) => (alvo.includes(String(r.id)) ? { ...r, centro_custo_id: centroId ? Number(centroId) || centroId : null } : r)));
+      setMarcados({}); setContaLote(null);
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setTrocando(null); }
+  }
+
   function carregar() {
-    setCarregando(true);
+    setCarregando(true); setMarcados({});
     sbRequest(`lancamentos_fin?select=*,orcamentos(evento,numero_or,data_evento,clientes:pessoas(nome))&competencia=eq.${mes}-01&order=vencimento.asc.nullslast&limit=2000`, session)
       .then((rows) => setRegs(rows || []))
       .catch((e) => setErro(msgSupabase(e)))
@@ -5044,6 +5070,7 @@ function LancamentosFinView({ session, setErro, centros }) {
     if (tipo !== "todos" && l.tipo !== tipo) return false;
     if (situacao !== "todas" && l.situacao !== situacao) return false;
     const cl = porId[l.centro_custo_id]?.classificacao;
+    if (classif !== "todas" && (cl || "a_classificar") !== classif) return false;
     if (pendencia === "sem_conta" && cl && cl !== "a_classificar") return false;
     if (pendencia === "sem_evento" && !(l.tipo === "pagar" && cl === "variavel" && !l.orcamento_id)) return false;
     if (busca.trim()) {
@@ -5121,6 +5148,9 @@ function LancamentosFinView({ session, setErro, centros }) {
             <option value="sem_conta">Sem conta definida ({semConta})</option>
           </select>
         </Field>
+        <Field label="Classificação">
+          <select value={classif} onChange={(e) => setClassif(e.target.value)} style={selStyle}><option value="todas">Todas</option>{Object.entries(CLASSIF_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+        </Field>
         <Field label="Buscar"><input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="fornecedor, histórico, nº" style={inputStyle} /></Field>
         <div style={{ flex: 1 }} />
         <button onClick={() => setNovo((x) => !x)} style={btnPrimary}><Plus size={16} /> Lançamento manual</button>
@@ -5133,27 +5163,46 @@ function LancamentosFinView({ session, setErro, centros }) {
         </Card>
       )}
 
+      {Object.values(marcados).some(Boolean) && (() => {
+        const ids = Object.keys(marcados).filter((k) => marcados[k]);
+        const tipos = new Set(regs.filter((r) => ids.includes(String(r.id))).map((r) => r.tipo));
+        return (
+          <Card style={{ marginBottom: 12, background: "#FFF8E6", borderColor: GOLD, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <b style={{ color: NAVY }}>{ids.length} selecionado(s)</b>
+            <span style={{ fontSize: 13 }}>Trocar a conta (centro de custo) para:</span>
+            <SelectConta centros={centros} value={contaLote} onChange={setContaLote} natureza={tipos.size === 1 ? (tipos.has("receber") ? "receita" : "despesa") : undefined} style={{ minWidth: 280 }} />
+            <button disabled={!contaLote || trocando} onClick={() => trocarConta(ids, contaLote)} style={btnPrimary}><Save size={15} /> {trocando === "lote" ? "Salvando..." : "Aplicar"}</button>
+            <button onClick={() => { setMarcados({}); setContaLote(null); }} style={btnGhostSmall}>Limpar seleção</button>
+          </Card>
+        );
+      })()}
+
       <Card style={{ padding: 0, overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
           <thead><tr style={{ background: BG }}>
+            <th style={{ ...thS, width: 28 }}><input type="checkbox" title="Selecionar todos" checked={filtrados.length > 0 && filtrados.every((l) => marcados[l.id])} onChange={(e) => setMarcados(e.target.checked ? Object.fromEntries(filtrados.map((l) => [l.id, true])) : {})} /></th>
             <th style={thS}>Emp.</th><th style={thS}>Tipo</th><th style={thS}>Nº</th><th style={thS}>Venc.</th><th style={thS}>Pgto</th>
             <th style={thS}>Fornecedor / Cliente</th><th style={thS}>Conta</th><th style={thS}>Evento</th><th style={{ ...thS, textAlign: "right" }}>Valor</th><th style={thS}>Sit.</th><th style={thS}></th>
           </tr></thead>
           <tbody>
-            {carregando && <tr><td colSpan={11} style={{ ...tdS, color: MUTED }}>Carregando...</td></tr>}
-            {!carregando && filtrados.length === 0 && <tr><td colSpan={11} style={{ ...tdS, color: MUTED }}>Nenhum lançamento com esses filtros nesta competência.</td></tr>}
+            {carregando && <tr><td colSpan={12} style={{ ...tdS, color: MUTED }}>Carregando...</td></tr>}
+            {!carregando && filtrados.length === 0 && <tr><td colSpan={12} style={{ ...tdS, color: MUTED }}>Nenhum lançamento com esses filtros nesta competência.</td></tr>}
             {filtrados.map((l) => {
               const c = porId[l.centro_custo_id];
               return (
                 <React.Fragment key={l.id}>
-                  <tr style={{ borderTop: `1px solid ${BORDER}` }}>
+                  <tr style={{ borderTop: `1px solid ${BORDER}`, background: marcados[l.id] ? "#FFFBEF" : undefined }}>
+                    <td style={tdS}><input type="checkbox" checked={!!marcados[l.id]} onChange={(e) => setMarcados((m) => ({ ...m, [l.id]: e.target.checked }))} /></td>
                     <td style={tdS}><ChipEmpresa id={l.empresa} /></td>
                     <td style={tdS}>{l.tipo === "pagar" ? "Pagar" : "Receber"}</td>
                     <td style={{ ...tdS, fontFamily: FONT_MONO, fontSize: 12 }}>{l.numero_conta}</td>
                     <td style={tdS}>{fmtDataBR(l.vencimento)}</td>
                     <td style={tdS}>{fmtDataBR(l.pagamento)}</td>
                     <td style={tdS}><div style={{ fontWeight: 600 }}>{l.fornecedor_cliente || "—"}</div><div style={{ fontSize: 11, color: MUTED, maxWidth: 260 }}>{l.historico}</div></td>
-                    <td style={tdS}>{c ? <><div style={{ fontSize: 12 }}>{c.codigo}</div><ChipClassif valor={c.classificacao} /></> : <ChipClassif valor="a_classificar" />}</td>
+                    <td style={{ ...tdS, minWidth: 190 }}>
+                      <div style={{ marginBottom: 3 }}><ChipClassif valor={c?.classificacao || "a_classificar"} /></div>
+                      <SelectConta centros={centros} value={l.centro_custo_id} natureza={l.tipo === "receber" ? "receita" : "despesa"} onChange={(v) => trocarConta([l.id], v)} style={{ padding: "3px 6px", fontSize: 11, maxWidth: 220, opacity: trocando === l.id ? 0.5 : 1 }} />
+                    </td>
                     <td style={{ ...tdS, fontSize: 12 }}>{l.orcamentos ? `${l.orcamentos.evento}${l.orcamentos.clientes?.nome ? " · " + l.orcamentos.clientes.nome : ""}` : <span style={{ color: MUTED }}>—</span>}</td>
                     <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, color: l.tipo === "receber" ? "#2E7D5B" : TEXT }}>{brl(l.valor)}</td>
                     <td style={{ ...tdS, fontSize: 12, color: l.situacao === "vencida" ? DANGER : TEXT }}>{l.situacao}</td>
@@ -5164,7 +5213,7 @@ function LancamentosFinView({ session, setErro, centros }) {
                   </tr>
                   {editId === l.id && (
                     <tr style={{ background: "#F3F7FB" }}>
-                      <td colSpan={11} style={{ padding: 16 }}>
+                      <td colSpan={12} style={{ padding: 16 }}>
                         <FormLancamento key={l.id} session={session} setErro={setErro} centros={centros} valorInicial={valorInicialDe(l)} onSalvar={(f) => salvarEdicao(l, f)} onCancelar={() => setEditId(null)} salvando={salvando} />
                       </td>
                     </tr>
@@ -5175,7 +5224,7 @@ function LancamentosFinView({ session, setErro, centros }) {
           </tbody>
           {filtrados.length > 0 && (
             <tfoot><tr style={{ background: BG, fontWeight: 700 }}>
-              <td colSpan={8} style={tdS}>{filtrados.length} lançamentos</td>
+              <td colSpan={9} style={tdS}>{filtrados.length} lançamentos</td>
               <td colSpan={3} style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>Pagar {brl(totPagar)} · Receber {brl(totReceber)}</td>
             </tr></tfoot>
           )}
