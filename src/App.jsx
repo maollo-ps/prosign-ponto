@@ -4558,6 +4558,18 @@ function FaturamentoFinanceiroView({ session, setErro }) {
   const totalAReceber = aReceber.reduce((x, f) => x + (Number(f.valor) || 0), 0);
   const totalAtrasado = recentes.filter((f) => situacaoReceb(f) === "atrasado").reduce((x, f) => x + (Number(f.valor) || 0), 0);
   const recentesVis = recentes.filter((f) => filtroReceb === "todos" || (filtroReceb === "recebidos" ? !!f.data_recebimento : !f.data_recebimento));
+  async function trocarEmpresa(f, emp) {
+    const nome = emp === "vs" ? "VS" : "Prosign";
+    if (!window.confirm(`Mudar a empresa que faturou "${f.orcamentos?.evento}" para ${nome}?`)) return;
+    setErro("");
+    try {
+      const r = await sbRequest(`orcamentos?id=eq.${f.orcamento_id}`, session, { method: "PATCH", body: { empresa: emp } });
+      if (Array.isArray(r) && r.length === 0) throw new Error("Sem permissão para alterar.");
+      setRecentes((l) => l.map((x) => (x.id === f.id ? { ...x, orcamentos: { ...x.orcamentos, empresa: emp } } : x)));
+    } catch (e) {
+      setErro(/faturado não pode ser alterado/i.test(e.message) ? "O banco ainda não libera trocar a empresa de orçamento faturado: rode o SQL correcao_faturamento_nov.sql no Supabase." : msgSupabase(e));
+    }
+  }
   const totalFila = fila.reduce((s, o) => s + (Number(o.valor) || 0), 0);
   const termo = buscaAtiva.trim().toUpperCase();
   const filaVis = termo ? fila.filter((o) => [o.evento, o.numero_or, o.clientes?.nome].some((x) => String(x || "").toUpperCase().includes(termo))) : fila;
@@ -4666,11 +4678,11 @@ function FaturamentoFinanceiroView({ session, setErro }) {
         </div>
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
           <thead><tr style={{ background: BG }}>
-            <th style={th}>Faturado em</th><th style={th}>PR</th><th style={th}>Evento</th><th style={th}>Cliente</th><th style={th}>NF</th><th style={{ ...th, textAlign: "right" }}>Valor</th>
+            <th style={th}>Faturado em</th><th style={th}>PR</th><th style={th}>Evento</th><th style={th}>Cliente</th><th style={th}>Empresa</th><th style={th}>NF</th><th style={{ ...th, textAlign: "right" }}>Valor</th>
             <th style={th}>Previsão receb.</th><th style={th}>Recebido em</th><th style={th}>Situação</th><th style={th}></th>
           </tr></thead>
           <tbody>
-            {recentesVis.length === 0 && <tr><td colSpan={10} style={{ ...td, color: MUTED }}>Nada por aqui.</td></tr>}
+            {recentesVis.length === 0 && <tr><td colSpan={11} style={{ ...td, color: MUTED }}>Nada por aqui.</td></tr>}
             {recentesVis.map((f) => {
               const sit = situacaoReceb(f);
               const cor = sit === "recebido" ? "#2E7D5B" : sit === "atrasado" ? DANGER : GOLD;
@@ -4681,6 +4693,12 @@ function FaturamentoFinanceiroView({ session, setErro }) {
                     <td style={td}>{f.orcamentos?.numero_or || "—"}</td>
                     <td style={td}>🔒 {f.orcamentos?.evento}</td>
                     <td style={td}>{f.clientes?.nome || "—"}</td>
+                    <td style={td}>
+                      <select value={f.orcamentos?.empresa === "vs" ? "vs" : "prosign"} onChange={(e) => trocarEmpresa(f, e.target.value)}
+                        title="Empresa que faturou" style={{ ...selStyle, padding: "3px 6px", fontSize: 11, fontWeight: 700, color: f.orcamentos?.empresa === "vs" ? "#7A5C99" : NAVY }}>
+                        <option value="prosign">PROSIGN</option><option value="vs">VS</option>
+                      </select>
+                    </td>
                     <td style={td}>
                       {(() => {
                         const nAt = notaAtiva(f.id), nUlt = ultimaNota(f.id), n = nAt || nUlt;
@@ -4722,7 +4740,7 @@ function FaturamentoFinanceiroView({ session, setErro }) {
                   </tr>
                   {emitindo?.fat.id === f.id && (
                     <tr style={{ background: "#F1F8F4" }}>
-                      <td colSpan={10} style={{ padding: 16 }}>
+                      <td colSpan={11} style={{ padding: 16 }}>
                         <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 10, fontSize: 13 }}>
                           <div>
                             <b>Emitir NFS-e</b> · {f.clientes?.nome || "—"} <span style={{ color: MUTED }}>({f.clientes?.documento || "sem CNPJ/CPF no cadastro!"})</span> · <b style={{ fontFamily: FONT_MONO }}>{brl(f.valor)}</b>
@@ -4749,7 +4767,7 @@ function FaturamentoFinanceiroView({ session, setErro }) {
                   )}
                   {editReceb?.id === f.id && (
                     <tr style={{ background: "#F3F7FB" }}>
-                      <td colSpan={10} style={{ padding: 14 }}>
+                      <td colSpan={11} style={{ padding: 14 }}>
                         <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-end" }}>
                           <Field label="Previsão de recebimento">
                             <input type="date" value={editReceb.previsao} onChange={(e) => setEditReceb({ ...editReceb, previsao: e.target.value })} style={inputStyle} />
@@ -6237,15 +6255,18 @@ function OrdensPagamentoComercialView({ session, setErro }) {
 function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], itemNaOrdem = {}, onGerada, onFechar, modoFinanceiro = false }) {
   const meuNome = useMeuNome(session);
   const [fornecedores, setFornecedores] = useState([]);
+  const [funcionarios, setFuncionarios] = useState([]);
   const [salvando, setSalvando] = useState(false);
   const [orcsAprovados, setOrcsAprovados] = useState([]);
   const [orcTexto, setOrcTexto] = useState("");
   const [empresaAvulsa, setEmpresaAvulsa] = useState("prosign");
-  const vazio = { selecionados: [], fornecedorNome: "", fornecedorId: null, valor: "", valorManual: false, vencimento: "", forma: "pix", dados: "", descricao: "", obs: "", parcelado: false, parcelas: [] };
+  const vazio = { tipoFav: "fornecedor", funcionarioId: null, selecionados: [], fornecedorNome: "", fornecedorId: null, valor: "", valorManual: false, vencimento: "", forma: "pix", dados: "", descricao: "", obs: "", parcelado: false, parcelas: [] };
   const [f, setF] = useState(vazio);
   useEffect(() => {
     sbRequest("pessoas?select=id,nome,razao_social,documento,bancos&fornecedor=eq.true&ativo=eq.true&order=nome.asc&limit=1000", session)
       .then((r) => setFornecedores(r || [])).catch(() => {});
+    sbRequest("funcionarios?select=id,nome,cpf&ativo=eq.true&order=nome.asc", session)
+      .then((r) => setFuncionarios(r || [])).catch(() => {});
     if (modoFinanceiro) {
       sbRequest(`orcamentos?select=id,evento,numero_or,empresa,data_evento&status=in.(${STATUS_VENDA.join(",")})&order=data_evento.desc.nullslast&limit=400`, session)
         .then((r) => setOrcsAprovados(r || [])).catch(() => {});
@@ -6258,6 +6279,10 @@ function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], item
   const td = { padding: "8px 10px", fontSize: 13, borderTop: `1px solid ${BORDER}`, verticalAlign: "middle" };
   const catLabel = (c) => CATEGORIAS_ITEM.find((x) => x.id === c)?.label || c;
 
+  function escolherFuncionario(id) {
+    const fu = funcionarios.find((x) => String(x.id) === String(id));
+    setF((x) => ({ ...x, funcionarioId: fu ? fu.id : null, fornecedorId: null, fornecedorNome: fu ? fu.nome : "", dados: fu?.cpf ? `PIX / CPF: ${fu.cpf}` : x.dados }));
+  }
   function escolherFornecedor(nome) {
     const p = fornecedores.find((x) => (x.nome || "").trim().toUpperCase() === nome.trim().toUpperCase() || (x.razao_social || "").trim().toUpperCase() === nome.trim().toUpperCase());
     setF((x) => ({ ...x, fornecedorNome: nome, fornecedorId: p?.id || null, dados: p ? (dadosPagamentoDaPessoa(p) || x.dados) : x.dados }));
@@ -6298,7 +6323,7 @@ function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], item
 
   async function gerar() {
     const valor = numDigitado(f.valor);
-    if (!f.fornecedorNome.trim()) { setErro("Informe o fornecedor (favorecido)."); return; }
+    if (!f.fornecedorNome.trim()) { setErro(f.tipoFav === "funcionario" ? "Escolha o funcionário." : "Informe o fornecedor (favorecido)."); return; }
     if (!(valor > 0)) { setErro("Informe o valor da ordem de pagamento."); return; }
     const parcelasGravar = f.parcelado
       ? f.parcelas.map((p, i) => ({ numero: i + 1, descricao: (p.descricao || "").trim() || null, valor: centavos(p.valor) / 100, vencimento: p.vencimento || null }))
@@ -6315,7 +6340,8 @@ function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], item
         method: "POST",
         body: {
           orcamento_id: orcVinculado?.id || null, empresa: orcVinculado ? (orcVinculado.empresa === "vs" ? "vs" : "prosign") : empresaAvulsa,
-          fornecedor_id: f.fornecedorId, fornecedor_nome: f.fornecedorNome.trim(), valor: Math.round(valor * 100) / 100,
+          fornecedor_id: f.tipoFav === "funcionario" ? null : f.fornecedorId, fornecedor_nome: f.fornecedorNome.trim(),
+          ...(f.tipoFav === "funcionario" && f.funcionarioId ? { funcionario_id: f.funcionarioId } : {}), valor: Math.round(valor * 100) / 100,
           vencimento: parcelasGravar[0].vencimento, forma_pagamento: f.forma, dados_pagamento: f.dados.trim() || null,
           descricao: f.descricao.trim() || null, obs: f.obs.trim() || null, criado_por_nome: meuNome || null,
         },
@@ -6374,10 +6400,27 @@ function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], item
             </tbody>
           </table>
         </div>}
+        <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 8, fontSize: 13 }}>
+          <span style={{ color: MUTED }}>Pagar para:</span>
+          {[["fornecedor", "Fornecedor"], ["funcionario", "Funcionário (ex.: verba de café da manhã)"]].map(([v, l]) => (
+            <label key={v} style={{ display: "inline-flex", gap: 5, alignItems: "center", cursor: "pointer", fontWeight: f.tipoFav === v ? 700 : 400, color: f.tipoFav === v ? NAVY : MUTED }}>
+              <input type="radio" name="tipo-fav" checked={f.tipoFav === v} onChange={() => setF((x) => ({ ...x, tipoFav: v, fornecedorNome: "", fornecedorId: null, funcionarioId: null, dados: "" }))} /> {l}
+            </label>
+          ))}
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr", gap: 12 }}>
-          <Field label="Fornecedor / favorecido *">
-            <input style={inputStyle} list="dl-op-fornecedores" value={f.fornecedorNome} onChange={(e) => escolherFornecedor(e.target.value)} placeholder="Nome do cadastro de fornecedores ou digite" />
-            <datalist id="dl-op-fornecedores">{fornecedores.map((p) => <option key={p.id} value={p.nome} />)}</datalist>
+          <Field label={f.tipoFav === "funcionario" ? "Funcionário *" : "Fornecedor / favorecido *"}>
+            {f.tipoFav === "funcionario" ? (
+              <select style={inputStyle} value={f.funcionarioId || ""} onChange={(e) => escolherFuncionario(e.target.value)}>
+                <option value="">Escolha o funcionário...</option>
+                {funcionarios.map((fu) => <option key={fu.id} value={fu.id}>{fu.nome}</option>)}
+              </select>
+            ) : (
+              <>
+                <input style={inputStyle} list="dl-op-fornecedores" value={f.fornecedorNome} onChange={(e) => escolherFornecedor(e.target.value)} placeholder="Nome do cadastro de fornecedores ou digite" />
+                <datalist id="dl-op-fornecedores">{fornecedores.map((p) => <option key={p.id} value={p.nome} />)}</datalist>
+              </>
+            )}
           </Field>
           <Field label={f.selecionados.length ? `Valor (itens: ${brl(somaSel)}) *` : "Valor (R$) *"}>
             <input style={{ ...inputStyle, fontFamily: FONT_MONO }} inputMode="decimal" value={f.valor} placeholder="0,00" onChange={(e) => setF({ ...f, valor: e.target.value, valorManual: true })} />
@@ -6417,10 +6460,10 @@ function FormNovaOrdemPagamento({ session, setErro, orc = null, itens = [], item
             <textarea rows={2} style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={f.dados} onChange={(e) => setF({ ...f, dados: e.target.value })} />
           </Field>
           <Field label="Descrição / observação para o financeiro">
-            <textarea rows={2} style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={f.descricao} placeholder="Ex.: montagem do estande, 50% na entrega" onChange={(e) => setF({ ...f, descricao: e.target.value })} />
+            <textarea rows={2} style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }} value={f.descricao} placeholder={f.tipoFav === "funcionario" ? "Ex.: verba para café da manhã da equipe de montagem" : "Ex.: montagem do estande, 50% na entrega"} onChange={(e) => setF({ ...f, descricao: e.target.value })} />
           </Field>
         </div>
-        {f.fornecedorNome && !f.fornecedorId && <div style={{ fontSize: 12, color: GOLD, marginTop: 6 }}>Fornecedor fora do cadastro — a ordem sai com o nome digitado.</div>}
+        {f.tipoFav !== "funcionario" && f.fornecedorNome && !f.fornecedorId && <div style={{ fontSize: 12, color: GOLD, marginTop: 6 }}>Fornecedor fora do cadastro — a ordem sai com o nome digitado.</div>}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
           <button onClick={() => setF(vazio)} style={btnGhostSmall}>Limpar</button>
           <button onClick={gerar} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Gerando..." : "Gerar ordem de pagamento"}</button>
@@ -6502,7 +6545,7 @@ function OrdemPagamentoOrcamentoView({ orcamentoId, session, setErro, onVoltar }
             {ops.map((o) => (
               <tr key={o.id} style={{ opacity: o.status === "cancelada" ? 0.55 : 1 }}>
                 <td data-label="Nº" style={{ ...td, fontFamily: FONT_MONO }}>{numeroOP(o.numero)}</td>
-                <td data-label="Favorecido" style={{ ...td, fontWeight: 600 }}>{o.fornecedor_nome}{o.descricao && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{o.descricao}</div>}</td>
+                <td data-label="Favorecido" style={{ ...td, fontWeight: 600 }}>{o.fornecedor_nome}{o.funcionario_id && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#1D6FA5" }}>FUNCIONÁRIO</span>}{o.descricao && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{o.descricao}</div>}</td>
                 <td data-label="Valor" style={{ ...td, textAlign: "right", fontFamily: FONT_MONO }}>{brl(Number(o.valor))}</td>
                 <td data-label="Vencimento" style={td}>
                   {parcelasDaOrdem(o).length > 1
@@ -6648,7 +6691,7 @@ function OrdensPagamentoFinanceiroView({ session, setErro }) {
                       {o.empresa === "vs" && <div style={{ fontSize: 10, color: "#7A5C99", fontWeight: 700 }}>VS</div>}
                     </td>
                     <td data-label="Vencimento" style={{ ...td, color: venc ? DANGER : TEXT, fontWeight: venc ? 700 : 400, whiteSpace: "nowrap" }}>{fmtDataBR(p.vencimento)}{venc && <div style={{ fontSize: 10 }}>VENCIDA</div>}</td>
-                    <td data-label="Favorecido" style={{ ...td, fontWeight: 600 }}>{o.fornecedor_nome}{(p.descricao || o.descricao) && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{[p.descricao, o.descricao].filter(Boolean).join(" · ")}</div>}</td>
+                    <td data-label="Favorecido" style={{ ...td, fontWeight: 600 }}>{o.fornecedor_nome}{o.funcionario_id && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#1D6FA5" }}>FUNCIONÁRIO</span>}{(p.descricao || o.descricao) && <div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{[p.descricao, o.descricao].filter(Boolean).join(" · ")}</div>}</td>
                     <td data-label="Projeto" style={td}>{o.orcamentos?.numero_or ? `PR ${o.orcamentos.numero_or} · ` : ""}{o.orcamentos?.evento || "—"}<div style={{ fontSize: 11, color: MUTED }}>{o.orcamentos?.clientes?.nome || ""}</div></td>
                     <td data-label="Valor" style={{ ...td, textAlign: "right", fontFamily: FONT_MONO, fontWeight: 700 }}>
                       {brl(Number(p.valor))}
