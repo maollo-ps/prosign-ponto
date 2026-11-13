@@ -4016,8 +4016,13 @@ function PrevisaoComercialView({ session, setErro }) {
   const [carregando, setCarregando] = useState(false);
   const [salvando, setSalvando] = useState(false);
   const [anoBase, setAnoBase] = useState(anoAtual);
-  const [percentual, setPercentual] = useState(10);
+  const [pctTexto, setPctTexto] = useState("10");
+  const [sentido, setSentido] = useState("aumento"); // aumento | reducao
   const [aplicando, setAplicando] = useState(false);
+  // aceita "10", "10,5", "-15" — se digitar com sinal de menos já vira redução
+  const pctNum = Math.abs(parseFloat(String(pctTexto).replace(",", ".")) || 0);
+  const percentual = (sentido === "reducao" || String(pctTexto).trim().startsWith("-") ? -1 : 1) * pctNum;
+  const pctFmt = `${percentual > 0 ? "+" : ""}${percentual.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%`;
 
   function carregar() {
     setCarregando(true);
@@ -4045,6 +4050,7 @@ function PrevisaoComercialView({ session, setErro }) {
         const mes = Number(r.mes_ref.slice(5, 7)) - 1;
         somaPorMes[mes] += Number(r.valor || 0);
       });
+      if (percentual <= -100) { setErro("A redução precisa ser menor que 100%."); return; }
       const fator = 1 + (percentual || 0) / 100;
       setValores(somaPorMes.map((v) => Math.round(v * fator * 100) / 100));
     } catch (e) { setErro(e.message); }
@@ -4084,12 +4090,30 @@ function PrevisaoComercialView({ session, setErro }) {
               {[anoAtual - 1, anoAtual].map((a) => <option key={a} value={a}>{a}</option>)}
             </select>
           </Field>
-          <Field label="Reajuste (%)">
-            <input type="number" step="0.1" style={inputStyle} value={percentual} onChange={(e) => setPercentual(parseFloat(e.target.value) || 0)} />
+          <Field label="Aumento ou redução">
+            <div style={{ display: "flex", gap: 0 }}>
+              {[["aumento", "▲ Aumento", OK], ["reducao", "▼ Redução", DANGER]].map(([id, label, cor]) => {
+                const ativo = (id === "reducao") === (percentual < 0 || (sentido === "reducao"));
+                return (
+                  <button key={id} type="button" onClick={() => { setSentido(id); setPctTexto(String(pctTexto).replace(/^\s*-/, "")); }}
+                    style={{ ...btnGhostSmall, borderRadius: id === "aumento" ? "6px 0 0 6px" : "0 6px 6px 0", background: ativo ? cor : "#fff", color: ativo ? "#fff" : TEXT, borderColor: ativo ? cor : BORDER, fontWeight: 700 }}>{label}</button>
+                );
+              })}
+            </div>
+          </Field>
+          <Field label="Percentual (%)">
+            <input inputMode="decimal" style={{ ...inputStyle, width: 110, color: percentual < 0 ? DANGER : TEXT, fontWeight: 700 }} value={pctTexto} onChange={(e) => { const t = e.target.value.replace(/[^0-9,.-]/g, ""); setPctTexto(t); if (t.trim().startsWith("-")) setSentido("reducao"); }} />
           </Field>
           <button onClick={handleAplicarPercentual} disabled={aplicando} style={btnGhostSmall}>
-            {aplicando ? "Calculando..." : `Aplicar: cada mês = mesmo mês de ${anoBase} × (1 + ${percentual}%)`}
+            {aplicando ? "Calculando..." : `Aplicar: cada mês = mesmo mês de ${anoBase} ${pctFmt}`}
           </button>
+          <button onClick={() => { if (percentual <= -100) { setErro("A redução precisa ser menor que 100%."); return; } const fator = 1 + percentual / 100; setValores((vs) => vs.map((v) => Math.round(v * fator * 100) / 100)); }} disabled={!valores.some((v) => v)} style={btnGhostSmall} title="Aplica o percentual em cima dos valores que já estão na tabela abaixo">
+            Aplicar {pctFmt} sobre os valores da tabela
+          </button>
+        </div>
+        <div style={{ fontSize: 12, color: MUTED, marginTop: 8 }}>
+          Ex.: redução de 15% → cada mês fica 85% do valor base. Depois de aplicar, confira a tabela e clique em <b>Salvar</b>.
+          {anoBase === anoAtual && <> Atenção: {anoBase} ainda não terminou, então os meses que faltam entram com o que já está aprovado até agora.</>}
         </div>
       </Card>
 
