@@ -2740,11 +2740,30 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
     setShowForm(true);
   }
 
+  // procura orçamento já lançado com o mesmo número de PR (aceita "PR0573/26", "573/26", "546/25 E 586/26")
+  // ou com mesmo cliente e mesmo valor — evita lançar a mesma venda duas vezes
+  async function possiveisDuplicados() {
+    const chaves = chavesPR(form.numeroOr);
+    const filtros = chaves.map((k) => `numero_or.ilike.*${k.split("/")[0]}*`);
+    if (form.clienteId && Number(form.valor) > 0) filtros.push(`and(cliente_id.eq.${form.clienteId},valor.eq.${Number(form.valor)})`);
+    if (!filtros.length) return [];
+    const rows = (await sbRequest(`orcamentos?select=id,numero_or,evento,valor,status,mes_ref,cliente_id&or=(${filtros.join(",")})&limit=50`, session)) || [];
+    return rows.filter((r) => r.id !== editing?.id && r.status !== "nao_aprovado"
+      && (chavesPR(r.numero_or).some((k) => chaves.includes(k)) || (form.clienteId && r.cliente_id === form.clienteId && Math.abs(Number(r.valor) - Number(form.valor)) < 0.01)));
+  }
+
   async function handleSalvar() {
     if (!form.evento) return;
     setSalvando(true);
     setErro("");
     try {
+      const mudouChave = !editing || (editing.numeroOr || "") !== (form.numeroOr || "") || Number(editing.valor) !== Number(form.valor) || (editing.clienteId || "") !== (form.clienteId || "");
+      if (mudouChave) {
+        const dups = await possiveisDuplicados().catch(() => []);
+        if (dups.length && !window.confirm(
+          `ATENÇÃO: parece que esta venda já foi lançada:\n\n${dups.slice(0, 6).map((d) => `• ${d.numero_or ? `PR ${d.numero_or} · ` : ""}${d.evento} · ${brl(Number(d.valor))} · ${STATUS_ORCAMENTO.find((s) => s.id === d.status)?.label || d.status} · ${d.mes_ref ? d.mes_ref.slice(5, 7) + "/" + d.mes_ref.slice(0, 4) : ""}`).join("\n")}\n\nSalvar mesmo assim? (Cancelar = não salva)`
+        )) { setSalvando(false); return; }
+      }
       const mesRefCalc = form.dataEvento ? `${form.dataEvento.slice(0, 7)}-01` : `${mesRef}-01`;
       const body = {
         evento: form.evento, cliente_id: form.clienteId || null, local: form.local || null,
@@ -4894,6 +4913,10 @@ function mesFimFin(mes) {
   return `${mes}-${String(new Date(a, m, 0).getDate()).padStart(2, "0")}`;
 }
 function fmtDataBR(iso) { return iso ? String(iso).slice(0, 10).split("-").reverse().join("/") : "—"; }
+// "PR0573/26" → ["573/26"]; "546/25 E 586/26" → ["546/25","586/26"]
+function chavesPR(numero) {
+  return [...String(numero || "").matchAll(/(\d+)\s*\/\s*(\d{2,4})/g)].map((m) => `${String(Number(m[1]))}/${m[2].slice(-2)}`);
+}
 function nomeEmpresa(id) { return EMPRESAS_FIN.find((e) => e.id === id)?.label || id; }
 function pctFmt(v) { return v == null ? "—" : `${(v * 100).toFixed(1).replace(".", ",")}%`; }
 
