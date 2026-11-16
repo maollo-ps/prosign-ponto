@@ -7081,7 +7081,7 @@ function RelatoriosFinView({ session, setErro, centros }) {
   const hoje = hojeISO();
   const mes = hoje.slice(0, 7);
   const fimMes = (m) => { const [a, mm] = m.split("-").map(Number); return new Date(a, mm, 0).toISOString().slice(0, 10); };
-  const inicial = { tipo: "pagar", situacao: "todas", campo: "vencimento", de: `${mes}-01`, ate: fimMes(mes), empresa: "todas", classif: "todas", centro: "", busca: "", agrupar: "nenhum", ordem: "data" };
+  const inicial = { tipo: "pagar", situacao: "todas", campo: "vencimento", de: `${mes}-01`, ate: fimMes(mes), empresa: "todas", classif: "todas", contaDe: "", contaAte: "", busca: "", agrupar: "nenhum", ordem: "data" };
   const [f, setF] = useState(inicial);
   const [preset, setPreset] = useState("pagar_mes");
   const [rows, setRows] = useState([]);
@@ -7111,7 +7111,6 @@ function RelatoriosFinView({ session, setErro, centros }) {
       if (filtros.situacao === "vencidas") q.push(`vencimento=lt.${hoje}`);
       if (filtros.de) q.push(`${filtros.campo}=gte.${filtros.de}`);
       if (filtros.ate) q.push(`${filtros.campo}=lte.${filtros.ate}`);
-      if (filtros.centro) q.push(`centro_custo_id=eq.${filtros.centro}`);
       const base = `lancamentos_fin?select=*,orcamentos(evento,numero_or)&${q.join("&")}&order=${filtros.campo}.asc.nullslast`;
       let todos = [];
       for (let off = 0; off < 20000; off += 1000) {
@@ -7127,9 +7126,24 @@ function RelatoriosFinView({ session, setErro, centros }) {
 
   // ----- filtros que dependem do plano de contas / texto -----
   const classeDe = (l) => porId[l.centro_custo_id]?.classificacao || "a_classificar";
+  // faixa de contas: "2.02" até "2.02.10" pega 2.02, 2.02.01 ... 2.02.10 (e as subcontas de 2.02.10)
+  const segs = (c) => String(c || "").trim().replace(/\.+$/, "").split(".").filter(Boolean).map((x) => Number(x));
+  const cmpCod = (a, b) => { const x = segs(a), y = segs(b); for (let i = 0; i < Math.max(x.length, y.length); i++) { if (x[i] === undefined) return -1; if (y[i] === undefined) return 1; if (x[i] !== y[i]) return x[i] - y[i]; } return 0; };
+  const prefixo = (cod, p) => { const x = segs(cod), y = segs(p); return y.length > 0 && y.every((v, i) => x[i] === v); };
+  const naFaixa = (cod) => {
+    const de = f.contaDe.trim(), ate = f.contaAte.trim();
+    if (!de && !ate) return true;
+    if (!cod) return false;
+    if (de && cmpCod(cod, de) < 0) return false;
+    if (ate && cmpCod(cod, ate) > 0 && !prefixo(cod, ate)) return false;
+    return true;
+  };
+  const temFaixa = !!(f.contaDe.trim() || f.contaAte.trim());
+  const contasNaFaixa = temFaixa ? analiticos.filter((c) => naFaixa(c.codigo)) : [];
   const situacaoDe = (l) => (l.situacao === "quitada" ? "quitada" : l.vencimento && l.vencimento < hoje ? "vencida" : "aberta");
   const termo = f.busca.trim().toUpperCase();
   const lista = rows.filter((l) => (f.classif === "todas" || classeDe(l) === f.classif)
+    && (!temFaixa || naFaixa(porId[l.centro_custo_id]?.codigo))
     && (!termo || [l.fornecedor_cliente, l.historico, l.numero_conta, l.nota_fiscal, l.orcamentos?.evento, l.orcamentos?.numero_or].some((x) => String(x || "").toUpperCase().includes(termo))))
     .sort((a, b) => (f.ordem === "valor" ? Number(b.valor) - Number(a.valor) : String(a[f.campo] || "9").localeCompare(String(b[f.campo] || "9"))));
 
@@ -7170,7 +7184,7 @@ function RelatoriosFinView({ session, setErro, centros }) {
     f.de || f.ate ? `${REL_CAMPOS[f.campo].toLowerCase()} ${f.de ? `de ${fmtDataBR(f.de)}` : ""} ${f.ate ? `até ${fmtDataBR(f.ate)}` : ""}`.trim() : "sem período",
     f.empresa === "todas" ? "Prosign + VS" : nomeEmpresa(f.empresa),
     f.classif !== "todas" ? CLASSIF_LABEL[f.classif] : "",
-    f.centro ? `${porId[f.centro]?.codigo} ${porId[f.centro]?.nome}` : "",
+    temFaixa ? (f.contaDe.trim() && f.contaDe.trim() === f.contaAte.trim() ? `conta ${f.contaDe.trim()}` : `contas ${f.contaDe.trim() ? `de ${f.contaDe.trim()}` : ""} ${f.contaAte.trim() ? `até ${f.contaAte.trim()}` : ""}`.trim()) : "",
     termo ? `busca "${f.busca.trim()}"` : "",
   ].filter(Boolean).join(" · ");
 
@@ -7242,11 +7256,20 @@ function RelatoriosFinView({ session, setErro, centros }) {
           {campo("Até", <input type="date" style={inputStyle} value={f.ate} onChange={set("ate")} />)}
           {campo("Empresa", <select style={inputStyle} value={f.empresa} onChange={set("empresa")}><option value="todas">Prosign + VS</option><option value="prosign">Prosign</option><option value="vs">VS</option></select>)}
           {campo("Classificação", <select style={inputStyle} value={f.classif} onChange={set("classif")}><option value="todas">Todas</option>{Object.entries(CLASSIF_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>)}
-          {campo("Conta do plano", <select style={inputStyle} value={f.centro} onChange={set("centro")}><option value="">Todas as contas</option>{analiticos.map((c) => <option key={c.id} value={c.id}>{c.codigo} {c.nome}</option>)}</select>)}
+          {campo("Conta do plano — de", <input list="rel-contas" style={inputStyle} value={f.contaDe} onChange={(e) => setF({ ...f, contaDe: e.target.value.split(" ")[0] })} placeholder="ex.: 2.02" />)}
+          {campo("Conta do plano — até", <input list="rel-contas" style={inputStyle} value={f.contaAte} onChange={(e) => setF({ ...f, contaAte: e.target.value.split(" ")[0] })} placeholder="ex.: 2.02.10" />)}
+          <datalist id="rel-contas">{(centros || []).slice().sort((a, b) => cmpCod(a.codigo, b.codigo)).map((c) => <option key={c.id} value={c.codigo}>{c.codigo} {c.nome}</option>)}</datalist>
           {campo("Agrupar por", <select style={inputStyle} value={f.agrupar} onChange={(e) => setF({ ...f, agrupar: e.target.value })}>{REL_AGRUPAR.map((a) => <option key={a.id} value={a.id}>{a.label}</option>)}</select>)}
           {campo("Ordenar por", <select style={inputStyle} value={f.ordem} onChange={(e) => setF({ ...f, ordem: e.target.value })}><option value="data">Data</option><option value="valor">Maior valor</option></select>)}
           {campo("Buscar (fornecedor, histórico, nº, PR)", <input style={inputStyle} value={f.busca} onChange={(e) => setF({ ...f, busca: e.target.value })} placeholder="opcional" />)}
         </div>
+        {temFaixa && (
+          <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
+            <b style={{ color: contasNaFaixa.length ? NAVY : DANGER }}>{contasNaFaixa.length} conta(s) na faixa</b>
+            {contasNaFaixa.length > 0 && <>: {contasNaFaixa.slice(0, 12).map((c) => `${c.codigo} ${c.nome}`).join(" · ")}{contasNaFaixa.length > 12 ? ` · e mais ${contasNaFaixa.length - 12}` : ""}</>}
+            {" "}<button onClick={() => setF({ ...f, contaDe: "", contaAte: "" })} style={{ ...btnGhostSmall, fontSize: 11, padding: "2px 8px" }}>limpar faixa</button>
+          </div>
+        )}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 14 }}>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {[["Mês atual", `${mes}-01`, fimMes(mes)], ["Mês passado", (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 8) + "01"; })(), (() => { const d = new Date(); d.setDate(0); return d.toISOString().slice(0, 10); })()], ["Ano", `${mes.slice(0, 4)}-01-01`, `${mes.slice(0, 4)}-12-31`], ["Sem período", "", ""]].map(([l, de, ate]) => (
