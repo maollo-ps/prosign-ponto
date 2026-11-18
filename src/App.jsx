@@ -3594,18 +3594,33 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
       } else {
         await sbRequest(`orcamento_itens?orcamento_id=eq.${orcamentoId}`, session, { method: "DELETE" });
       }
+      // Proteção: orçamento que veio com valor (importado / lançado sem composição) NÃO pode ser zerado
+      // só porque alguém abriu a composição e salvou sem itens.
+      const valorAtual = Number(orc?.valor || 0);
+      const valorComposicao = Math.round(calc.precoFinal * 100) / 100;
+      let usarComposicao = itens.length > 0;
+      if (usarComposicao && !orc?.tem_composicao && valorAtual > 0 && Math.abs(valorComposicao - valorAtual) > 0.009) {
+        usarComposicao = window.confirm(
+          `Este orçamento estava com valor ${brl(valorAtual)} (lançado sem composição).\n` +
+          `A composição montada agora dá ${brl(valorComposicao)}.\n\n` +
+          `OK = passar a usar o valor da composição\nCancelar = manter ${brl(valorAtual)}`
+        );
+      }
       await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, {
         method: "PATCH",
         body: {
           numero_or: numeroOr || null,
           bv_pct: params.bv, simples_pct: params.simples, comissao_pct: params.comissao, margem_pct: params.margem,
-          ajuste: numBR(ajuste), tem_composicao: true,
-          valor: Math.round(calc.precoFinal * 100) / 100,
+          ajuste: numBR(ajuste),
+          ...(usarComposicao ? { tem_composicao: true, valor: valorComposicao } : {}),
         },
       });
+      if (!usarComposicao && valorAtual > 0 && itens.length === 0) {
+        setTimeout(() => setErro(`Composição sem itens: o valor do orçamento foi mantido em ${brl(valorAtual)}.`), 0);
+      }
       // orçamento para o cliente: modo escolhido + textos/itens
       await sbRequest(`orcamentos?id=eq.${orcamentoId}`, session, { method: "PATCH", body: { cliente_modo: clienteModo, empresa: empresaFat } });
-      setOrc((o) => (o ? { ...o, empresa: empresaFat } : o));
+      setOrc((o) => (o ? { ...o, empresa: empresaFat, ...(usarComposicao ? { tem_composicao: true, valor: valorComposicao } : {}) } : o));
       await gravarTextosCliente();
       // todas as linhas levam id próprio (linhas sem id viravam NULL e a gravação inteira falhava); grava primeiro, apaga o que sobrou depois
       const idUnico = itemUnico.id || crypto.randomUUID();
