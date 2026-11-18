@@ -607,7 +607,7 @@ export default function App() {
 
   const isAdmin = !!perfil?.is_admin;
   const temAcessoArea = (area) => isAdmin || areasPermitidas.includes(area);
-  const podeVerAba = (abaId) => (abaId === "usuarios" || abaId === "resultados" ? isAdmin : abaId === "cadastros" ? (isAdmin || temAcessoArea("comercial") || temAcessoArea("financeiro")) : temAcessoArea(AREA_DAS_ABAS[abaId]));
+  const podeVerAba = (abaId) => (abaId === "usuarios" || abaId === "resultados" || abaId === "historico" ? isAdmin : abaId === "cadastros" ? (isAdmin || temAcessoArea("comercial") || temAcessoArea("financeiro")) : temAcessoArea(AREA_DAS_ABAS[abaId]));
 
   // Carrega o perfil (nome, admin?) e as áreas liberadas pro usuário logado.
   useEffect(() => {
@@ -699,6 +699,9 @@ export default function App() {
             {tab === "resultados" && isAdmin && (
               <ResultadosAdminView session={session} setErro={setErro} />
             )}
+            {tab === "historico" && isAdmin && (
+              <HistoricoView session={session} setErro={setErro} />
+            )}
             {tab === "usuarios" && (
               <UsuariosView session={session} setErro={setErro} meuId={session?.user?.id} />
             )}
@@ -767,6 +770,7 @@ function Header({ tab, setTab, onLogout, podeVerAba, celAtivo, onAlternarCelular
     { id: "resultados", label: "Resultados", icon: FileBarChart },
     { id: "rh", label: "Recursos Humanos", icon: Users },
     { id: "usuarios", label: "Usuários", icon: UserCog },
+    { id: "historico", label: "Histórico", icon: Clock },
   ].filter((it) => podeVerAba(it.id));
   return (
     <header style={{ background: NAVY, borderBottom: `3px solid ${GOLD}` }}>
@@ -7359,6 +7363,134 @@ function RelatoriosFinView({ session, setErro, centros }) {
           {f.agrupar !== "nenhum" && <div style={{ fontSize: 12, color: MUTED, marginTop: 6 }}>Clique num grupo para ver os lançamentos dele.</div>}
         </>
       )}
+    </div>
+  );
+}
+
+// =========================================================
+// Histórico de alterações (somente administradores)
+// =========================================================
+const HIST_TABELAS = {
+  orcamentos: "Orçamento", orcamento_itens: "Composição (item)", faturamento: "Faturamento",
+  ordens_pagamento: "Ordem de pagamento", ordem_pagamento_parcelas: "Parcela de OP", lancamentos_fin: "Lançamento financeiro",
+};
+const HIST_ACOES = { INSERT: ["Criou", OK], UPDATE: ["Alterou", GOLD], DELETE: ["Excluiu", DANGER] };
+const HIST_CAMPOS = {
+  valor: "Valor", status: "Status", mes_ref: "Mês", data_evento: "Data do evento", evento: "Evento", numero_or: "Nº PR",
+  cliente_id: "Cliente", empresa: "Empresa", data_faturamento: "Data faturamento", nota_fiscal: "Nota fiscal",
+  data_recebimento: "Recebimento", previsao_recebimento: "Previsão receb.", tem_composicao: "Tem composição",
+  valor_custo: "Custo", descricao: "Descrição", qtd: "Qtd", vencimento: "Vencimento", pagamento: "Pagamento",
+  situacao: "Situação", centro_custo_id: "Conta", valor_pago: "Valor pago", responsavel: "Atendimento", obs_cliente: "Obs. cliente",
+};
+
+function fmtValorHist(k, v) {
+  if (v === null || v === undefined || v === "") return "—";
+  if (typeof v === "number" && /valor|custo|ajuste|pago/.test(k)) return brl(v);
+  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}/.test(v)) return v.length > 10 ? new Date(v).toLocaleString("pt-BR") : fmtDataBR(v);
+  if (typeof v === "boolean") return v ? "sim" : "não";
+  if (typeof v === "object") return JSON.stringify(v);
+  const s = String(v);
+  return s.length > 80 ? s.slice(0, 80) + "…" : s;
+}
+
+function HistoricoView({ session, setErro }) {
+  const hoje = hojeISO();
+  const seteDias = (() => { const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString().slice(0, 10); })();
+  const [f, setF] = useState({ de: seteDias, ate: hoje, tabela: "", acao: "", usuario: "", busca: "", soValor: false });
+  const [rows, setRows] = useState([]);
+  const [carregando, setCarregando] = useState(false);
+  const [aberto, setAberto] = useState({});
+  const [semTabela, setSemTabela] = useState(false);
+
+  async function carregar(filtros = f) {
+    setCarregando(true); setErro(""); setSemTabela(false);
+    try {
+      const q = ["select=*", "order=quando.desc", "limit=500"];
+      if (filtros.de) q.push(`quando=gte.${filtros.de}T00:00:00-03:00`);
+      if (filtros.ate) q.push(`quando=lte.${filtros.ate}T23:59:59-03:00`);
+      if (filtros.tabela) q.push(`tabela=eq.${filtros.tabela}`);
+      if (filtros.acao) q.push(`acao=eq.${filtros.acao}`);
+      if (filtros.usuario) q.push(`usuario_nome=eq.${encodeURIComponent(filtros.usuario)}`);
+      if (filtros.busca.trim()) q.push(`referencia=ilike.*${encodeURIComponent(filtros.busca.trim())}*`);
+      if (filtros.soValor) q.push("campos=ov.{valor,valor_custo,status,data_faturamento,mes_ref}");
+      setRows((await sbRequest(`historico_alteracoes?${q.join("&")}`, session)) || []);
+    } catch (e) {
+      if (/historico_alteracoes/.test(e.message)) setSemTabela(true); else setErro(msgSupabase(e));
+    } finally { setCarregando(false); }
+  }
+  useEffect(() => { carregar(); }, []); // eslint-disable-line
+
+  const usuarios = [...new Set(rows.map((r) => r.usuario_nome).filter(Boolean))].sort();
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value });
+
+  function detalhe(r) {
+    if (r.acao === "UPDATE") {
+      return (r.campos || []).map((k) => (
+        <div key={k} style={{ fontSize: 12 }}>
+          <b>{HIST_CAMPOS[k] || k}:</b>{" "}
+          <span style={{ color: DANGER, textDecoration: "line-through" }}>{fmtValorHist(k, r.antes?.[k])}</span>
+          {" → "}<span style={{ color: OK, fontWeight: 600 }}>{fmtValorHist(k, r.depois?.[k])}</span>
+        </div>
+      ));
+    }
+    const dados = r.acao === "DELETE" ? r.antes : r.depois;
+    const mostrar = ["valor", "valor_custo", "status", "descricao", "data_faturamento", "nota_fiscal", "vencimento", "mes_ref"].filter((k) => dados && dados[k] !== undefined && dados[k] !== null);
+    return <div style={{ fontSize: 12, color: MUTED }}>{mostrar.map((k) => `${HIST_CAMPOS[k] || k}: ${fmtValorHist(k, dados[k])}`).join(" · ") || "—"}</div>;
+  }
+
+  if (semTabela) {
+    return <Card><b>Histórico ainda não ativado.</b><div style={{ color: MUTED, marginTop: 6 }}>Rode o SQL <code>migracao_historico_alteracoes.sql</code> no Supabase.</div></Card>;
+  }
+
+  return (
+    <div>
+      <h2 style={{ margin: "0 0 4px", color: NAVY, fontSize: 20 }}>Histórico de alterações</h2>
+      <div style={{ color: MUTED, fontSize: 13, marginBottom: 14 }}>Quem criou, alterou ou excluiu orçamentos, composição, faturamento, ordens de pagamento e lançamentos — com o valor de antes e depois.</div>
+      <Card style={{ marginBottom: 14 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12, alignItems: "end" }}>
+          <Field label="De"><input type="date" style={inputStyle} value={f.de} onChange={set("de")} /></Field>
+          <Field label="Até"><input type="date" style={inputStyle} value={f.ate} onChange={set("ate")} /></Field>
+          <Field label="O quê"><select style={inputStyle} value={f.tabela} onChange={set("tabela")}><option value="">Tudo</option>{Object.entries(HIST_TABELAS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select></Field>
+          <Field label="Ação"><select style={inputStyle} value={f.acao} onChange={set("acao")}><option value="">Todas</option><option value="INSERT">Criou</option><option value="UPDATE">Alterou</option><option value="DELETE">Excluiu</option></select></Field>
+          <Field label="Usuário"><select style={inputStyle} value={f.usuario} onChange={set("usuario")}><option value="">Todos</option>{usuarios.map((u) => <option key={u} value={u}>{u}</option>)}</select></Field>
+          <Field label="PR / evento / fornecedor"><input style={inputStyle} value={f.busca} onChange={set("busca")} placeholder="ex.: 551/25" onKeyDown={(e) => e.key === "Enter" && carregar()} /></Field>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, gap: 10, flexWrap: "wrap" }}>
+          <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}><input type="checkbox" checked={f.soValor} onChange={set("soValor")} /> Só mudanças de valor, status ou data</label>
+          <button onClick={() => carregar()} disabled={carregando} style={btnPrimary}><Search size={15} /> {carregando ? "Buscando..." : "Buscar"}</button>
+        </div>
+      </Card>
+
+      <Card style={{ padding: 0, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 820 }}>
+          <thead><tr style={{ background: BG }}>
+            <th style={thS}>Quando</th><th style={thS}>Quem</th><th style={thS}>Ação</th><th style={thS}>Onde</th><th style={thS}>Referência</th><th style={thS}>O que mudou</th>
+          </tr></thead>
+          <tbody>
+            {!carregando && rows.length === 0 && <tr><td colSpan={6} style={{ ...tdS, color: MUTED }}>Nenhuma alteração nesse período.</td></tr>}
+            {rows.map((r) => {
+              const [acao, cor] = HIST_ACOES[r.acao] || [r.acao, MUTED];
+              return (
+                <tr key={r.id} style={{ borderTop: `1px solid ${BORDER}`, verticalAlign: "top" }}>
+                  <td style={{ ...tdS, whiteSpace: "nowrap", fontSize: 12 }}>{new Date(r.quando).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}</td>
+                  <td style={{ ...tdS, fontWeight: 600 }}>{r.usuario_nome || "—"}</td>
+                  <td style={{ ...tdS, color: cor, fontWeight: 700 }}>{acao}</td>
+                  <td style={{ ...tdS, fontSize: 12 }}>{HIST_TABELAS[r.tabela] || r.tabela}</td>
+                  <td style={{ ...tdS, fontSize: 12 }}>{r.referencia || "—"}</td>
+                  <td style={tdS}>
+                    {detalhe(r)}
+                    {r.acao !== "UPDATE" && (
+                      <button onClick={() => setAberto((a) => ({ ...a, [r.id]: !a[r.id] }))} style={{ ...btnGhostSmall, fontSize: 11, padding: "1px 8px", marginTop: 4 }}>{aberto[r.id] ? "esconder" : "ver tudo"}</button>
+                    )}
+                    {aberto[r.id] && <pre style={{ fontSize: 11, background: BG, padding: 8, borderRadius: 6, maxWidth: 520, overflowX: "auto" }}>{JSON.stringify(r.acao === "DELETE" ? r.antes : r.depois, null, 1)}</pre>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </Card>
+      {rows.length >= 500 && <div style={{ fontSize: 12, color: MUTED, marginTop: 6 }}>Mostrando as 500 mais recentes — use os filtros para ver mais antigas.</div>}
     </div>
   );
 }
