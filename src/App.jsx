@@ -5035,7 +5035,7 @@ function BuscaOrcamento({ session, setErro, onEscolher }) {
 // Formulário do lançamento (edição e novo manual) — componente de topo p/ não perder o foco
 // ---------------------------------------------------------
 const FORMAS_PGTO = ["PIX", "Boleto", "Transferência", "Cartão de crédito", "Cartão de débito", "Dinheiro", "Cheque", "Débito automático"];
-const BANCOS_FIN = ["SIC PRO -SICCOB PROSIGN", "SIC VS -SICOOB VS", "BB PRO -BB PROSIGN", "VM -VM-PF"];
+const BANCOS_FIN = ["SIC PRO -SICCOB PROSIGN", "SIC VS -SICOOB VS", "BB PRO -BB PROSIGN", "BB VS -BANCO DO BRASIL VS", "VM -VM-PF"];
 const ORIGEM_LABEL = { importado: "Importado", manual: "Manual", faturamento: "Faturamento", ordem_pagamento: "Ordem de pagto" };
 const situacaoReal = (l) => (l.situacao === "quitada" ? "quitada" : l.vencimento && l.vencimento < hojeISO() ? "vencida" : "aberta");
 const SIT_COR = { quitada: "#2E7D5B", vencida: DANGER, aberta: GOLD };
@@ -7227,7 +7227,7 @@ function OrdensPagamentoFinanceiroView({ session, setErro }) {
                       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
                         <Field label="Data do pagamento"><input type="date" style={inputStyle} value={baixa.pago_em} onChange={(e) => setBaixa({ ...baixa, pago_em: e.target.value })} /></Field>
                         <Field label="Valor pago (R$)"><input style={{ ...inputStyle, width: 140, fontFamily: FONT_MONO }} inputMode="decimal" value={baixa.valor_pago} onChange={(e) => setBaixa({ ...baixa, valor_pago: e.target.value })} /></Field>
-                        <Field label="Conta / banco de saída"><input style={{ ...inputStyle, width: 200 }} value={baixa.conta_saida} placeholder="Ex.: Sicoob, Caixa..." onChange={(e) => setBaixa({ ...baixa, conta_saida: e.target.value })} /></Field>
+                        <Field label="Conta / banco de saída"><input list="bancos-fin-op" style={{ ...inputStyle, width: 220 }} value={baixa.conta_saida} placeholder="escolha ou digite" onChange={(e) => setBaixa({ ...baixa, conta_saida: e.target.value })} /><datalist id="bancos-fin-op">{BANCOS_FIN.map((b) => <option key={b} value={b} />)}</datalist></Field>
                         <Field label="Observação"><input style={{ ...inputStyle, width: 260 }} value={baixa.obs_pagamento} placeholder="Ex.: comprovante enviado por e-mail" onChange={(e) => setBaixa({ ...baixa, obs_pagamento: e.target.value })} /></Field>
                         <button onClick={() => confirmarBaixa(p)} disabled={salvando} style={{ ...btnPrimary, background: OK }}>{salvando ? "Salvando..." : "Confirmar pagamento"}</button>
                       </div>
