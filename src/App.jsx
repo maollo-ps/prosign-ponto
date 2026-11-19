@@ -6220,7 +6220,9 @@ function montarPreviaImport({ arquivos, existentes, centrosPorCodigo, orcs }) {
         r.existenteId = ex.id;
         if (centavos(ex.valor) !== centavos(l.valor)) r.mudancas.push(`valor ${ex.valor} → ${l.valor}`);
         if ((ex.pagamento || null) !== (l.pagamento || null)) r.mudancas.push(`pagamento ${ex.pagamento || "—"} → ${l.pagamento || "—"}`);
-        if (ex.situacao !== l.situacao) r.mudancas.push(`${ex.situacao} → ${l.situacao}`);
+        // "aberta" × "vencida" não é mudança: o sistema calcula a vencida sozinho
+        const sitN = (x) => (x === "vencida" ? "aberta" : x);
+        if (sitN(ex.situacao) !== sitN(l.situacao)) r.mudancas.push(`${ex.situacao} → ${l.situacao}`);
         r.acao = r.mudancas.length ? "atualiza" : "igual";
       } else {
         const nome = chaveTextoFin(l.party);
@@ -6290,6 +6292,7 @@ function ImportarFinView({ session, setErro, centros }) {
     setMontando(true);
     try {
       const existentesMap = {};
+      const outraEmpresa = {}; // "tipo|numero|valor" -> empresa onde já existe
       const sel = "id,empresa,tipo,numero_conta,valor,pagamento,situacao,vencimento,fornecedor_cliente";
       const grupos = {};
       validos.forEach((a) => { (grupos[`${a.empresa}|${a.tipo}`] = grupos[`${a.empresa}|${a.tipo}`] || []).push(a); });
@@ -6308,6 +6311,8 @@ function ImportarFinView({ session, setErro, centros }) {
           const lote = nums.slice(i, i + 120).map((n) => `"${n}"`).join(",");
           const rows = await sbRequest(`lancamentos_fin?select=${sel}&empresa=eq.${emp}&tipo=eq.${tp}&numero_conta=in.(${lote})&limit=5000`, session);
           (rows || []).forEach((e) => { existentesMap[e.id] = e; });
+          const outras = await sbRequest(`lancamentos_fin?select=${sel}&empresa=neq.${emp}&tipo=eq.${tp}&numero_conta=in.(${lote})&limit=5000`, session);
+          (outras || []).forEach((e) => { outraEmpresa[`${e.tipo}|${e.numero_conta}|${Number(e.valor).toFixed(2)}`] = e.empresa; });
         }
       }
       let orcs = [];
@@ -6315,7 +6320,13 @@ function ImportarFinView({ session, setErro, centros }) {
         const rows = await sbRequest(`orcamentos?select=id,evento,valor,data_evento,mes_ref,clientes:pessoas(nome)&status=in.(aprovado,autorizado_faturamento,faturado)&data_evento=gte.${somarDiasIso(minV, -150)}&data_evento=lte.${somarDiasIso(maxV, 30)}&limit=3000`, session);
         orcs = (rows || []).map((o) => ({ id: o.id, evento: o.evento, valor: Number(o.valor), mesRef: o.mes_ref, dataEvento: o.data_evento, clienteNome: o.clientes?.nome || "" }));
       }
-      setPrevia(montarPreviaImport({ arquivos: validos, existentes: Object.values(existentesMap), centrosPorCodigo, orcs }));
+      const pv = montarPreviaImport({ arquivos: validos, existentes: Object.values(existentesMap), centrosPorCodigo, orcs });
+      // mesmo nº de conta e mesmo valor já lançado na OUTRA empresa (ex.: YESCOM, CESAN): o sistema antigo exporta nos dois arquivos
+      pv.linhas = pv.linhas.map((l) => {
+        const emp = l.acao === "novo" && outraEmpresa[`${l.tipo}|${l.numero}|${Number(l.valor).toFixed(2)}`];
+        return emp ? { ...l, marcado: false, outraEmp: emp } : l;
+      });
+      setPrevia(pv);
     } catch (e) { setErro(msgSupabase(e)); }
     finally { setMontando(false); }
   }
@@ -6369,6 +6380,7 @@ function ImportarFinView({ session, setErro, centros }) {
   const nAtual = cont((l) => l.marcado && l.acao === "atualiza");
   const nIguais = cont((l) => l.acao === "igual");
   const nDup = cont((l) => l.duplicado);
+  const nOutraEmp = cont((l) => l.outraEmp);
   const nSemConta = cont((l) => l.marcado && !l.centroCustoId);
   const nVinc = cont((l) => l.marcado && l.orcamento);
   const rotuloAcao = (l) => (l.acao === "novo" ? "Novo" : l.acao === "atualiza" ? "Atualiza" : "Já importado");
@@ -6435,10 +6447,11 @@ function ImportarFinView({ session, setErro, centros }) {
             <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Já importados</div><div style={{ fontSize: 22, fontWeight: 700 }}>{nIguais}</div></Card>
             <Card style={{ padding: 14 }}><div style={{ fontSize: 12, color: MUTED }}>Vinculados a evento</div><div style={{ fontSize: 22, fontWeight: 700, color: GOLD }}>{nVinc}</div></Card>
           </div>
-          {(nDup > 0 || nSemConta > 0 || previa.repetidos > 0) && (
+          {(nDup > 0 || nSemConta > 0 || previa.repetidos > 0 || nOutraEmp > 0) && (
             <Card style={{ marginBottom: 14, background: "#FFF8E6", borderColor: "#E8D49A" }}>
               <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
                 {nDup > 0 && <li><b>{nDup} possíveis duplicidades</b> (mesma empresa, fornecedor/cliente, valor e vencimento, com outro número). Ficaram <b>desmarcadas</b>: revise e marque só se forem lançamentos distintos.</li>}
+                {nOutraEmp > 0 && <li><b>{nOutraEmp} já existem na outra empresa</b> (mesmo nº de conta e mesmo valor — o sistema antigo exporta a mesma conta nos arquivos da Prosign e da VS). Ficaram <b>desmarcados</b> para não duplicar.</li>}
                 {nSemConta > 0 && <li>{nSemConta} lançamentos com conta não cadastrada no plano: entram como "a classificar".</li>}
                 {previa.repetidos > 0 && <li>{previa.repetidos} linhas repetidas entre arquivos (mesmo nº de conta) foram ignoradas.</li>}
               </ul>
@@ -6452,7 +6465,7 @@ function ImportarFinView({ session, setErro, centros }) {
               </tr></thead>
               <tbody>
                 {L.map((l) => (
-                  <tr key={l.key} style={{ borderTop: `1px solid ${BORDER}`, opacity: l.marcado ? 1 : 0.55, background: l.duplicado ? "#FFF8E6" : "#fff" }}>
+                  <tr key={l.key} style={{ borderTop: `1px solid ${BORDER}`, opacity: l.marcado ? 1 : 0.55, background: l.duplicado || l.outraEmp ? "#FFF8E6" : "#fff" }}>
                     <td style={tdS}><input type="checkbox" checked={l.marcado} disabled={l.acao === "igual"} onChange={() => alternar(l.key)} /></td>
                     <td style={tdS}><ChipEmpresa id={l.empresa} /></td>
                     <td style={tdS}>{l.tipo === "pagar" ? "Pagar" : "Receber"}</td>
@@ -6463,7 +6476,7 @@ function ImportarFinView({ session, setErro, centros }) {
                     <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(l.valor)}</td>
                     <td style={{ ...tdS, fontSize: 12 }}>{l.situacao}</td>
                     <td style={{ ...tdS, fontSize: 12 }}>
-                      <b>{rotuloAcao(l)}</b>
+                      <b>{l.outraEmp ? `Já existe na ${nomeEmpresa(l.outraEmp)} — não importa` : rotuloAcao(l)}</b>
                       {l.mudancas.length > 0 && <div style={{ color: "#1D6FA5" }}>{l.mudancas.join(" · ")}</div>}
                       {l.orcamento && <div style={{ color: GOLD }}>↳ evento: {l.orcamento.evento}{l.orcamento.clienteNome ? ` · ${l.orcamento.clienteNome}` : ""}</div>}
                       {l.avisos.map((a, i) => <div key={i} style={{ color: DANGER }}>⚠ {a}</div>)}
