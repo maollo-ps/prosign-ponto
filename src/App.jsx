@@ -5034,41 +5034,141 @@ function BuscaOrcamento({ session, setErro, onEscolher }) {
 // ---------------------------------------------------------
 // Formulário do lançamento (edição e novo manual) — componente de topo p/ não perder o foco
 // ---------------------------------------------------------
-function FormLancamento({ session, setErro, centros, valorInicial, ehNovo, onSalvar, onCancelar, salvando }) {
+const FORMAS_PGTO = ["PIX", "Boleto", "Transferência", "Cartão de crédito", "Cartão de débito", "Dinheiro", "Cheque", "Débito automático"];
+const BANCOS_FIN = ["SIC PRO -SICCOB PROSIGN", "SIC VS -SICOOB VS", "BB PRO -BB PROSIGN", "VM -VM-PF"];
+const ORIGEM_LABEL = { importado: "Importado", manual: "Manual", faturamento: "Faturamento", ordem_pagamento: "Ordem de pagto" };
+const situacaoReal = (l) => (l.situacao === "quitada" ? "quitada" : l.vencimento && l.vencimento < hojeISO() ? "vencida" : "aberta");
+const SIT_COR = { quitada: "#2E7D5B", vencida: DANGER, aberta: GOLD };
+const SIT_LABEL = { quitada: "Quitada", vencida: "Vencida", aberta: "Em aberto" };
+const r2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+function somarMeses(iso, n) {
+  const [a, m, d] = iso.split("-").map(Number);
+  const base = new Date(a, m - 1 + n, 1);
+  const ult = new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate();
+  return `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, "0")}-${String(Math.min(d, ult)).padStart(2, "0")}`;
+}
+const fimMesISO = (iso) => { const d = new Date(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)), 0); return `${iso.slice(0, 8)}${String(d.getDate()).padStart(2, "0")}`; };
+const fmtNumBR = (v) => (v === null || v === undefined || v === "" ? "" : Number(v).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+
+// cadastro de pessoas (fornecedores/clientes) — carregado uma vez por sessão
+let _cachePessoasFin = null;
+function usePessoasFin(session) {
+  const [pessoas, setPessoas] = useState(_cachePessoasFin || []);
+  useEffect(() => {
+    if (_cachePessoasFin) return;
+    (async () => {
+      let todas = [];
+      for (let off = 0; off < 20000; off += 1000) {
+        const pg = (await sbRequest(`pessoas?select=id,nome,documento,cliente,fornecedor&ativo=eq.true&order=nome.asc&limit=1000&offset=${off}`, session).catch(() => [])) || [];
+        todas = todas.concat(pg);
+        if (pg.length < 1000) break;
+      }
+      _cachePessoasFin = todas;
+      setPessoas(todas);
+    })();
+  }, []); // eslint-disable-line
+  return pessoas;
+}
+
+// ---------------------------------------------------------
+// Formulário do lançamento (novo e edição)
+// ---------------------------------------------------------
+function FormLancamento({ session, setErro, centros, valorInicial, ehNovo, onSalvar, onCancelar, salvando, pessoas = [] }) {
   const [f, setF] = useState(valorInicial);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
   const natureza = f.tipo === "receber" ? "receita" : "despesa";
+  const listaId = `pessoas-${f.tipo}`;
+  const candidatos = pessoas.filter((p) => (f.tipo === "receber" ? p.cliente !== false : p.fornecedor !== false));
+  const valorNum = numDigitado(f.valorTxt);
+  const n = Math.max(1, Math.min(120, parseInt(f.qtdVezes, 10) || 1));
+
+  function escolherPessoa(nome) {
+    const p = pessoas.find((x) => x.nome.trim().toUpperCase() === nome.trim().toUpperCase());
+    setF((x) => ({ ...x, fornecedorCliente: nome, pessoaId: p ? p.id : null, cnpj: p && !x.cnpj ? (p.documento || "") : x.cnpj }));
+  }
+
+  // prévia das parcelas / repetições
+  let previa = null;
+  if (ehNovo && f.repeticao !== "unica" && n > 1 && f.vencimento && valorNum > 0) {
+    const vParc = f.repeticao === "parcelado" ? r2(valorNum / n) : valorNum;
+    const datas = Array.from({ length: Math.min(n, 4) }, (_, i) => fmtDataBR(somarMeses(f.vencimento, i))).join(", ");
+    previa = `${n} × ${brl(vParc)} — vencimentos ${datas}${n > 4 ? ` … até ${fmtDataBR(somarMeses(f.vencimento, n - 1))}` : ""}`;
+  }
+
   return (
     <div style={{ display: "grid", gap: 12 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 12 }}>
-        {ehNovo && (
-          <>
-            <Field label="Empresa">
-              <select value={f.empresa} onChange={(e) => set("empresa", e.target.value)} style={selStyle}>
-                {EMPRESAS_FIN.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
-              </select>
-            </Field>
-            <Field label="Tipo">
-              <select value={f.tipo} onChange={(e) => { set("tipo", e.target.value); set("centroCustoId", null); }} style={selStyle}>
-                <option value="pagar">A pagar</option>
-                <option value="receber">A receber</option>
-              </select>
-            </Field>
-            <Field label="Fornecedor / Cliente"><input value={f.fornecedorCliente} onChange={(e) => set("fornecedorCliente", e.target.value)} style={inputStyle} /></Field>
-            <Field label="Histórico"><input value={f.historico} onChange={(e) => set("historico", e.target.value)} style={inputStyle} /></Field>
-            <Field label="Valor (R$)"><input type="number" step="0.01" value={f.valor} onChange={(e) => set("valor", parseFloat(e.target.value) || 0)} style={{ ...inputStyle, fontFamily: FONT_MONO }} /></Field>
-            <Field label="Vencimento"><input type="date" value={f.vencimento} onChange={(e) => { set("vencimento", e.target.value); if (ehNovo && !f.competenciaMexida && e.target.value) set("competencia", e.target.value.slice(0, 7)); }} style={inputStyle} /></Field>
-          </>
-        )}
-        <Field label="Conta (centro de custo)"><SelectConta centros={centros} value={f.centroCustoId} onChange={(v) => set("centroCustoId", v)} natureza={natureza} /></Field>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+        <Field label="Empresa">
+          <select value={f.empresa} onChange={(e) => set("empresa", e.target.value)} style={selStyle}>
+            {EMPRESAS_FIN.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
+          </select>
+        </Field>
+        <Field label="Tipo">
+          <select value={f.tipo} onChange={(e) => { set("tipo", e.target.value); set("centroCustoId", null); }} style={selStyle}>
+            <option value="pagar">A pagar</option>
+            <option value="receber">A receber</option>
+          </select>
+        </Field>
+        <Field label={f.tipo === "receber" ? "Cliente" : "Fornecedor / favorecido"}>
+          <input list={listaId} value={f.fornecedorCliente} onChange={(e) => escolherPessoa(e.target.value)} style={inputStyle} placeholder="digite para buscar no cadastro" />
+          <datalist id={listaId}>{candidatos.slice(0, 3000).map((p) => <option key={p.id} value={p.nome}>{p.documento || ""}</option>)}</datalist>
+          <div style={{ fontSize: 11, marginTop: 3, color: f.pessoaId ? "#2E7D5B" : MUTED }}>{f.pessoaId ? "✓ do cadastro" : f.fornecedorCliente ? "não está no cadastro (fica só o nome)" : ""}</div>
+        </Field>
+        <Field label="CNPJ / CPF"><input value={f.cnpj} onChange={(e) => set("cnpj", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Histórico"><input value={f.historico} onChange={(e) => set("historico", e.target.value)} style={inputStyle} /></Field>
+        <Field label={ehNovo && f.repeticao === "parcelado" ? "Valor TOTAL (R$)" : "Valor (R$)"}>
+          <input inputMode="decimal" value={f.valorTxt} onChange={(e) => set("valorTxt", e.target.value)} style={{ ...inputStyle, fontFamily: FONT_MONO }} placeholder="0,00" />
+        </Field>
+        <Field label={ehNovo && f.repeticao !== "unica" ? "1º vencimento" : "Vencimento"}>
+          <input type="date" value={f.vencimento} onChange={(e) => { const v = e.target.value; setF((x) => ({ ...x, vencimento: v, competencia: !x.competenciaMexida && v ? v.slice(0, 7) : x.competencia })); }} style={inputStyle} />
+        </Field>
         <Field label="Competência (mês)"><input type="month" value={f.competencia} onChange={(e) => { set("competencia", e.target.value); set("competenciaMexida", true); }} style={inputStyle} /></Field>
-        <Field label="Pagamento / recebimento"><input type="date" value={f.pagamento} onChange={(e) => set("pagamento", e.target.value)} style={inputStyle} /></Field>
-        <Field label="Situação">
-          <select value={f.situacao} onChange={(e) => set("situacao", e.target.value)} style={selStyle}>
-            <option value="aberta">Aberta</option><option value="quitada">Quitada</option><option value="vencida">Vencida</option>
+        <Field label="Conta (plano de contas)"><SelectConta centros={centros} value={f.centroCustoId} onChange={(v) => set("centroCustoId", v)} natureza={natureza} /></Field>
+        <Field label="Nota fiscal / documento"><input value={f.notaFiscal} onChange={(e) => set("notaFiscal", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Forma de pagamento">
+          <select value={f.formaPagamento} onChange={(e) => set("formaPagamento", e.target.value)} style={selStyle}>
+            <option value="">—</option>{[...new Set([...FORMAS_PGTO, f.formaPagamento].filter(Boolean))].map((x) => <option key={x} value={x}>{x}</option>)}
+          </select>
+        </Field>
+        <Field label="Banco / conta">
+          <select value={f.banco} onChange={(e) => set("banco", e.target.value)} style={selStyle}>
+            <option value="">—</option>{[...new Set([...BANCOS_FIN, f.banco].filter(Boolean))].map((x) => <option key={x} value={x}>{x}</option>)}
           </select>
         </Field>
       </div>
+      <Field label="Observação"><input value={f.obs} onChange={(e) => set("obs", e.target.value)} style={inputStyle} placeholder="opcional" /></Field>
+
+      {ehNovo && (
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end", background: BG, padding: 10, borderRadius: 8 }}>
+          <Field label="Repetição">
+            <select value={f.repeticao} onChange={(e) => set("repeticao", e.target.value)} style={selStyle}>
+              <option value="unica">Lançamento único</option>
+              <option value="parcelado">Parcelado (divide o valor)</option>
+              <option value="mensal">Repetir todo mês (mesmo valor)</option>
+            </select>
+          </Field>
+          {f.repeticao !== "unica" && (
+            <Field label={f.repeticao === "parcelado" ? "Nº de parcelas" : "Quantos meses"}>
+              <input type="number" min={2} max={120} value={f.qtdVezes} onChange={(e) => set("qtdVezes", e.target.value)} style={{ ...inputStyle, width: 90 }} />
+            </Field>
+          )}
+          {f.repeticao === "unica" && (
+            <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center", paddingBottom: 8 }}>
+              <input type="checkbox" checked={!!f.jaPago} onChange={(e) => set("jaPago", e.target.checked)} /> Já foi {f.tipo === "receber" ? "recebido" : "pago"}
+            </label>
+          )}
+          {f.repeticao === "unica" && f.jaPago && <Field label="Data do pagamento"><input type="date" value={f.pagamento} onChange={(e) => set("pagamento", e.target.value)} style={inputStyle} /></Field>}
+          {previa && <div style={{ fontSize: 12, color: NAVY, paddingBottom: 8 }}>{previa}</div>}
+          {f.repeticao === "mensal" && <div style={{ fontSize: 11, color: MUTED, paddingBottom: 8, flexBasis: "100%" }}>Use para despesas fixas (aluguel, internet, contador...). A competência acompanha o mês de cada vencimento.</div>}
+        </div>
+      )}
+      {!ehNovo && f.grupoId && (
+        <label style={{ fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}>
+          <input type="checkbox" checked={!!f.aplicarGrupo} onChange={(e) => set("aplicarGrupo", e.target.checked)} />
+          Aplicar valor, conta, fornecedor, forma e banco também às <b>próximas parcelas em aberto</b> desta série
+        </label>
+      )}
+
       <div>
         <div style={{ fontSize: 12, color: MUTED, marginBottom: 6 }}>
           Orçamento / evento: {f.orcamentoId ? <b style={{ color: TEXT }}>{f.orcamentoRotulo || "vinculado"}</b> : "nenhum"}
@@ -5079,10 +5179,9 @@ function FormLancamento({ session, setErro, centros, valorInicial, ehNovo, onSal
           set("orcamentoRotulo", `${o.evento} · ${o.clientes?.nome || ""} · ${fmtDataBR(o.data_evento)}`);
           if (o.mes_ref) { set("competencia", o.mes_ref.slice(0, 7)); set("competenciaMexida", true); }
         }} />
-        <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>Ao vincular, a competência passa para o mês do evento (você pode mudar depois).</div>
       </div>
       <div style={{ display: "flex", gap: 10 }}>
-        <button onClick={() => onSalvar(f)} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
+        <button onClick={() => onSalvar(f)} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : ehNovo && n > 1 && f.repeticao !== "unica" ? `Salvar ${n} lançamentos` : "Salvar"}</button>
         <button onClick={onCancelar} style={btnGhostSmall}>Cancelar</button>
       </div>
     </div>
@@ -5090,10 +5189,63 @@ function FormLancamento({ session, setErro, centros, valorInicial, ehNovo, onSal
 }
 
 // ---------------------------------------------------------
-// Lançamentos
+// Baixa (pagamento / recebimento) com juros, multa, desconto e parcial
+// ---------------------------------------------------------
+function BaixaLancamento({ l, onConfirmar, onCancelar, salvando }) {
+  const [data, setData] = useState(hojeISO());
+  const [juros, setJuros] = useState("");
+  const [multa, setMulta] = useState("");
+  const [desconto, setDesconto] = useState("");
+  const [pagoTxt, setPagoTxt] = useState("");
+  const [banco, setBanco] = useState(l.banco || "");
+  const [forma, setForma] = useState(l.forma_pagamento || "");
+  const num = (t) => { const v = numDigitado(t); return isNaN(v) ? 0 : v; };
+  const devido = r2(Number(l.valor) + num(juros) + num(multa) - num(desconto));
+  const pago = pagoTxt.trim() ? num(pagoTxt) : devido;
+  const parcial = pago > 0 && pago < devido - 0.009;
+  const principalPago = r2(pago - num(juros) - num(multa) + num(desconto));
+  const restante = r2(Number(l.valor) - principalPago);
+  const verbo = l.tipo === "receber" ? "Recebido" : "Pago";
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      <div style={{ fontWeight: 700, color: NAVY }}>Dar baixa · {l.fornecedor_cliente || "—"} · {brl(l.valor)} <span style={{ fontWeight: 400, color: MUTED }}>(venc. {fmtDataBR(l.vencimento)})</span></div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
+        <Field label={`Data ${l.tipo === "receber" ? "do recebimento" : "do pagamento"}`}><input type="date" value={data} onChange={(e) => setData(e.target.value)} style={inputStyle} /></Field>
+        <Field label="Juros (R$)"><input inputMode="decimal" value={juros} onChange={(e) => setJuros(e.target.value)} style={inputStyle} placeholder="0,00" /></Field>
+        <Field label="Multa (R$)"><input inputMode="decimal" value={multa} onChange={(e) => setMulta(e.target.value)} style={inputStyle} placeholder="0,00" /></Field>
+        <Field label="Desconto (R$)"><input inputMode="decimal" value={desconto} onChange={(e) => setDesconto(e.target.value)} style={inputStyle} placeholder="0,00" /></Field>
+        <Field label={`Valor ${verbo.toLowerCase()} (R$)`}><input inputMode="decimal" value={pagoTxt} onChange={(e) => setPagoTxt(e.target.value)} style={{ ...inputStyle, fontFamily: FONT_MONO }} placeholder={fmtNumBR(devido)} /></Field>
+        <Field label="Banco / conta">
+          <select value={banco} onChange={(e) => setBanco(e.target.value)} style={selStyle}><option value="">—</option>{[...new Set([...BANCOS_FIN, banco].filter(Boolean))].map((x) => <option key={x} value={x}>{x}</option>)}</select>
+        </Field>
+        <Field label="Forma">
+          <select value={forma} onChange={(e) => setForma(e.target.value)} style={selStyle}><option value="">—</option>{[...new Set([...FORMAS_PGTO, forma].filter(Boolean))].map((x) => <option key={x} value={x}>{x}</option>)}</select>
+        </Field>
+      </div>
+      <div style={{ fontSize: 13 }}>
+        Total devido: <b>{brl(devido)}</b> · {verbo}: <b>{brl(pago)}</b>
+        {parcial && <span style={{ color: DANGER }}> · <b>Pagamento parcial</b>: o restante de <b>{brl(restante)}</b> continua em aberto num novo lançamento, com o mesmo vencimento.</span>}
+        {pago > devido + 0.009 && <span style={{ color: DANGER }}> · valor maior que o devido — confira juros/multa.</span>}
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <button disabled={salvando || !data || !(pago > 0)} onClick={() => onConfirmar({ data, juros: num(juros), multa: num(multa), desconto: num(desconto), pago, parcial, principalPago, restante, banco, forma })} style={btnPrimary}>
+          <Save size={15} /> {salvando ? "Salvando..." : parcial ? "Baixar parcial" : "Confirmar baixa"}
+        </button>
+        <button onClick={onCancelar} style={btnGhostSmall}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------
+// Lançamentos (contas a pagar e a receber)
 // ---------------------------------------------------------
 function LancamentosFinView({ session, setErro, centros }) {
+  const hoje = hojeISO();
+  const [modo, setModo] = useState("competencia"); // competencia | vencimento | pagamento | vencidas
   const [mes, setMes] = useState(mesAtualFin());
+  const [de, setDe] = useState(hoje);
+  const [ate, setAte] = useState(fimMesISO(hoje));
   const [empresa, setEmpresa] = useState("todas");
   const [tipo, setTipo] = useState("todos");
   const [situacao, setSituacao] = useState("todas");
@@ -5102,13 +5254,21 @@ function LancamentosFinView({ session, setErro, centros }) {
   const [regs, setRegs] = useState([]);
   const [carregando, setCarregando] = useState(false);
   const [editId, setEditId] = useState(null);
+  const [baixaId, setBaixaId] = useState(null);
   const [novo, setNovo] = useState(false);
   const [salvando, setSalvando] = useState(false);
   const [classif, setClassif] = useState("todas");
   const [marcados, setMarcados] = useState({});
   const [contaLote, setContaLote] = useState(null);
+  const [dataLote, setDataLote] = useState(hoje);
   const [trocando, setTrocando] = useState(null);
+  const [inicioInteg, setInicioInteg] = useState(null);
   const porId = useMemo(() => Object.fromEntries(centros.map((c) => [c.id, c])), [centros]);
+  const pessoas = usePessoasFin(session);
+
+  useEffect(() => {
+    sbRequest("config_sistema?select=valor&chave=eq.integracao_fin_inicio", session).then((r) => setInicioInteg(r?.[0]?.valor || null)).catch(() => {});
+  }, []); // eslint-disable-line
 
   async function trocarConta(ids, centroId) {
     if (!ids.length) return;
@@ -5116,56 +5276,106 @@ function LancamentosFinView({ session, setErro, centros }) {
     try {
       await sbRequest(`lancamentos_fin?id=in.(${ids.join(",")})`, session, { method: "PATCH", body: { centro_custo_id: centroId || null } });
       const alvo = ids.map(String);
-      setRegs((rs) => rs.map((r) => (alvo.includes(String(r.id)) ? { ...r, centro_custo_id: centroId ? Number(centroId) || centroId : null } : r)));
+      setRegs((rs) => rs.map((r) => (alvo.includes(String(r.id)) ? { ...r, centro_custo_id: centroId || null } : r)));
       setMarcados({}); setContaLote(null);
     } catch (e) { setErro(msgSupabase(e)); }
     finally { setTrocando(null); }
   }
 
-  function carregar() {
-    setCarregando(true); setMarcados({});
-    sbRequest(`lancamentos_fin?select=*,orcamentos(evento,numero_or,data_evento,clientes:pessoas(nome))&competencia=eq.${mes}-01&order=vencimento.asc.nullslast&limit=2000`, session)
-      .then((rows) => setRegs(rows || []))
-      .catch((e) => setErro(msgSupabase(e)))
-      .finally(() => setCarregando(false));
+  async function carregar() {
+    setCarregando(true); setMarcados({}); setErro("");
+    try {
+      const sel = "select=*,orcamentos(evento,numero_or,data_evento,clientes:pessoas(nome))";
+      let filtro;
+      if (modo === "competencia") filtro = `competencia=eq.${mes}-01&order=vencimento.asc.nullslast`;
+      else if (modo === "vencimento") filtro = `vencimento=gte.${de}&vencimento=lte.${ate}&order=vencimento.asc`;
+      else if (modo === "pagamento") filtro = `pagamento=gte.${de}&pagamento=lte.${ate}&order=pagamento.asc`;
+      else filtro = `situacao=neq.quitada&vencimento=lt.${hoje}&order=vencimento.asc`;
+      let todos = [];
+      for (let off = 0; off < 20000; off += 1000) {
+        const pg = (await sbRequest(`lancamentos_fin?${sel}&${filtro}&limit=1000&offset=${off}`, session)) || [];
+        todos = todos.concat(pg);
+        if (pg.length < 1000) break;
+      }
+      setRegs(todos);
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setCarregando(false); }
   }
-  useEffect(() => { carregar(); setEditId(null); }, [mes]); // eslint-disable-line
+  useEffect(() => { carregar(); setEditId(null); setBaixaId(null); }, [modo, mes, de, ate]); // eslint-disable-line
+
+  function atalho(qual) {
+    if (qual === "hoje") { setModo("vencimento"); setDe(hoje); setAte(hoje); }
+    if (qual === "7dias") { setModo("vencimento"); setDe(hoje); const d = new Date(); d.setDate(d.getDate() + 7); setAte(d.toISOString().slice(0, 10)); }
+    if (qual === "mes") { setModo("vencimento"); setDe(hoje.slice(0, 8) + "01"); setAte(fimMesISO(hoje)); }
+    if (qual === "vencidas") setModo("vencidas");
+  }
 
   const filtrados = regs.filter((l) => {
     if (empresa !== "todas" && l.empresa !== empresa) return false;
     if (tipo !== "todos" && l.tipo !== tipo) return false;
-    if (situacao !== "todas" && l.situacao !== situacao) return false;
+    const sit = situacaoReal(l);
+    if (situacao === "abertas" ? sit === "quitada" : situacao !== "todas" && sit !== situacao) return false;
     const cl = porId[l.centro_custo_id]?.classificacao;
     if (classif !== "todas" && (cl || "a_classificar") !== classif) return false;
     if (pendencia === "sem_conta" && cl && cl !== "a_classificar") return false;
     if (pendencia === "sem_evento" && !(l.tipo === "pagar" && cl === "variavel" && !l.orcamento_id)) return false;
     if (busca.trim()) {
       const t = busca.trim().toLowerCase();
-      const alvo = `${l.fornecedor_cliente || ""} ${l.historico || ""} ${l.numero_conta} ${l.orcamentos?.evento || ""}`.toLowerCase();
+      const alvo = `${l.fornecedor_cliente || ""} ${l.historico || ""} ${l.numero_conta} ${l.nota_fiscal || ""} ${l.orcamentos?.evento || ""} ${l.orcamentos?.numero_or || ""}`.toLowerCase();
       if (!alvo.includes(t)) return false;
     }
     return true;
   });
-  const totPagar = filtrados.filter((l) => l.tipo === "pagar").reduce((s, l) => s + Number(l.valor || 0), 0);
-  const totReceber = filtrados.filter((l) => l.tipo === "receber").reduce((s, l) => s + Number(l.valor || 0), 0);
+  const soma = (arr) => arr.reduce((s, l) => s + Number(l.valor || 0), 0);
+  const totPagar = soma(filtrados.filter((l) => l.tipo === "pagar"));
+  const totReceber = soma(filtrados.filter((l) => l.tipo === "receber"));
+  const totAberto = soma(filtrados.filter((l) => situacaoReal(l) !== "quitada"));
+  const totVencido = soma(filtrados.filter((l) => situacaoReal(l) === "vencida"));
   const semEvento = regs.filter((l) => l.tipo === "pagar" && porId[l.centro_custo_id]?.classificacao === "variavel" && !l.orcamento_id).length;
   const semConta = regs.filter((l) => !l.centro_custo_id || porId[l.centro_custo_id]?.classificacao === "a_classificar").length;
 
   function valorInicialDe(l) {
     return {
-      empresa: l.empresa, tipo: l.tipo, centroCustoId: l.centro_custo_id, competencia: (l.competencia || "").slice(0, 7),
-      pagamento: l.pagamento || "", situacao: l.situacao, orcamentoId: l.orcamento_id,
+      empresa: l.empresa, tipo: l.tipo, fornecedorCliente: l.fornecedor_cliente || "", pessoaId: l.pessoa_id || null, cnpj: l.cnpj || "",
+      historico: l.historico || "", valorTxt: fmtNumBR(l.valor), vencimento: l.vencimento || "", competencia: (l.competencia || "").slice(0, 7), competenciaMexida: true,
+      centroCustoId: l.centro_custo_id, notaFiscal: l.nota_fiscal || "", formaPagamento: l.forma_pagamento || "", banco: l.banco || "", obs: l.obs || "",
+      orcamentoId: l.orcamento_id, grupoId: l.grupo_id || null, aplicarGrupo: false,
       orcamentoRotulo: l.orcamentos ? `${l.orcamentos.evento} · ${l.orcamentos.clientes?.nome || ""} · ${fmtDataBR(l.orcamentos.data_evento)}` : "",
     };
   }
+  const novoInicial = {
+    empresa: "prosign", tipo: "pagar", fornecedorCliente: "", pessoaId: null, cnpj: "", historico: "", valorTxt: "", vencimento: "",
+    competencia: modo === "competencia" ? mes : hoje.slice(0, 7), competenciaMexida: false, centroCustoId: null, notaFiscal: "", formaPagamento: "", banco: "", obs: "",
+    orcamentoId: null, orcamentoRotulo: "", repeticao: "unica", qtdVezes: 2, jaPago: false, pagamento: hoje,
+  };
+
+  function validar(f) {
+    const v = numDigitado(f.valorTxt);
+    if (!(v > 0)) { setErro("Informe o valor."); return null; }
+    if (!f.vencimento) { setErro("Informe o vencimento."); return null; }
+    if (!f.competencia) { setErro("Informe a competência."); return null; }
+    return v;
+  }
+  const camposComuns = (f) => ({
+    empresa: f.empresa, tipo: f.tipo, fornecedor_cliente: f.fornecedorCliente.trim() || null, pessoa_id: f.pessoaId || null, cnpj: f.cnpj.trim() || null,
+    centro_custo_id: f.centroCustoId || null, nota_fiscal: f.notaFiscal.trim() || null, forma_pagamento: f.formaPagamento || null, banco: f.banco || null,
+    obs: f.obs.trim() || null, orcamento_id: f.orcamentoId || null,
+  });
 
   async function salvarEdicao(l, f) {
+    const v = validar(f); if (v === null) return;
     setSalvando(true); setErro("");
     try {
+      const sit = l.situacao === "quitada" ? "quitada" : f.vencimento < hoje ? "vencida" : "aberta";
       await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: {
-        centro_custo_id: f.centroCustoId || null, competencia: `${f.competencia}-01`, pagamento: f.pagamento || null,
-        situacao: f.situacao, orcamento_id: f.orcamentoId || null,
+        ...camposComuns(f), historico: f.historico.trim() || null, valor: r2(v), vencimento: f.vencimento, competencia: `${f.competencia}-01`, situacao: sit,
       } });
+      if (f.aplicarGrupo && l.grupo_id) {
+        const c = camposComuns(f);
+        await sbRequest(`lancamentos_fin?grupo_id=eq.${l.grupo_id}&situacao=neq.quitada&vencimento=gt.${l.vencimento}`, session, { method: "PATCH", body: {
+          valor: r2(v), centro_custo_id: c.centro_custo_id, fornecedor_cliente: c.fornecedor_cliente, pessoa_id: c.pessoa_id, forma_pagamento: c.forma_pagamento, banco: c.banco,
+        } });
+      }
       setEditId(null);
       carregar();
     } catch (e) { setErro(msgSupabase(e)); }
@@ -5173,39 +5383,123 @@ function LancamentosFinView({ session, setErro, centros }) {
   }
 
   async function salvarNovo(f) {
-    if (!f.valor || f.valor <= 0) { setErro("Informe o valor."); return; }
-    if (!f.vencimento) { setErro("Informe o vencimento."); return; }
+    const v = validar(f); if (v === null) return;
+    const n = f.repeticao === "unica" ? 1 : Math.max(2, Math.min(120, parseInt(f.qtdVezes, 10) || 2));
     setSalvando(true); setErro("");
     try {
-      await sbRequest("lancamentos_fin", session, { method: "POST", body: {
-        empresa: f.empresa, tipo: f.tipo, numero_conta: `M-${Date.now()}`, vencimento: f.vencimento, pagamento: f.pagamento || null,
-        competencia: `${f.competencia || f.vencimento.slice(0, 7)}-01`, fornecedor_cliente: f.fornecedorCliente || null, centro_custo_id: f.centroCustoId || null,
-        historico: f.historico || null, valor: f.valor, situacao: f.situacao, orcamento_id: f.orcamentoId || null, origem: "manual",
-      } });
+      const grupo = n > 1 ? crypto.randomUUID() : null;
+      const base = camposComuns(f);
+      const vParc = f.repeticao === "parcelado" ? r2(v / n) : r2(v);
+      const rows = Array.from({ length: n }, (_, i) => {
+        const venc = somarMeses(f.vencimento, i);
+        const valor = f.repeticao === "parcelado" && i === n - 1 ? r2(v - vParc * (n - 1)) : vParc;
+        const comp = f.repeticao === "mensal" && !f.competenciaMexida ? venc.slice(0, 7) : f.repeticao === "mensal" ? somarMeses(`${f.competencia}-01`, i).slice(0, 7) : f.competencia;
+        const pagoAgora = n === 1 && f.jaPago;
+        return {
+          ...base, numero_conta: null, origem: "manual", valor, vencimento: venc, competencia: `${comp}-01`,
+          historico: `${f.historico.trim()}${n > 1 ? ` (${i + 1}/${n})` : ""}`.trim() || null,
+          situacao: pagoAgora ? "quitada" : venc < hoje ? "vencida" : "aberta",
+          pagamento: pagoAgora ? (f.pagamento || hoje) : null, valor_pago: pagoAgora ? valor : null,
+          grupo_id: grupo, parcela_num: n > 1 ? i + 1 : null, parcela_total: n > 1 ? n : null,
+        };
+      });
+      await sbRequest("lancamentos_fin", session, { method: "POST", body: rows });
       setNovo(false);
+      if (modo === "competencia" && rows[0].competencia.slice(0, 7) !== mes) setMes(rows[0].competencia.slice(0, 7)); else carregar();
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setSalvando(false); }
+  }
+
+  async function confirmarBaixa(l, b) {
+    setSalvando(true); setErro("");
+    try {
+      const comum = { pagamento: b.data, juros: b.juros, multa: b.multa, desconto: b.desconto, banco: b.banco || null, forma_pagamento: b.forma || null, situacao: "quitada", valor_pago: r2(b.pago) };
+      if (b.parcial && b.restante > 0.009) {
+        await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: { ...comum, valor: r2(b.principalPago) } });
+        await sbRequest("lancamentos_fin", session, { method: "POST", body: {
+          empresa: l.empresa, tipo: l.tipo, numero_conta: null, vencimento: l.vencimento, competencia: l.competencia, fornecedor_cliente: l.fornecedor_cliente,
+          pessoa_id: l.pessoa_id, cnpj: l.cnpj, centro_custo_id: l.centro_custo_id, historico: `${l.historico || ""} (saldo)`.trim(), valor: r2(b.restante),
+          situacao: l.vencimento && l.vencimento < hoje ? "vencida" : "aberta", banco: l.banco, forma_pagamento: l.forma_pagamento, nota_fiscal: l.nota_fiscal,
+          orcamento_id: l.orcamento_id, origem: "manual", obs: `Saldo do pagamento parcial do nº ${l.numero_conta}`, grupo_id: l.grupo_id,
+        } });
+      } else {
+        await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: comum });
+      }
+      setBaixaId(null);
       carregar();
     } catch (e) { setErro(msgSupabase(e)); }
     finally { setSalvando(false); }
   }
 
-  async function excluir(l) {
-    if (!window.confirm("Excluir este lançamento manual?")) return;
-    try { await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "DELETE" }); carregar(); }
-    catch (e) { setErro(msgSupabase(e)); }
+  async function estornar(l) {
+    if (!window.confirm(`Desfazer a baixa de ${l.fornecedor_cliente || "este lançamento"} (${brl(l.valor)})?\nEle volta a ficar em aberto.`)) return;
+    setErro("");
+    try {
+      await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: {
+        situacao: l.vencimento && l.vencimento < hoje ? "vencida" : "aberta", pagamento: null, valor_pago: null, juros: 0, multa: 0, desconto: 0,
+      } });
+      carregar();
+    } catch (e) { setErro(msgSupabase(e)); }
   }
 
-  const novoInicial = { empresa: "prosign", tipo: "pagar", fornecedorCliente: "", historico: "", valor: 0, vencimento: "", competencia: mes, centroCustoId: null, pagamento: "", situacao: "aberta", orcamentoId: null, orcamentoRotulo: "" };
+  async function baixarLote(ids) {
+    const alvo = regs.filter((r) => ids.includes(String(r.id)) && r.situacao !== "quitada");
+    if (!alvo.length) return;
+    if (!window.confirm(`Dar baixa em ${alvo.length} lançamento(s) em ${fmtDataBR(dataLote)}, pelo valor original (${brl(soma(alvo))})?`)) return;
+    setTrocando("lote"); setErro("");
+    try {
+      for (const l of alvo) {
+        await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: { situacao: "quitada", pagamento: dataLote, valor_pago: Number(l.valor) } });
+      }
+      setMarcados({});
+      carregar();
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setTrocando(null); }
+  }
+
+  async function excluir(l) {
+    const aviso = {
+      importado: "\n\nAtenção: este veio da importação — se o arquivo for importado de novo, ele volta.",
+      faturamento: "\n\nAtenção: este foi criado pelo faturamento do orçamento.",
+      ordem_pagamento: "\n\nAtenção: este foi criado pela baixa de uma ordem de pagamento. O certo é estornar a OP.",
+    }[l.origem] || "";
+    if (!window.confirm(`Excluir ${l.fornecedor_cliente || "este lançamento"} · ${brl(l.valor)} (venc. ${fmtDataBR(l.vencimento)})?${aviso}`)) return;
+    let junto = false;
+    if (l.grupo_id) junto = window.confirm("Este lançamento faz parte de uma série (parcelas / repetição mensal).\n\nOK = excluir também as próximas parcelas EM ABERTO da série\nCancelar = excluir só este");
+    try {
+      await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "DELETE" });
+      if (junto) await sbRequest(`lancamentos_fin?grupo_id=eq.${l.grupo_id}&situacao=neq.quitada&vencimento=gt.${l.vencimento}`, session, { method: "DELETE" });
+      carregar();
+    } catch (e) { setErro(msgSupabase(e)); }
+  }
+
+  const idsMarcados = Object.keys(marcados).filter((k) => marcados[k]);
 
   return (
     <div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontSize: 13, color: MUTED }}>Ver por:</span>
+        {[["competencia", "Competência"], ["vencimento", "Vencimento"], ["pagamento", "Data de pagamento"], ["vencidas", "Vencidas"]].map(([id, lb]) => (
+          <button key={id} onClick={() => setModo(id)} style={{ ...btnGhostSmall, fontWeight: 600, background: modo === id ? NAVY : "#fff", color: modo === id ? "#fff" : TEXT, borderColor: modo === id ? NAVY : BORDER }}>{lb}</button>
+        ))}
+        <span style={{ width: 10 }} />
+        <span style={{ fontSize: 13, color: MUTED }}>Atalhos:</span>
+        {[["hoje", "Vence hoje"], ["7dias", "Próximos 7 dias"], ["mes", "Vence este mês"]].map(([id, lb]) => <button key={id} onClick={() => atalho(id)} style={{ ...btnGhostSmall, fontSize: 12 }}>{lb}</button>)}
+      </div>
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
-        <Field label="Competência"><input type="month" value={mes} onChange={(e) => e.target.value && setMes(e.target.value)} style={inputStyle} /></Field>
+        {modo === "competencia" && <Field label="Competência"><input type="month" value={mes} onChange={(e) => e.target.value && setMes(e.target.value)} style={inputStyle} /></Field>}
+        {(modo === "vencimento" || modo === "pagamento") && (
+          <>
+            <Field label="De"><input type="date" value={de} onChange={(e) => e.target.value && setDe(e.target.value)} style={inputStyle} /></Field>
+            <Field label="Até"><input type="date" value={ate} onChange={(e) => e.target.value && setAte(e.target.value)} style={inputStyle} /></Field>
+          </>
+        )}
         <Field label="Empresa"><FiltroEmpresa value={empresa} onChange={setEmpresa} /></Field>
         <Field label="Tipo">
           <select value={tipo} onChange={(e) => setTipo(e.target.value)} style={selStyle}><option value="todos">Pagar e receber</option><option value="pagar">A pagar</option><option value="receber">A receber</option></select>
         </Field>
         <Field label="Situação">
-          <select value={situacao} onChange={(e) => setSituacao(e.target.value)} style={selStyle}><option value="todas">Todas</option><option value="quitada">Quitada</option><option value="aberta">Aberta</option><option value="vencida">Vencida</option></select>
+          <select value={situacao} onChange={(e) => setSituacao(e.target.value)} style={selStyle}><option value="todas">Todas</option><option value="abertas">Em aberto + vencidas</option><option value="aberta">Em aberto (no prazo)</option><option value="vencida">Vencidas</option><option value="quitada">Quitadas</option></select>
         </Field>
         <Field label="Pendências">
           <select value={pendencia} onChange={(e) => setPendencia(e.target.value)} style={selStyle}>
@@ -5217,34 +5511,43 @@ function LancamentosFinView({ session, setErro, centros }) {
         <Field label="Classificação">
           <select value={classif} onChange={(e) => setClassif(e.target.value)} style={selStyle}><option value="todas">Todas</option>{Object.entries(CLASSIF_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
         </Field>
-        <Field label="Buscar"><input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="fornecedor, histórico, nº" style={inputStyle} /></Field>
+        <Field label="Buscar"><input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="fornecedor, histórico, nº, NF, PR" style={inputStyle} /></Field>
         <div style={{ flex: 1 }} />
-        <button onClick={() => setNovo((x) => !x)} style={btnPrimary}><Plus size={16} /> Lançamento manual</button>
+        <button onClick={() => { setNovo((x) => !x); setEditId(null); setBaixaId(null); }} style={btnPrimary}><Plus size={16} /> Novo lançamento</button>
       </div>
 
       {novo && (
         <Card style={{ marginBottom: 16 }}>
           <div style={{ fontWeight: 600, color: NAVY, marginBottom: 12 }}>Novo lançamento</div>
-          <FormLancamento session={session} setErro={setErro} centros={centros} valorInicial={novoInicial} ehNovo onSalvar={salvarNovo} onCancelar={() => setNovo(false)} salvando={salvando} />
+          <FormLancamento session={session} setErro={setErro} centros={centros} pessoas={pessoas} valorInicial={novoInicial} ehNovo onSalvar={salvarNovo} onCancelar={() => setNovo(false)} salvando={salvando} />
         </Card>
       )}
 
-      {Object.values(marcados).some(Boolean) && (() => {
-        const ids = Object.keys(marcados).filter((k) => marcados[k]);
-        const tipos = new Set(regs.filter((r) => ids.includes(String(r.id))).map((r) => r.tipo));
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 14 }}>
+        {[["A pagar", totPagar, DANGER], ["A receber", totReceber, "#2E7D5B"], ["Em aberto", totAberto, GOLD], ["Vencido", totVencido, totVencido ? DANGER : NAVY]].map(([lb, v, cor]) => (
+          <Card key={lb} style={{ padding: 12 }}><div style={{ fontSize: 12, color: MUTED }}>{lb}</div><div style={{ fontSize: 18, fontWeight: 700, color: cor, fontFamily: FONT_MONO }}>{brl(v)}</div></Card>
+        ))}
+      </div>
+
+      {idsMarcados.length > 0 && (() => {
+        const tipos = new Set(regs.filter((r) => idsMarcados.includes(String(r.id))).map((r) => r.tipo));
         return (
           <Card style={{ marginBottom: 12, background: "#FFF8E6", borderColor: GOLD, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <b style={{ color: NAVY }}>{ids.length} selecionado(s)</b>
-            <span style={{ fontSize: 13 }}>Trocar a conta (centro de custo) para:</span>
-            <SelectConta centros={centros} value={contaLote} onChange={setContaLote} natureza={tipos.size === 1 ? (tipos.has("receber") ? "receita" : "despesa") : undefined} style={{ minWidth: 280 }} />
-            <button disabled={!contaLote || trocando} onClick={() => trocarConta(ids, contaLote)} style={btnPrimary}><Save size={15} /> {trocando === "lote" ? "Salvando..." : "Aplicar"}</button>
+            <b style={{ color: NAVY }}>{idsMarcados.length} selecionado(s)</b>
+            <span style={{ fontSize: 13 }}>Trocar a conta para:</span>
+            <SelectConta centros={centros} value={contaLote} onChange={setContaLote} natureza={tipos.size === 1 ? (tipos.has("receber") ? "receita" : "despesa") : undefined} style={{ minWidth: 260 }} />
+            <button disabled={!contaLote || trocando} onClick={() => trocarConta(idsMarcados, contaLote)} style={btnPrimary}><Save size={15} /> Aplicar</button>
+            <span style={{ width: 1, height: 26, background: BORDER }} />
+            <span style={{ fontSize: 13 }}>Dar baixa em</span>
+            <input type="date" value={dataLote} onChange={(e) => setDataLote(e.target.value)} style={{ ...inputStyle, width: 150 }} />
+            <button disabled={trocando || !dataLote} onClick={() => baixarLote(idsMarcados)} style={btnPrimary}>{trocando === "lote" ? "Salvando..." : "Baixar selecionados"}</button>
             <button onClick={() => { setMarcados({}); setContaLote(null); }} style={btnGhostSmall}>Limpar seleção</button>
           </Card>
         );
       })()}
 
       <Card style={{ padding: 0, overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1050 }}>
           <thead><tr style={{ background: BG }}>
             <th style={{ ...thS, width: 28 }}><input type="checkbox" title="Selecionar todos" checked={filtrados.length > 0 && filtrados.every((l) => marcados[l.id])} onChange={(e) => setMarcados(e.target.checked ? Object.fromEntries(filtrados.map((l) => [l.id, true])) : {})} /></th>
             <th style={thS}>Emp.</th><th style={thS}>Tipo</th><th style={thS}>Nº</th><th style={thS}>Venc.</th><th style={thS}>Pgto</th>
@@ -5252,37 +5555,52 @@ function LancamentosFinView({ session, setErro, centros }) {
           </tr></thead>
           <tbody>
             {carregando && <tr><td colSpan={12} style={{ ...tdS, color: MUTED }}>Carregando...</td></tr>}
-            {!carregando && filtrados.length === 0 && <tr><td colSpan={12} style={{ ...tdS, color: MUTED }}>Nenhum lançamento com esses filtros nesta competência.</td></tr>}
+            {!carregando && filtrados.length === 0 && <tr><td colSpan={12} style={{ ...tdS, color: MUTED }}>Nenhum lançamento com esses filtros.</td></tr>}
             {filtrados.map((l) => {
               const c = porId[l.centro_custo_id];
+              const sit = situacaoReal(l);
               return (
                 <React.Fragment key={l.id}>
                   <tr style={{ borderTop: `1px solid ${BORDER}`, background: marcados[l.id] ? "#FFFBEF" : undefined }}>
                     <td style={tdS}><input type="checkbox" checked={!!marcados[l.id]} onChange={(e) => setMarcados((m) => ({ ...m, [l.id]: e.target.checked }))} /></td>
                     <td style={tdS}><ChipEmpresa id={l.empresa} /></td>
                     <td style={tdS}>{l.tipo === "pagar" ? "Pagar" : "Receber"}</td>
-                    <td style={{ ...tdS, fontFamily: FONT_MONO, fontSize: 12 }}>{l.numero_conta}</td>
-                    <td style={tdS}>{fmtDataBR(l.vencimento)}</td>
-                    <td style={tdS}>{fmtDataBR(l.pagamento)}</td>
-                    <td style={tdS}><div style={{ fontWeight: 600 }}>{l.fornecedor_cliente || "—"}</div><div style={{ fontSize: 11, color: MUTED, maxWidth: 260 }}>{l.historico}</div></td>
+                    <td style={{ ...tdS, fontFamily: FONT_MONO, fontSize: 12 }}>{l.numero_conta}{l.parcela_total ? <div style={{ fontSize: 11, color: MUTED }}>{l.parcela_num}/{l.parcela_total}</div> : null}</td>
+                    <td style={{ ...tdS, whiteSpace: "nowrap" }}>{fmtDataBR(l.vencimento)}</td>
+                    <td style={{ ...tdS, whiteSpace: "nowrap" }}>{fmtDataBR(l.pagamento)}</td>
+                    <td style={tdS}>
+                      <div style={{ fontWeight: 600 }}>{l.fornecedor_cliente || "—"}</div>
+                      <div style={{ fontSize: 11, color: MUTED, maxWidth: 260 }}>{l.historico}{l.nota_fiscal ? ` · NF ${l.nota_fiscal}` : ""}</div>
+                      {l.origem !== "importado" && <span style={{ fontSize: 10, color: NAVY, background: "#EEF2F8", borderRadius: 4, padding: "1px 5px" }}>{ORIGEM_LABEL[l.origem] || l.origem}</span>}
+                    </td>
                     <td style={{ ...tdS, minWidth: 190 }}>
                       <div style={{ marginBottom: 3 }}><ChipClassif valor={c?.classificacao || "a_classificar"} /></div>
                       <SelectConta centros={centros} value={l.centro_custo_id} natureza={l.tipo === "receber" ? "receita" : "despesa"} onChange={(v) => trocarConta([l.id], v)} style={{ padding: "3px 6px", fontSize: 11, maxWidth: 220, opacity: trocando === l.id ? 0.5 : 1 }} />
                     </td>
-                    <td style={{ ...tdS, fontSize: 12 }}>{l.orcamentos ? `${l.orcamentos.evento}${l.orcamentos.clientes?.nome ? " · " + l.orcamentos.clientes.nome : ""}` : <span style={{ color: MUTED }}>—</span>}</td>
-                    <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, color: l.tipo === "receber" ? "#2E7D5B" : TEXT }}>{brl(l.valor)}</td>
-                    <td style={{ ...tdS, fontSize: 12, color: l.situacao === "vencida" ? DANGER : TEXT }}>{l.situacao}</td>
+                    <td style={{ ...tdS, fontSize: 12 }}>{l.orcamentos ? `${l.orcamentos.numero_or ? `PR ${l.orcamentos.numero_or} · ` : ""}${l.orcamentos.evento}` : <span style={{ color: MUTED }}>—</span>}</td>
+                    <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, color: l.tipo === "receber" ? "#2E7D5B" : TEXT, whiteSpace: "nowrap" }}>
+                      {brl(l.valor)}
+                      {l.valor_pago != null && Math.abs(Number(l.valor_pago) - Number(l.valor)) > 0.009 && <div style={{ fontSize: 11, color: MUTED }}>pago {brl(l.valor_pago)}</div>}
+                    </td>
+                    <td style={{ ...tdS, fontSize: 12, fontWeight: 700, color: SIT_COR[sit] }}>{SIT_LABEL[sit]}</td>
                     <td style={{ ...tdS, whiteSpace: "nowrap" }}>
-                      <button onClick={() => setEditId(editId === l.id ? null : l.id)} style={btnGhostSmall}>{editId === l.id ? "Fechar" : "Editar"}</button>
-                      {l.origem === "manual" && <>{" "}<button onClick={() => excluir(l)} style={btnDangerSmall}><Trash2 size={13} /></button></>}
+                      {sit !== "quitada"
+                        ? <button onClick={() => { setBaixaId(baixaId === l.id ? null : l.id); setEditId(null); }} style={{ ...btnGhostSmall, color: "#2E7D5B", fontWeight: 700 }}>{l.tipo === "receber" ? "Receber" : "Pagar"}</button>
+                        : <button onClick={() => estornar(l)} style={btnGhostSmall} title="Desfazer a baixa">Estornar</button>}
+                      {" "}<button onClick={() => { setEditId(editId === l.id ? null : l.id); setBaixaId(null); }} style={btnGhostSmall}>{editId === l.id ? "Fechar" : "Editar"}</button>
+                      {" "}<button onClick={() => excluir(l)} style={btnDangerSmall} title="Excluir"><Trash2 size={13} /></button>
                     </td>
                   </tr>
+                  {baixaId === l.id && (
+                    <tr style={{ background: "#F2FAF5" }}><td colSpan={12} style={{ padding: 16 }}>
+                      <BaixaLancamento l={l} salvando={salvando} onConfirmar={(b) => confirmarBaixa(l, b)} onCancelar={() => setBaixaId(null)} />
+                    </td></tr>
+                  )}
                   {editId === l.id && (
-                    <tr style={{ background: "#F3F7FB" }}>
-                      <td colSpan={12} style={{ padding: 16 }}>
-                        <FormLancamento key={l.id} session={session} setErro={setErro} centros={centros} valorInicial={valorInicialDe(l)} onSalvar={(f) => salvarEdicao(l, f)} onCancelar={() => setEditId(null)} salvando={salvando} />
-                      </td>
-                    </tr>
+                    <tr style={{ background: "#F3F7FB" }}><td colSpan={12} style={{ padding: 16 }}>
+                      {l.situacao === "quitada" && <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>Quitada em {fmtDataBR(l.pagamento)}{l.valor_pago != null ? ` · ${brl(l.valor_pago)}` : ""}{Number(l.juros) || Number(l.multa) ? ` (juros ${brl(l.juros)}, multa ${brl(l.multa)})` : ""}{Number(l.desconto) ? ` · desconto ${brl(l.desconto)}` : ""}{l.banco ? ` · ${l.banco}` : ""} — para mudar a baixa, use Estornar.</div>}
+                      <FormLancamento key={l.id} session={session} setErro={setErro} centros={centros} pessoas={pessoas} valorInicial={valorInicialDe(l)} onSalvar={(f) => salvarEdicao(l, f)} onCancelar={() => setEditId(null)} salvando={salvando} />
+                    </td></tr>
                   )}
                 </React.Fragment>
               );
@@ -5296,8 +5614,9 @@ function LancamentosFinView({ session, setErro, centros }) {
           )}
         </table>
       </Card>
-      <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>
-        Mostra os lançamentos pela <b>competência</b> (mês do evento/despesa). O arquivo do sistema antigo não traz competência: ela nasce como o mês do vencimento e vai para o mês do evento quando você vincula o orçamento.
+      <div style={{ fontSize: 12, color: MUTED, marginTop: 10, lineHeight: 1.5 }}>
+        <b>Competência</b> = mês do evento/despesa (resultado). <b>Vencimento</b> e <b>Data de pagamento</b> = visão de caixa. "Vencida" é automática: conta em aberto com vencimento antes de hoje.
+        {inicioInteg && <> Integração automática a partir de <b>{fmtDataBR(inicioInteg)}</b>: faturar um orçamento cria a conta a receber, e pagar uma ordem de pagamento cria a conta a pagar já quitada.</>}
       </div>
     </div>
   );
@@ -7506,7 +7825,10 @@ function FinanceiroView({ session, setErro }) {
       .catch((e) => setErro(msgSupabase(e)))
       .finally(() => setCarregandoCentros(false));
   }
-  useEffect(() => { carregarCentros(); }, []); // eslint-disable-line
+  useEffect(() => {
+    carregarCentros();
+    sbRequest("rpc/atualizar_vencidas", session, { method: "POST", body: {} }).catch(() => {}); // "vencida" automática
+  }, []); // eslint-disable-line
 
   const SUBABAS = [
     { id: "inicio", label: "Início (alertas)" },
