@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, LogOut, Loader2, Search, TrendingUp, UserCog, Wallet } from "lucide-react";
+import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, LogOut, Loader2, Search, TrendingUp, UserCog, Wallet, Wrench, Truck } from "lucide-react";
 
 // =========================================================
 // CONFIGURAÇÃO DO SUPABASE — preencha com os dados do seu projeto
@@ -530,6 +530,8 @@ const AREA_DAS_ABAS = {
   rh: "ponto",
   comercial: "comercial",
   financeiro: "financeiro",
+  producao: "producao",
+  logistica: "logistica",
 };
 
 // Layout para celular: ativado automaticamente em telas estreitas, ou à mão pelo botão do cabeçalho.
@@ -631,6 +633,8 @@ export default function App() {
     // administrador e comercial: Dashboard do Comercial; financeiro: tela de alertas do Financeiro
     if (isAdmin || temAcessoArea("comercial")) setTab("comercial");
     else if (podeVerAba("financeiro")) setTab("financeiro");
+    else if (podeVerAba("logistica")) setTab("logistica");
+    else if (podeVerAba("producao")) setTab("producao");
     else if (podeVerAba("rh")) setTab("rh");
     else if (podeVerAba("cadastros")) setTab("cadastros");
     else if (podeVerAba("resultados")) setTab("resultados");
@@ -693,6 +697,8 @@ export default function App() {
             {tab === "comercial" && (
               <ComercialView session={session} setErro={setErro} />
             )}
+            {tab === "producao" && <ProducaoView session={session} setErro={setErro} />}
+            {tab === "logistica" && <LogisticaView session={session} setErro={setErro} />}
             {tab === "cadastros" && podeVerAba("cadastros") && (
               <CadastrosView session={session} setErro={setErro} />
             )}
@@ -766,6 +772,8 @@ function Header({ tab, setTab, onLogout, podeVerAba, celAtivo, onAlternarCelular
   const items = [
     { id: "comercial", label: "Comercial", icon: TrendingUp },
     { id: "financeiro", label: "Financeiro", icon: Wallet },
+    { id: "producao", label: "Produção", icon: Wrench },
+    { id: "logistica", label: "Logística", icon: Truck },
     { id: "cadastros", label: "Cadastros", icon: Briefcase },
     { id: "resultados", label: "Resultados", icon: FileBarChart },
     { id: "rh", label: "Recursos Humanos", icon: Users },
@@ -2116,6 +2124,8 @@ const AREAS_DISPONIVEIS = [
   { id: "ponto", label: "Controle de Ponto" },
   { id: "comercial", label: "Comercial" },
   { id: "financeiro", label: "Financeiro" },
+  { id: "producao", label: "Produção" },
+  { id: "logistica", label: "Logística" },
 ];
 
 // chama uma Edge Function do Supabase com a sessão de quem está logado
@@ -7826,6 +7836,856 @@ function HistoricoView({ session, setErro }) {
     </div>
   );
 }
+
+// =========================================================
+// PRODUÇÃO e LOGÍSTICA — Ordem de Serviço (OS) do evento
+// A OS é da logística; os itens com setor caem na fila da produção.
+// =========================================================
+const SETORES_PROD = [
+  { id: "impressao", label: "Impressão" },
+  { id: "recorte", label: "Recorte / adesivagem" },
+  { id: "cnc", label: "CNC" },
+  { id: "marcenaria", label: "Marcenaria" },
+  { id: "serralheria", label: "Serralheria (metalon)" },
+  { id: "pintura", label: "Pintura" },
+  { id: "terceiro", label: "Terceirizado" },
+];
+const nomeSetor = (id) => SETORES_PROD.find((s) => s.id === id)?.label || id || "—";
+const STATUS_PROD = [
+  { id: "aguardando_arte", label: "Aguardando arte", cor: "#8A6D1F", bg: "#FFF4D6" },
+  { id: "liberado", label: "Liberado", cor: "#1F4E8A", bg: "#E4EEFB" },
+  { id: "em_producao", label: "Em produção", cor: "#6B2FA0", bg: "#F1E8FA" },
+  { id: "pronto", label: "Pronto", cor: OK, bg: "#E5F3EB" },
+];
+const statusProd = (id) => STATUS_PROD.find((s) => s.id === id) || STATUS_PROD[0];
+const STATUS_OS = [
+  { id: "aberta", label: "Aberta" },
+  { id: "separacao", label: "Em separação" },
+  { id: "montagem", label: "Em montagem" },
+  { id: "evento", label: "Evento em andamento" },
+  { id: "desmontagem", label: "Em desmontagem" },
+  { id: "concluida", label: "Concluída" },
+  { id: "cancelada", label: "Cancelada" },
+];
+const nomeStatusOS = (id) => STATUS_OS.find((s) => s.id === id)?.label || id;
+const PADRAO_OS = ["Mala de ferramenta", "Escada", "Extensão elétrica", "Parafusadeira e brocas", "Fita dupla face", "Abraçadeiras (enforca-gato)"];
+const COMBUSTIVEL = ["Vazio", "1/4", "1/2", "3/4", "Cheio"];
+const numOS = (n) => `OS ${String(n || 0).padStart(4, "0")}`;
+const fotoProdUrl = (path) => (path ? `${SUPABASE_URL}/storage/v1/object/public/producao/${path}` : null);
+const m2Item = (it) => (Number(it.largura) > 0 && Number(it.altura) > 0 ? Number(it.largura) * Number(it.altura) * (Number(it.qtd) || 1) : 0);
+const fmtM2 = (v) => `${v.toLocaleString("pt-BR", { maximumFractionDigits: 2 })} m²`;
+const numCampo = (v) => { const n = numDigitado(String(v ?? "")); return isNaN(n) ? null : n; };
+
+// timestamptz <-> <input type="datetime-local">
+function paraInputDT(ts) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (isNaN(d)) return "";
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+const deInputDT = (v) => (v ? new Date(v).toISOString() : null);
+function fmtDH(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  return `${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
+}
+const diaISO = (ts) => { const d = new Date(ts); const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; };
+function diasAte(ts) {
+  if (!ts) return null;
+  const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+  const d = new Date(ts); d.setHours(0, 0, 0, 0);
+  return Math.round((d - hoje) / 86400000);
+}
+
+// foto do celular: reduz para no máximo 1600px antes de enviar
+function comprimirImagem(file, max = 1600, qualidade = 0.82) {
+  return new Promise((resolve) => {
+    if (!file.type.startsWith("image/")) return resolve(file);
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      const esc = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.width * esc); c.height = Math.round(img.height * esc);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob((b) => { URL.revokeObjectURL(url); resolve(b || file); }, "image/jpeg", qualidade);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve(file); };
+    img.src = url;
+  });
+}
+async function enviarFotoProducao(file, pasta, session) {
+  const blob = await comprimirImagem(file);
+  const path = `${pasta}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+  const res = await fetch(`${SUPABASE_URL}/storage/v1/object/producao/${path}`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token}`, "Content-Type": "image/jpeg", "x-upsert": "true" },
+    body: blob,
+  });
+  if (!res.ok) throw new Error("Não foi possível enviar a foto. Verifique a conexão e tente de novo.");
+  return path;
+}
+
+function BadgeProd({ status }) {
+  const s = statusProd(status);
+  return <span style={{ fontSize: 11, fontWeight: 700, color: s.cor, background: s.bg, borderRadius: 999, padding: "2px 9px", whiteSpace: "nowrap" }}>{s.label}</span>;
+}
+function BadgePrazo({ ts }) {
+  const d = diasAte(ts);
+  if (d === null) return <span style={{ fontSize: 11, color: MUTED }}>sem data de montagem</span>;
+  const cor = d < 0 ? MUTED : d <= 1 ? DANGER : d <= 3 ? "#B8902E" : OK;
+  const txt = d < 0 ? `montou há ${-d} dia(s)` : d === 0 ? "monta HOJE" : d === 1 ? "monta AMANHÃ" : `monta em ${d} dias`;
+  return <span style={{ fontSize: 11, fontWeight: 700, color: "#fff", background: cor, borderRadius: 6, padding: "2px 8px", whiteSpace: "nowrap" }}>{txt} · {fmtDH(ts)}</span>;
+}
+
+// botão de foto (abre a câmera no celular)
+function BotaoFoto({ onArquivo, enviando, rotulo = "📷 Foto" }) {
+  const ref = useRef(null);
+  return (
+    <>
+      <input ref={ref} type="file" accept="image/*" capture="environment" style={{ display: "none" }}
+        onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) onArquivo(f); }} />
+      <button type="button" disabled={enviando} onClick={() => ref.current?.click()} style={{ ...btnGhostSmall, fontWeight: 600 }}>{enviando ? "Enviando..." : rotulo}</button>
+    </>
+  );
+}
+
+// campo de equipe: nomes em "chips", com sugestões dos funcionários
+function CampoEquipe({ label, valor, onChange, sugestoes, listaId }) {
+  const [txt, setTxt] = useState("");
+  const add = () => { const t = txt.trim(); if (t && !valor.includes(t)) onChange([...valor, t]); setTxt(""); };
+  return (
+    <Field label={label}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, background: "#fff", minHeight: 40 }}>
+        {valor.map((n) => (
+          <span key={n} style={{ background: "#EEF2F8", color: NAVY, borderRadius: 999, padding: "3px 10px", fontSize: 12, fontWeight: 600 }}>
+            {n} <button type="button" onClick={() => onChange(valor.filter((x) => x !== n))} style={{ border: "none", background: "none", cursor: "pointer", color: MUTED, padding: 0, marginLeft: 4 }}>×</button>
+          </span>
+        ))}
+        <input list={listaId} value={txt} onChange={(e) => setTxt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} onBlur={add}
+          placeholder="nome + Enter" style={{ border: "none", outline: "none", flex: 1, minWidth: 120, fontSize: 13, fontFamily: FONT_BODY }} />
+      </div>
+      <datalist id={listaId}>{sugestoes.map((n) => <option key={n} value={n} />)}</datalist>
+    </Field>
+  );
+}
+
+const osVazia = () => ({
+  id: null, orcamento_id: null, empresa: "prosign", cliente_id: null, cliente_nome: "", contato: "", telefone: "", evento: "", local: "", endereco: "", ponto_referencia: "",
+  montagem_inicio: null, montagem_fim: null, evento_inicio: null, evento_fim: null, desmontagem_inicio: null, desmontagem_fim: null,
+  equipe_separacao: [], equipe_montagem: [], equipe_operacao: [],
+  padrao: PADRAO_OS.map((d) => ({ descricao: d, qtd: 1, ida: false, volta: false })),
+  veiculo: "", km_ida: "", km_volta: "", data_abastecimento: "", combustivel_saida: null, combustivel_volta: null,
+  resp_separacao: "", resp_desmontagem: "", entrega_meio: "", observacao: "", relatorio_instalacao: "", status: "aberta",
+});
+const itemVazio = () => ({ _k: Math.random().toString(36).slice(2), id: null, qtd: 1, descricao: "", largura: "", altura: "", setor: "", status_producao: "aguardando_arte", ida: false, volta: false, volta_obs: "", obs: "", foto_path: null, foto_instalado_path: null });
+
+// ---------------------------------------------------------
+// Impressão da OS — mesmo formato da ficha em papel
+// ---------------------------------------------------------
+function imprimirOS(os, itens, pr) {
+  const e = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const caixa = (ok) => `<span class="cx">${ok ? "✔" : ""}</span>`;
+  const linhasItens = itens.map((it) => `<tr><td class="c">${caixa(it.ida)}</td><td class="c">${caixa(it.volta)}</td><td class="c">${e(String(it.qtd).padStart(2, "0"))}</td><td>${e(it.descricao)}${Number(it.largura) && Number(it.altura) ? ` <b>${e(String(it.largura).replace(".", ","))} x ${e(String(it.altura).replace(".", ","))} m</b>` : ""}${it.setor ? ` <span class="s">[${e(nomeSetor(it.setor))}]</span>` : ""}${it.obs ? `<div class="s">${e(it.obs)}</div>` : ""}</td></tr>`).join("");
+  const vazias = Math.max(0, 4 - itens.length);
+  const pad = (os.padrao || []);
+  const metade = Math.ceil(pad.length / 2);
+  const linhaPad = (p) => (p ? `<td class="c">${caixa(p.ida)}</td><td class="c">${caixa(p.volta)}</td><td class="c">${e(p.qtd || "")}</td><td>${e(p.descricao)}</td>` : `<td></td><td></td><td></td><td></td>`);
+  const linhasPad = Array.from({ length: Math.max(metade, 3) }, (_, i) => `<tr>${linhaPad(pad[i])}${linhaPad(pad[i + metade])}</tr>`).join("");
+  const comb = (v) => (v === null || v === undefined ? "______" : COMBUSTIVEL[v]);
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${e(numOS(os.numero))} · ${e(os.evento)}</title><style>
+  @page { size: A4; margin: 10mm; } body { font-family: Arial, sans-serif; font-size: 11px; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; } td, th { border: 1px solid #333; padding: 4px 6px; vertical-align: top; }
+  .h { background: #E6E6E6; font-weight: 700; text-align: center; } .l { font-weight: 700; font-size: 10px; } .c { text-align: center; width: 34px; }
+  .cx { display: inline-block; width: 12px; height: 12px; border: 1px solid #333; line-height: 12px; font-size: 10px; } .s { color: #555; font-size: 10px; }
+  .topo { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; } .topo img { height: 54px; } .topo h1 { font-size: 16px; margin: 0; text-align: right; }
+  .ass { height: 34px; }
+  </style></head><body>
+  <div class="topo"><img src="${LOGO_PROSIGN}" alt="Prosign"><div><h1>ORDEM DE SERVIÇO · ${e(numOS(os.numero))}</h1><div style="text-align:right">${pr ? `PR ${e(pr)} · ` : ""}emitida em ${e(new Date().toLocaleDateString("pt-BR"))}</div></div></div>
+  <table>
+    <tr><td class="l" style="width:16%">DATA</td><td class="l">EMPRESA CONTRATANTE</td><td class="l">CONTATO</td></tr>
+    <tr><td>${e(os.evento_inicio ? new Date(os.evento_inicio).toLocaleDateString("pt-BR") : "")}</td><td>${e(os.cliente_nome)}</td><td>${e(os.contato)} ${e(os.telefone)}</td></tr>
+    <tr><td class="l" colspan="2">EVENTO</td><td class="l">LOCAL / SALÃO</td></tr>
+    <tr><td colspan="2"><b>${e(os.evento)}</b></td><td>${e(os.local)}</td></tr>
+    <tr><td class="l" colspan="2">ENDEREÇO DE MONTAGEM</td><td class="l">PONTO DE REFERÊNCIA</td></tr>
+    <tr><td colspan="2">${e(os.endereco)}</td><td>${e(os.ponto_referencia)}</td></tr>
+    <tr><td class="l" colspan="2">DATA E HORÁRIO DE MONTAGEM</td><td class="l">DATA E HORÁRIO DE DESMONTAGEM</td></tr>
+    <tr><td colspan="2"><b>${e(fmtDH(os.montagem_inicio))}</b>${os.montagem_fim ? ` até ${e(fmtDH(os.montagem_fim))}` : ""}</td><td><b>${e(fmtDH(os.desmontagem_inicio))}</b></td></tr>
+  </table>
+  <table>
+    <tr><td class="h" colspan="2">EQUIPES</td></tr>
+    <tr><td class="l" style="width:16%">SEPARAÇÃO:</td><td>${e((os.equipe_separacao || []).join(", "))}</td></tr>
+    <tr><td class="l">MONTAGEM:</td><td>${e((os.equipe_montagem || []).join(", "))}</td></tr>
+    <tr><td class="l">OPERAÇÃO:</td><td>${e((os.equipe_operacao || []).join(", "))}</td></tr>
+  </table>
+  <table>
+    <tr><td class="h" colspan="4">EQUIPAMENTOS / COMUNICAÇÃO</td></tr>
+    <tr><td class="l c">IDA</td><td class="l c">VOLTA</td><td class="l c">QUANT.</td><td class="l">EQUIPAMENTOS</td></tr>
+    ${linhasItens}${"<tr><td class='c'>" + caixa(false) + "</td><td class='c'>" + caixa(false) + "</td><td></td><td>&nbsp;</td></tr>".repeat(1)}${Array.from({ length: vazias }, () => `<tr><td class="c">${caixa(false)}</td><td class="c">${caixa(false)}</td><td></td><td>&nbsp;</td></tr>`).join("")}
+  </table>
+  <table>
+    <tr><td class="h" colspan="8">PADRÃO (MATERIAIS E ACABAMENTOS)</td></tr>
+    <tr><td class="l c">IDA</td><td class="l c">VOLTA</td><td class="l c">QUANT</td><td class="l">DESCRIÇÃO</td><td class="l c">IDA</td><td class="l c">VOLTA</td><td class="l c">QUANT</td><td class="l">DESCRIÇÃO</td></tr>
+    ${linhasPad}
+  </table>
+  <table>
+    <tr><td class="l" style="width:16%">OBSERVAÇÃO</td><td>${e(os.observacao)}</td></tr>
+  </table>
+  <table>
+    <tr><td class="l" style="width:50%">RESP. SEPARAÇÃO E TESTAGEM DE EQUIPAMENTOS: ${e(os.resp_separacao)}</td><td class="l">RESP. DESMONTAGEM E TESTAGEM DE EQUIPAMENTOS: ${e(os.resp_desmontagem)}</td></tr>
+    <tr><td class="ass">Assinatura:</td><td class="ass">Assinatura:</td></tr>
+  </table>
+  <table>
+    <tr><td class="h" colspan="4">ABASTECIMENTO</td></tr>
+    <tr><td><b>Veículo:</b> ${e(os.veiculo || "____________")}</td><td><b>KM ida:</b> ${e(os.km_ida ?? "______")}</td><td><b>KM volta:</b> ${e(os.km_volta ?? "______")}</td><td><b>Data:</b> ${e(os.data_abastecimento ? fmtDataBR(os.data_abastecimento) : "___/___/____")}</td></tr>
+    <tr><td colspan="2"><b>Combustível na saída:</b> ${e(comb(os.combustivel_saida))}</td><td colspan="2"><b>Combustível na volta:</b> ${e(comb(os.combustivel_volta))}</td></tr>
+  </table>
+  <script>window.onload = function () { setTimeout(function () { window.print(); }, 300); };<\/script></body></html>`;
+  const w = window.open("", "_blank");
+  if (!w) { alert("O navegador bloqueou a janela de impressão. Libere pop-ups para este site."); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+}
+
+// ---------------------------------------------------------
+// Formulário da OS
+// ---------------------------------------------------------
+function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo }) {
+  const [os, setOs] = useState(osVazia());
+  const [itens, setItens] = useState([]);
+  const [removidos, setRemovidos] = useState([]);
+  const [carregando, setCarregando] = useState(!!osId);
+  const [salvando, setSalvando] = useState(false);
+  const [pr, setPr] = useState("");
+  const [nomesEquipe, setNomesEquipe] = useState([]);
+  const [enviandoFoto, setEnviandoFoto] = useState(null);
+  const meuNome = useMeuNome(session);
+  const set = (k, v) => setOs((o) => ({ ...o, [k]: v }));
+  const setIt = (k, campo, v) => setItens((xs) => xs.map((x) => (x._k === k ? { ...x, [campo]: v } : x)));
+
+  useEffect(() => {
+    sbRequest("funcionarios?select=nome&ativo=eq.true&order=nome.asc", session).then((r) => setNomesEquipe((r || []).map((f) => f.nome))).catch(() => {});
+  }, []); // eslint-disable-line
+
+  useEffect(() => {
+    (async () => {
+      try {
+        if (osId) {
+          const [o] = (await sbRequest(`ordens_servico?select=*,orcamentos(numero_or)&id=eq.${osId}`, session)) || [];
+          const its = (await sbRequest(`os_itens?select=*&os_id=eq.${osId}&order=ordem.asc`, session)) || [];
+          if (o) {
+            setOs({ ...osVazia(), ...o, km_ida: o.km_ida ?? "", km_volta: o.km_volta ?? "", data_abastecimento: o.data_abastecimento || "", padrao: o.padrao || [] });
+            setPr(o.orcamentos?.numero_or || "");
+          }
+          setItens(its.map((x) => ({ ...x, _k: x.id, setor: x.setor || "", largura: x.largura ?? "", altura: x.altura ?? "", obs: x.obs || "", volta_obs: x.volta_obs || "" })));
+        } else if (orcamentoInicial) {
+          await preencherDoOrcamento(orcamentoInicial);
+        } else {
+          setItens([itemVazio()]);
+        }
+      } catch (e) { setErro(msgSupabase(e)); }
+      finally { setCarregando(false); }
+    })();
+  }, [osId]); // eslint-disable-line
+
+  async function preencherDoOrcamento(o) {
+    const [c] = (await sbRequest(`orcamentos?select=*,clientes:pessoas(nome,contato,telefone,celular,end_logradouro,end_numero,end_complemento,end_bairro,end_cidade)&id=eq.${o.id}`, session)) || [];
+    if (!c) return;
+    const cl = c.clientes || {};
+    const ev = c.data_evento ? new Date(`${c.data_evento}T08:00:00`).toISOString() : null;
+    setOs((x) => ({
+      ...x, orcamento_id: c.id, empresa: c.empresa || "prosign", cliente_id: c.cliente_id, cliente_nome: cl.nome || "", contato: cl.contato || "", telefone: cl.celular || cl.telefone || "",
+      evento: c.evento || "", local: c.local || "", evento_inicio: x.evento_inicio || ev,
+    }));
+    setPr(c.numero_or || "");
+    const ci = (await sbRequest(`orcamento_cliente_itens?select=titulo,descricao,qtd&orcamento_id=eq.${c.id}&order=ordem.asc`, session)) || [];
+    const novos = ci.filter((x) => (x.titulo || x.descricao)).map((x) => ({ ...itemVazio(), qtd: Number(x.qtd) || 1, descricao: [x.titulo, x.descricao].filter(Boolean).join(" — ") }));
+    setItens((xs) => [...xs.filter((x) => x.descricao.trim()), ...(novos.length ? novos : [itemVazio()])]);
+  }
+
+  async function salvar() {
+    if (!os.evento.trim()) { setErro("Informe o nome do evento."); return; }
+    setSalvando(true); setErro("");
+    try {
+      const corpo = {
+        orcamento_id: os.orcamento_id, empresa: os.empresa, cliente_id: os.cliente_id, cliente_nome: os.cliente_nome || null, contato: os.contato || null, telefone: os.telefone || null,
+        evento: os.evento.trim(), local: os.local || null, endereco: os.endereco || null, ponto_referencia: os.ponto_referencia || null,
+        montagem_inicio: os.montagem_inicio, montagem_fim: os.montagem_fim, evento_inicio: os.evento_inicio, evento_fim: os.evento_fim,
+        desmontagem_inicio: os.desmontagem_inicio, desmontagem_fim: os.desmontagem_fim,
+        equipe_separacao: os.equipe_separacao, equipe_montagem: os.equipe_montagem, equipe_operacao: os.equipe_operacao,
+        padrao: (os.padrao || []).filter((p) => (p.descricao || "").trim()),
+        veiculo: os.veiculo || null, km_ida: numCampo(os.km_ida), km_volta: numCampo(os.km_volta), data_abastecimento: os.data_abastecimento || null,
+        combustivel_saida: os.combustivel_saida, combustivel_volta: os.combustivel_volta,
+        resp_separacao: os.resp_separacao || null, resp_desmontagem: os.resp_desmontagem || null, entrega_meio: os.entrega_meio || null,
+        observacao: os.observacao || null, relatorio_instalacao: os.relatorio_instalacao || null, status: os.status,
+      };
+      let id = os.id;
+      if (id) await sbRequest(`ordens_servico?id=eq.${id}`, session, { method: "PATCH", body: corpo });
+      else {
+        const [n] = await sbRequest("ordens_servico", session, { method: "POST", body: { ...corpo, criado_por_nome: meuNome || null } });
+        id = n.id; setOs((o) => ({ ...o, id, numero: n.numero }));
+      }
+      if (removidos.length) await sbRequest(`os_itens?id=in.(${removidos.join(",")})`, session, { method: "DELETE" });
+      const validos = itens.filter((x) => x.descricao.trim());
+      const linha = (x, i) => ({
+        os_id: id, ordem: i, qtd: numCampo(x.qtd) || 1, descricao: x.descricao.trim(), largura: numCampo(x.largura), altura: numCampo(x.altura),
+        setor: x.setor || null, status_producao: x.status_producao, ida: !!x.ida, volta: !!x.volta, volta_obs: x.volta_obs || null, obs: x.obs || null,
+      });
+      for (let i = 0; i < validos.length; i++) {
+        const x = validos[i];
+        if (x.id) await sbRequest(`os_itens?id=eq.${x.id}`, session, { method: "PATCH", body: linha(x, i) });
+      }
+      const novos = validos.map((x, i) => ({ x, i })).filter(({ x }) => !x.id);
+      if (novos.length) {
+        const criados = (await sbRequest("os_itens", session, { method: "POST", body: novos.map(({ x, i }) => linha(x, i)) })) || [];
+        const porOrdem = Object.fromEntries(criados.map((c) => [c.ordem, c.id]));
+        setItens((xs) => xs.map((x) => { const pos = validos.indexOf(x); return !x.id && porOrdem[pos] ? { ...x, id: porOrdem[pos], _k: porOrdem[pos] } : x; }));
+      }
+      setRemovidos([]);
+      onSalvo && onSalvo();
+      return id;
+    } catch (e) { setErro(msgSupabase(e)); return null; }
+    finally { setSalvando(false); }
+  }
+
+  async function fotoInstalado(x, f) {
+    if (!x.id) { setErro("Salve a OS antes de anexar fotos."); return; }
+    setEnviandoFoto(x._k);
+    try {
+      const path = await enviarFotoProducao(f, `os-${os.id}/instalado`, session);
+      await sbRequest(`os_itens?id=eq.${x.id}`, session, { method: "PATCH", body: { foto_instalado_path: path } });
+      setIt(x._k, "foto_instalado_path", path);
+    } catch (e) { setErro(e.message); }
+    finally { setEnviandoFoto(null); }
+  }
+
+  if (carregando) return <Card><span style={{ color: MUTED }}>Carregando OS...</span></Card>;
+  const grid = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 };
+  const titulo = (t) => <div style={{ fontSize: 13, fontWeight: 700, color: NAVY, textTransform: "uppercase", letterSpacing: 0.4, margin: "18px 0 10px", borderBottom: `2px solid ${GOLD}`, paddingBottom: 4 }}>{t}</div>;
+  const dt = (k) => <input type="datetime-local" value={paraInputDT(os[k])} onChange={(e) => set(k, deInputDT(e.target.value))} style={inputStyle} />;
+  const totalM2 = itens.reduce((s, x) => s + m2Item(x), 0);
+
+  return (
+    <Card>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 20, fontWeight: 700, color: NAVY }}>{os.id ? numOS(os.numero) : "Nova OS"} {os.evento && <span style={{ fontWeight: 400 }}>· {os.evento}</span>}</div>
+          <div style={{ fontSize: 12, color: MUTED }}>{pr ? `PR ${pr} · ` : ""}{os.cliente_nome || "sem cliente"}{os.criado_por_nome ? ` · criada por ${os.criado_por_nome}` : ""}</div>
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <select value={os.status} onChange={(e) => set("status", e.target.value)} style={selStyle}>{STATUS_OS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select>
+          <button onClick={salvar} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
+          <button onClick={async () => { const id = os.id || (await salvar()); if (id) imprimirOS({ ...os, id }, itens.filter((x) => x.descricao.trim()), pr); }} style={btnGhostSmall}>🖨️ Imprimir OS</button>
+          <button onClick={onFechar} style={btnGhostSmall}>Fechar</button>
+        </div>
+      </div>
+
+      {!os.id && !os.orcamento_id && (
+        <div style={{ marginTop: 14, background: "#F6F8FB", borderRadius: 8, padding: 12 }}>
+          <div style={{ fontSize: 12, color: MUTED, marginBottom: 6 }}>Puxar dados do orçamento (PR) — preenche cliente, evento, local e os itens do orçamento para o cliente:</div>
+          <BuscaOrcamento session={session} setErro={setErro} onEscolher={(o) => preencherDoOrcamento(o).catch((e) => setErro(msgSupabase(e)))} />
+        </div>
+      )}
+
+      {titulo("Evento e cliente")}
+      <div style={grid}>
+        <Field label="Evento"><input value={os.evento} onChange={(e) => set("evento", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Empresa contratante"><input value={os.cliente_nome || ""} onChange={(e) => set("cliente_nome", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Contato"><input value={os.contato || ""} onChange={(e) => set("contato", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Telefone"><input value={os.telefone || ""} onChange={(e) => set("telefone", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Local / salão"><input value={os.local || ""} onChange={(e) => set("local", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Endereço de montagem"><input value={os.endereco || ""} onChange={(e) => set("endereco", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Ponto de referência"><input value={os.ponto_referencia || ""} onChange={(e) => set("ponto_referencia", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Empresa que executa"><select value={os.empresa} onChange={(e) => set("empresa", e.target.value)} style={selStyle}><option value="prosign">Prosign</option><option value="vs">VS</option></select></Field>
+      </div>
+
+      {titulo("Datas")}
+      <div style={grid}>
+        <Field label="Montagem — início">{dt("montagem_inicio")}</Field>
+        <Field label="Montagem — término">{dt("montagem_fim")}</Field>
+        <Field label="Evento — início">{dt("evento_inicio")}</Field>
+        <Field label="Evento — término">{dt("evento_fim")}</Field>
+        <Field label="Desmontagem — início">{dt("desmontagem_inicio")}</Field>
+        <Field label="Desmontagem — término">{dt("desmontagem_fim")}</Field>
+      </div>
+
+      {titulo("Equipes")}
+      <div style={grid}>
+        <CampoEquipe label="Separação" valor={os.equipe_separacao} onChange={(v) => set("equipe_separacao", v)} sugestoes={nomesEquipe} listaId="eq-sep" />
+        <CampoEquipe label="Montagem" valor={os.equipe_montagem} onChange={(v) => set("equipe_montagem", v)} sugestoes={nomesEquipe} listaId="eq-mon" />
+        <CampoEquipe label="Operação" valor={os.equipe_operacao} onChange={(v) => set("equipe_operacao", v)} sugestoes={nomesEquipe} listaId="eq-op" />
+      </div>
+
+      {titulo(`Equipamentos / comunicação${totalM2 ? ` · ${fmtM2(totalM2)}` : ""}`)}
+      <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>Escolha o <b>setor</b> nos itens que precisam ser produzidos — eles aparecem na fila da Produção. Item sem setor é só separado e levado (estoque/patrimônio).</div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 980 }}>
+          <thead><tr style={{ background: BG }}>
+            <th style={thS}>Ida</th><th style={thS}>Volta</th><th style={thS}>Qtd</th><th style={thS}>Descrição</th><th style={thS}>Larg. (m)</th><th style={thS}>Alt. (m)</th><th style={thS}>Setor</th><th style={thS}>Produção</th><th style={thS}>Fotos</th><th style={thS}></th>
+          </tr></thead>
+          <tbody>
+            {itens.map((x) => (
+              <tr key={x._k} style={{ borderTop: `1px solid ${BORDER}` }}>
+                <td style={tdS}><input type="checkbox" checked={!!x.ida} onChange={(e) => setIt(x._k, "ida", e.target.checked)} /></td>
+                <td style={tdS}><input type="checkbox" checked={!!x.volta} onChange={(e) => setIt(x._k, "volta", e.target.checked)} /></td>
+                <td style={tdS}><input value={x.qtd} onChange={(e) => setIt(x._k, "qtd", e.target.value)} style={{ ...inputStyle, width: 54 }} /></td>
+                <td style={tdS}>
+                  <textarea value={x.descricao} onChange={(e) => setIt(x._k, "descricao", e.target.value)} rows={2} style={{ ...inputStyle, width: "100%", minWidth: 260, resize: "vertical" }} placeholder="Ex.: PS adesivado 0,60 de diâmetro — patrocinadores" />
+                  <input value={x.obs || ""} onChange={(e) => setIt(x._k, "obs", e.target.value)} placeholder="observação (acabamento, instalação...)" style={{ ...inputStyle, width: "100%", marginTop: 4, fontSize: 12 }} />
+                </td>
+                <td style={tdS}><input value={x.largura} onChange={(e) => setIt(x._k, "largura", e.target.value)} style={{ ...inputStyle, width: 70 }} placeholder="0,00" /></td>
+                <td style={tdS}><input value={x.altura} onChange={(e) => setIt(x._k, "altura", e.target.value)} style={{ ...inputStyle, width: 70 }} placeholder="0,00" />{m2Item({ ...x, largura: numCampo(x.largura), altura: numCampo(x.altura) }) > 0 && <div style={{ fontSize: 11, color: MUTED }}>{fmtM2(m2Item({ ...x, largura: numCampo(x.largura), altura: numCampo(x.altura) }))}</div>}</td>
+                <td style={tdS}><select value={x.setor} onChange={(e) => setIt(x._k, "setor", e.target.value)} style={{ ...selStyle, maxWidth: 160 }}><option value="">— não produz —</option>{SETORES_PROD.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select></td>
+                <td style={tdS}>{x.setor ? <select value={x.status_producao} onChange={(e) => setIt(x._k, "status_producao", e.target.value)} style={{ ...selStyle, maxWidth: 150 }}>{STATUS_PROD.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select> : <span style={{ color: MUTED, fontSize: 12 }}>—</span>}</td>
+                <td style={{ ...tdS, whiteSpace: "nowrap" }}>
+                  {x.foto_path && <a href={fotoProdUrl(x.foto_path)} target="_blank" rel="noreferrer" title="Peça pronta"><img src={fotoProdUrl(x.foto_path)} alt="Peça pronta" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, marginRight: 4 }} /></a>}
+                  {x.foto_instalado_path && <a href={fotoProdUrl(x.foto_instalado_path)} target="_blank" rel="noreferrer" title="Instalado"><img src={fotoProdUrl(x.foto_instalado_path)} alt="Instalado" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, border: `2px solid ${OK}` }} /></a>}
+                  {x.id && <div style={{ marginTop: 4 }}><BotaoFoto rotulo="📷 Instalado" enviando={enviandoFoto === x._k} onArquivo={(f) => fotoInstalado(x, f)} /></div>}
+                </td>
+                <td style={tdS}><button onClick={() => { if (x.id) setRemovidos((r) => [...r, x.id]); setItens((xs) => xs.filter((y) => y._k !== x._k)); }} style={btnDangerSmall} title="Remover"><Trash2 size={13} /></button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <button onClick={() => setItens((xs) => [...xs, itemVazio()])} style={{ ...btnGhostSmall, marginTop: 8 }}><Plus size={13} /> Adicionar item</button>
+
+      {titulo("Padrão (materiais e acabamentos)")}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 6 }}>
+        {(os.padrao || []).map((p, i) => (
+          <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <label style={{ fontSize: 11 }}><input type="checkbox" checked={!!p.ida} onChange={(e) => set("padrao", os.padrao.map((q, j) => (j === i ? { ...q, ida: e.target.checked } : q)))} /> ida</label>
+            <label style={{ fontSize: 11 }}><input type="checkbox" checked={!!p.volta} onChange={(e) => set("padrao", os.padrao.map((q, j) => (j === i ? { ...q, volta: e.target.checked } : q)))} /> volta</label>
+            <input value={p.qtd ?? ""} onChange={(e) => set("padrao", os.padrao.map((q, j) => (j === i ? { ...q, qtd: e.target.value } : q)))} style={{ ...inputStyle, width: 44 }} />
+            <input value={p.descricao} onChange={(e) => set("padrao", os.padrao.map((q, j) => (j === i ? { ...q, descricao: e.target.value } : q)))} style={{ ...inputStyle, flex: 1 }} />
+            <button onClick={() => set("padrao", os.padrao.filter((_, j) => j !== i))} style={btnDangerSmall}><X size={12} /></button>
+          </div>
+        ))}
+      </div>
+      <button onClick={() => set("padrao", [...(os.padrao || []), { descricao: "", qtd: 1, ida: false, volta: false }])} style={{ ...btnGhostSmall, marginTop: 8 }}><Plus size={13} /> Adicionar material</button>
+
+      {titulo("Veículo e abastecimento")}
+      <div style={grid}>
+        <Field label="Veículo"><input value={os.veiculo || ""} onChange={(e) => set("veiculo", e.target.value)} style={inputStyle} placeholder="placa ou apelido" /></Field>
+        <Field label="KM ida"><input inputMode="numeric" value={os.km_ida} onChange={(e) => set("km_ida", e.target.value)} style={inputStyle} /></Field>
+        <Field label="KM volta"><input inputMode="numeric" value={os.km_volta} onChange={(e) => set("km_volta", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Data do abastecimento"><input type="date" value={os.data_abastecimento || ""} onChange={(e) => set("data_abastecimento", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Combustível na saída"><select value={os.combustivel_saida ?? ""} onChange={(e) => set("combustivel_saida", e.target.value === "" ? null : Number(e.target.value))} style={selStyle}><option value="">—</option>{COMBUSTIVEL.map((c, i) => <option key={c} value={i}>{c}</option>)}</select></Field>
+        <Field label="Combustível na volta"><select value={os.combustivel_volta ?? ""} onChange={(e) => set("combustivel_volta", e.target.value === "" ? null : Number(e.target.value))} style={selStyle}><option value="">—</option>{COMBUSTIVEL.map((c, i) => <option key={c} value={i}>{c}</option>)}</select></Field>
+      </div>
+      {numCampo(os.km_ida) > 0 && numCampo(os.km_volta) > numCampo(os.km_ida) && <div style={{ fontSize: 12, color: MUTED, marginTop: 6 }}>Rodados: <b>{numCampo(os.km_volta) - numCampo(os.km_ida)} km</b></div>}
+
+      {titulo("Responsáveis e observações")}
+      <div style={grid}>
+        <Field label="Resp. separação e testagem"><input list="eq-sep" value={os.resp_separacao || ""} onChange={(e) => set("resp_separacao", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Resp. desmontagem e testagem"><input list="eq-mon" value={os.resp_desmontagem || ""} onChange={(e) => set("resp_desmontagem", e.target.value)} style={inputStyle} /></Field>
+        <Field label="Entrega / meio"><input value={os.entrega_meio || ""} onChange={(e) => set("entrega_meio", e.target.value)} style={inputStyle} placeholder="Ex.: caminhão, retirada na garagem" /></Field>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: 12, marginTop: 12 }}>
+        <Field label="Observação"><textarea value={os.observacao || ""} onChange={(e) => set("observacao", e.target.value)} rows={3} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} /></Field>
+        <Field label="Relatório de instalação (o que aconteceu no local)"><textarea value={os.relatorio_instalacao || ""} onChange={(e) => set("relatorio_instalacao", e.target.value)} rows={3} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+        <button onClick={salvar} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar OS"}</button>
+        <button onClick={onFechar} style={btnGhostSmall}>Fechar</button>
+      </div>
+    </Card>
+  );
+}
+
+// ---------------------------------------------------------
+// LOGÍSTICA: agenda + ordens de serviço
+// ---------------------------------------------------------
+function LogisticaView({ session, setErro }) {
+  const [sub, setSub] = useState("agenda");
+  const [lista, setLista] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [aberta, setAberta] = useState(null); // {id} | {novo:true}
+  const [busca, setBusca] = useState("");
+  const [nomesEquipe, setNomesEquipe] = useState([]);
+  useEffect(() => {
+    sbRequest("funcionarios?select=nome&ativo=eq.true&order=nome.asc", session).then((r) => setNomesEquipe((r || []).map((f) => f.nome))).catch(() => {});
+  }, []); // eslint-disable-line
+
+  async function carregar() {
+    setCarregando(true);
+    try {
+      const rows = (await sbRequest("ordens_servico?select=*,orcamentos(numero_or),os_itens(id,setor,status_producao,ida,volta)&order=montagem_inicio.asc.nullslast&limit=1000", session)) || [];
+      setLista(rows);
+    } catch (e) {
+      setErro(/ordens_servico/.test(e.message) ? "A área de Logística ainda não foi ativada no banco (falta rodar o SQL migracao_producao_logistica.sql)." : msgSupabase(e));
+    } finally { setCarregando(false); }
+  }
+  useEffect(() => { carregar(); }, []); // eslint-disable-line
+
+  if (aberta) {
+    return <FormOS session={session} setErro={setErro} osId={aberta.id || null} orcamentoInicial={aberta.orcamento || null}
+      onFechar={() => { setAberta(null); carregar(); }} onSalvo={() => {}} />;
+  }
+
+  const resumo = (o) => {
+    const its = o.os_itens || [];
+    const prod = its.filter((x) => x.setor);
+    return { total: its.length, prod: prod.length, prontos: prod.filter((x) => x.status_producao === "pronto").length, ida: its.filter((x) => x.ida).length, volta: its.filter((x) => x.volta).length };
+  };
+  const t = busca.trim().toLowerCase();
+  const filtradas = lista.filter((o) => o.status !== "cancelada" && (!t || `${o.evento} ${o.cliente_nome || ""} ${o.local || ""} ${o.orcamentos?.numero_or || ""} ${numOS(o.numero)}`.toLowerCase().includes(t)));
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {[["agenda", "Agenda"], ["lista", "Ordens de serviço"]].map(([id, lb]) => (
+            <button key={id} onClick={() => setSub(id)} style={{ ...btnGhostSmall, fontWeight: 700, background: sub === id ? NAVY : "#fff", color: sub === id ? "#fff" : TEXT, borderColor: sub === id ? NAVY : BORDER }}>{lb}</button>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar evento, cliente, PR, OS" style={{ ...inputStyle, width: 240 }} />
+          <button onClick={() => setAberta({ novo: true })} style={btnPrimary}><Plus size={15} /> Nova OS</button>
+        </div>
+      </div>
+      {carregando && <div style={{ color: MUTED }}>Carregando...</div>}
+
+      {!carregando && sub === "agenda" && (
+        <AgendaLogistica session={session} setErro={setErro} lista={lista} nomesEquipe={nomesEquipe} onAbrirOS={(id) => setAberta({ id })} />
+      )}
+
+      {!carregando && sub === "lista" && (
+        <Card style={{ padding: 0, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+            <thead><tr style={{ background: BG }}><th style={thS}>OS</th><th style={thS}>Evento</th><th style={thS}>Cliente</th><th style={thS}>Montagem</th><th style={thS}>Desmontagem</th><th style={thS}>Produção</th><th style={thS}>Separação</th><th style={thS}>Situação</th></tr></thead>
+            <tbody>
+              {filtradas.length === 0 && <tr><td colSpan={8} style={{ ...tdS, color: MUTED }}>Nenhuma OS.</td></tr>}
+              {filtradas.map((o) => { const r = resumo(o); return (
+                <tr key={o.id} onClick={() => setAberta({ id: o.id })} style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }}>
+                  <td style={{ ...tdS, fontFamily: FONT_MONO }}>{numOS(o.numero)}{o.orcamentos?.numero_or && <div style={{ fontSize: 11, color: MUTED }}>PR {o.orcamentos.numero_or}</div>}</td>
+                  <td style={{ ...tdS, fontWeight: 600 }}>{o.evento}<div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{o.local}</div></td>
+                  <td style={tdS}>{o.cliente_nome || "—"}</td>
+                  <td style={{ ...tdS, whiteSpace: "nowrap" }}>{fmtDH(o.montagem_inicio)}</td>
+                  <td style={{ ...tdS, whiteSpace: "nowrap" }}>{fmtDH(o.desmontagem_inicio)}</td>
+                  <td style={{ ...tdS, color: r.prod && r.prontos === r.prod ? OK : TEXT }}>{r.prod ? `${r.prontos}/${r.prod}` : "—"}</td>
+                  <td style={tdS}>ida {r.ida}/{r.total} · volta {r.volta}/{r.total}</td>
+                  <td style={tdS}>{nomeStatusOS(o.status)}</td>
+                </tr>
+              ); })}
+            </tbody>
+          </table>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------
+// PRODUÇÃO: fila por setor
+// ---------------------------------------------------------
+function ProducaoView({ session, setErro }) {
+  const [itens, setItens] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [setor, setSetor] = useState("todos");
+  const [filtro, setFiltro] = useState("pendentes");
+  const [busca, setBusca] = useState("");
+  const [enviando, setEnviando] = useState(null);
+  const meuNome = useMeuNome(session);
+
+  async function carregar() {
+    setCarregando(true);
+    try {
+      const rows = (await sbRequest("os_itens?select=*,os:ordens_servico!inner(id,numero,evento,cliente_nome,local,montagem_inicio,status,orcamentos(numero_or))&setor=not.is.null&os.status=not.in.(concluida,cancelada)&limit=2000", session)) || [];
+      setItens(rows);
+    } catch (e) {
+      setErro(/os_itens|ordens_servico/.test(e.message) ? "A área de Produção ainda não foi ativada no banco (falta rodar o SQL migracao_producao_logistica.sql)." : msgSupabase(e));
+    } finally { setCarregando(false); }
+  }
+  useEffect(() => { carregar(); }, []); // eslint-disable-line
+
+  async function mudar(x, campos) {
+    setErro("");
+    try {
+      await sbRequest(`os_itens?id=eq.${x.id}`, session, { method: "PATCH", body: campos });
+      setItens((xs) => xs.map((y) => (y.id === x.id ? { ...y, ...campos } : y)));
+    } catch (e) { setErro(msgSupabase(e)); }
+  }
+  function marcar(x, status) {
+    const extra = status === "pronto" ? { produzido_por: meuNome || null, produzido_em: new Date().toISOString() } : {};
+    mudar(x, { status_producao: status, ...extra });
+  }
+  async function foto(x, f) {
+    setEnviando(x.id);
+    try {
+      const path = await enviarFotoProducao(f, `os-${x.os_id}/producao`, session);
+      await mudar(x, { foto_path: path, status_producao: "pronto", produzido_por: x.produzido_por || meuNome || null, produzido_em: x.produzido_em || new Date().toISOString() });
+    } catch (e) { setErro(e.message); }
+    finally { setEnviando(null); }
+  }
+
+  const t = busca.trim().toLowerCase();
+  const base = itens.filter((x) => (!t || `${x.descricao} ${x.os?.evento} ${x.os?.cliente_nome} ${x.os?.orcamentos?.numero_or || ""}`.toLowerCase().includes(t)));
+  const conta = (sid) => base.filter((x) => (sid === "todos" || x.setor === sid) && x.status_producao !== "pronto").length;
+  const lista = base
+    .filter((x) => setor === "todos" || x.setor === setor)
+    .filter((x) => (filtro === "pendentes" ? x.status_producao !== "pronto" : filtro === "prontos" ? x.status_producao === "pronto" : true))
+    .sort((a, b) => new Date(a.os?.montagem_inicio || "2999-01-01") - new Date(b.os?.montagem_inicio || "2999-01-01"));
+  const hoje = diaISO(new Date());
+  const prontosHoje = itens.filter((x) => x.status_producao === "pronto" && x.produzido_em && diaISO(x.produzido_em) === hoje);
+  const m2Hoje = prontosHoje.reduce((s, x) => s + m2Item(x), 0);
+  const proximo = { aguardando_arte: "liberado", liberado: "em_producao", em_producao: "pronto" };
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginBottom: 14 }}>
+        <Card style={{ padding: 12 }}><div style={{ fontSize: 12, color: MUTED }}>Pendentes</div><div style={{ fontSize: 22, fontWeight: 700, color: NAVY }}>{itens.filter((x) => x.status_producao !== "pronto").length}</div></Card>
+        <Card style={{ padding: 12 }}><div style={{ fontSize: 12, color: MUTED }}>Aguardando arte</div><div style={{ fontSize: 22, fontWeight: 700, color: "#8A6D1F" }}>{itens.filter((x) => x.status_producao === "aguardando_arte").length}</div></Card>
+        <Card style={{ padding: 12 }}><div style={{ fontSize: 12, color: MUTED }}>Prontos hoje</div><div style={{ fontSize: 22, fontWeight: 700, color: OK }}>{prontosHoje.length}{m2Hoje ? <span style={{ fontSize: 13, color: MUTED }}> · {fmtM2(m2Hoje)}</span> : null}</div></Card>
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+        {[{ id: "todos", label: "Todos os setores" }, ...SETORES_PROD].map((s) => (
+          <button key={s.id} onClick={() => setSetor(s.id)} style={{ ...btnGhostSmall, fontWeight: 700, background: setor === s.id ? NAVY : "#fff", color: setor === s.id ? "#fff" : TEXT, borderColor: setor === s.id ? NAVY : BORDER }}>
+            {s.label} {conta(s.id) > 0 && <span style={{ opacity: 0.8 }}>({conta(s.id)})</span>}
+          </button>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
+        <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={selStyle}><option value="pendentes">A fazer</option><option value="prontos">Prontos</option><option value="todos">Todos</option></select>
+        <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar peça, evento, cliente ou PR" style={{ ...inputStyle, flex: 1, minWidth: 200 }} />
+        <button onClick={carregar} style={btnGhostSmall}>Atualizar</button>
+      </div>
+      {carregando && <div style={{ color: MUTED }}>Carregando...</div>}
+      {!carregando && lista.length === 0 && <Card><span style={{ color: MUTED }}>Nada na fila com esses filtros. Os itens chegam aqui quando a Logística escolhe um setor na OS.</span></Card>}
+      <div style={{ display: "grid", gap: 10 }}>
+        {lista.map((x) => {
+          const m2 = m2Item(x);
+          return (
+            <Card key={x.id} style={{ padding: 14, borderLeft: `5px solid ${statusProd(x.status_producao).cor}` }}>
+              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
+                {x.foto_path && <a href={fotoProdUrl(x.foto_path)} target="_blank" rel="noreferrer"><img src={fotoProdUrl(x.foto_path)} alt="Peça pronta" style={{ width: 88, height: 88, objectFit: "cover", borderRadius: 8 }} /></a>}
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 4 }}>
+                    <BadgePrazo ts={x.os?.montagem_inicio} />
+                    <span style={{ fontSize: 11, color: MUTED }}>{nomeSetor(x.setor)}</span>
+                  </div>
+                  <div style={{ fontWeight: 700, color: NAVY, fontSize: 15 }}>{Number(x.qtd) !== 1 ? `${String(x.qtd).replace(".", ",")} × ` : ""}{x.descricao}</div>
+                  {(Number(x.largura) > 0 || x.obs) && <div style={{ fontSize: 12, color: TEXT }}>{Number(x.largura) > 0 && Number(x.altura) > 0 ? `${String(x.largura).replace(".", ",")} x ${String(x.altura).replace(".", ",")} m · ${fmtM2(m2)}` : ""}{x.obs ? ` · ${x.obs}` : ""}</div>}
+                  <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{x.os?.orcamentos?.numero_or ? `PR ${x.os.orcamentos.numero_or} · ` : ""}{x.os?.evento} · {x.os?.cliente_nome || "—"} · {numOS(x.os?.numero)}</div>
+                  {x.status_producao === "pronto" && x.produzido_por && <div style={{ fontSize: 11, color: OK, marginTop: 2 }}>✔ pronto por {x.produzido_por}{x.produzido_em ? ` em ${fmtDH(x.produzido_em)}` : ""}</div>}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+                  <BadgeProd status={x.status_producao} />
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    {proximo[x.status_producao] && <button onClick={() => marcar(x, proximo[x.status_producao])} style={{ ...btnPrimary, padding: "7px 12px" }}>→ {statusProd(proximo[x.status_producao]).label}</button>}
+                    <BotaoFoto enviando={enviando === x.id} onArquivo={(f) => foto(x, f)} rotulo={x.foto_path ? "📷 Trocar foto" : "📷 Foto pronta"} />
+                    {x.status_producao !== "aguardando_arte" && <select value="" onChange={(e) => e.target.value && marcar(x, e.target.value)} style={{ ...selStyle, fontSize: 12, padding: "5px 6px" }}><option value="">voltar para…</option>{STATUS_PROD.filter((s) => s.id !== x.status_producao).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select>}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------
+// Agenda da logística — o caderno do supervisor no sistema
+// cada dia: quem folga, quem fica na empresa e as tarefas por horário
+// ---------------------------------------------------------
+const TIPOS_TAREFA = [
+  { id: "montagem", label: "Montagem", cor: NAVY },
+  { id: "desmontagem", label: "Desmontagem", cor: "#8A3B2E" },
+  { id: "evento", label: "Evento / operação", cor: "#B8902E" },
+  { id: "visita", label: "Visita técnica", cor: "#1F6F8A" },
+  { id: "entrega", label: "Entrega", cor: "#2F6F4F" },
+  { id: "retirada", label: "Retirada / recolher", cor: "#6B2FA0" },
+  { id: "carregamento", label: "Carregar caminhão", cor: "#5A5A5A" },
+  { id: "tarefa", label: "Tarefa na empresa", cor: "#7A7A7A" },
+];
+const tipoTarefa = (id) => TIPOS_TAREFA.find((t) => t.id === id) || TIPOS_TAREFA[7];
+const somaDias = (iso, n) => { const d = new Date(`${iso}T12:00:00`); d.setDate(d.getDate() + n); return diaISO(d); };
+const segundaDa = (iso) => { const d = new Date(`${iso}T12:00:00`); const w = (d.getDay() + 6) % 7; return somaDias(iso, -w); };
+const nomeDiaLongo = (iso) => { const s = new Date(`${iso}T12:00:00`).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" }); return s.charAt(0).toUpperCase() + s.slice(1); };
+const horaDe = (ts) => new Date(ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+const tarefaVazia = (data) => ({ data, hora: "", tipo: "montagem", descricao: "", equipe: [], freelas: 0, veiculo: "", os_id: "", obs: "" });
+
+function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
+  const [data, setData] = useState(diaISO(new Date()));
+  const [modo, setModo] = useState("dia");
+  const [dias, setDias] = useState({});
+  const [tarefas, setTarefas] = useState([]);
+  const [nova, setNova] = useState(null);
+  const [salvando, setSalvando] = useState(false);
+  const [semTabela, setSemTabela] = useState(false);
+  const meuNome = useMeuNome(session);
+  const inicio = modo === "dia" ? data : segundaDa(data);
+  const fim = modo === "dia" ? data : somaDias(inicio, 6);
+
+  async function carregar() {
+    try {
+      const [ds, ts] = await Promise.all([
+        sbRequest(`agenda_dias?select=*&data=gte.${inicio}&data=lte.${fim}`, session),
+        sbRequest(`agenda_tarefas?select=*&data=gte.${inicio}&data=lte.${fim}&order=hora.asc.nullsfirst`, session),
+      ]);
+      setDias(Object.fromEntries((ds || []).map((d) => [d.data, d])));
+      setTarefas(ts || []);
+      setSemTabela(false);
+    } catch (e) {
+      if (/agenda_/.test(e.message)) setSemTabela(true); else setErro(msgSupabase(e));
+    }
+  }
+  useEffect(() => { carregar(); setNova(null); }, [inicio, fim]); // eslint-disable-line
+
+  async function salvarDia(d, campos) {
+    const atual = dias[d] || { data: d, folga: [], empresa: [] };
+    const novo = { ...atual, ...campos };
+    setDias((x) => ({ ...x, [d]: novo }));
+    try {
+      await sbRequest("agenda_dias?on_conflict=data", session, { method: "POST", body: { data: d, folga: novo.folga || [], empresa: novo.empresa || [], obs: novo.obs || null }, extraHeaders: { Prefer: "return=representation,resolution=merge-duplicates" } });
+    } catch (e) { setErro(msgSupabase(e)); }
+  }
+  async function salvarTarefa() {
+    if (!nova.descricao.trim()) { setErro("Descreva a tarefa."); return; }
+    setSalvando(true); setErro("");
+    try {
+      const corpo = { data: nova.data, hora: nova.hora || null, tipo: nova.tipo, descricao: nova.descricao.trim(), equipe: nova.equipe, freelas: Number(nova.freelas) || 0, veiculo: nova.veiculo || null, os_id: nova.os_id || null, obs: nova.obs || null };
+      if (nova.id) await sbRequest(`agenda_tarefas?id=eq.${nova.id}`, session, { method: "PATCH", body: corpo });
+      else await sbRequest("agenda_tarefas", session, { method: "POST", body: { ...corpo, criado_por_nome: meuNome || null } });
+      setNova(null); carregar();
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setSalvando(false); }
+  }
+  async function marcarFeito(t) {
+    try { await sbRequest(`agenda_tarefas?id=eq.${t.id}`, session, { method: "PATCH", body: { feito: !t.feito } }); setTarefas((xs) => xs.map((x) => (x.id === t.id ? { ...x, feito: !t.feito } : x))); }
+    catch (e) { setErro(msgSupabase(e)); }
+  }
+  async function excluir(t) {
+    if (!window.confirm(`Excluir "${t.descricao}"?`)) return;
+    try { await sbRequest(`agenda_tarefas?id=eq.${t.id}`, session, { method: "DELETE" }); setTarefas((xs) => xs.filter((x) => x.id !== t.id)); }
+    catch (e) { setErro(msgSupabase(e)); }
+  }
+
+  if (semTabela) return <Card><b>A agenda ainda não foi ativada no banco.</b><div style={{ color: MUTED, marginTop: 6 }}>Falta rodar o SQL <code>migracao_producao_logistica.sql</code>.</div></Card>;
+
+  // compromissos vindos das OS (montagem, evento, desmontagem) + tarefas da agenda
+  function itensDoDia(d) {
+    const res = [];
+    lista.filter((o) => o.status !== "cancelada").forEach((o) => {
+      [["montagem_inicio", "montagem", o.equipe_montagem], ["evento_inicio", "evento", o.equipe_operacao], ["desmontagem_inicio", "desmontagem", o.equipe_montagem]].forEach(([k, tipo, eq]) => {
+        if (o[k] && diaISO(o[k]) === d) res.push({ chave: `${o.id}-${k}`, os: o, hora: horaDe(o[k]), tipo, descricao: `${o.evento}${o.local ? ` — ${o.local}` : ""}`, equipe: eq || [], doOS: true });
+      });
+    });
+    tarefas.filter((t) => t.data === d).forEach((t) => res.push({ chave: t.id, tarefa: t, hora: t.hora ? t.hora.slice(0, 5) : "", tipo: t.tipo, descricao: t.descricao, equipe: t.equipe || [], freelas: t.freelas, veiculo: t.veiculo, feito: t.feito, os: lista.find((o) => o.id === t.os_id) }));
+    return res.sort((a, b) => (a.hora || "99").localeCompare(b.hora || "99"));
+  }
+
+  const renderDia = (d, compacto) => {
+    const itens = itensDoDia(d);
+    const dia = dias[d] || { folga: [], empresa: [] };
+    const trabalham = [...new Set([...itens.flatMap((i) => i.equipe), ...(dia.empresa || [])])];
+    const conflitos = trabalham.filter((n) => (dia.folga || []).includes(n));
+    const hoje = d === diaISO(new Date());
+    return (
+      <Card style={{ padding: compacto ? 12 : 18, borderTop: `4px solid ${hoje ? DANGER : NAVY}` }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <div onClick={() => compacto && (setData(d), setModo("dia"))} style={{ fontWeight: 700, color: hoje ? DANGER : NAVY, fontSize: compacto ? 14 : 18, cursor: compacto ? "pointer" : "default" }}>{hoje ? "Hoje · " : ""}{nomeDiaLongo(d)}</div>
+          {!compacto && <button onClick={() => setNova(tarefaVazia(d))} style={btnPrimary}><Plus size={14} /> Tarefa</button>}
+        </div>
+
+        {!compacto && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10, margin: "12px 0" }}>
+            <CampoEquipe label="Folga" valor={dia.folga || []} onChange={(v) => salvarDia(d, { folga: v })} sugestoes={nomesEquipe} listaId="ag-folga" />
+            <CampoEquipe label="Fica na empresa" valor={dia.empresa || []} onChange={(v) => salvarDia(d, { empresa: v })} sugestoes={nomesEquipe} listaId="ag-emp" />
+            <Field label={`Trabalham hoje (${trabalham.length})`}><div style={{ fontSize: 13, padding: "8px 0", color: TEXT }}>{trabalham.length ? trabalham.join(", ") : <span style={{ color: MUTED }}>ninguém escalado ainda</span>}</div></Field>
+          </div>
+        )}
+        {conflitos.length > 0 && <div style={{ background: "#FDECEC", color: DANGER, borderRadius: 6, padding: "6px 10px", fontSize: 12, marginBottom: 8 }}>⚠ Escalado(s) mas de folga: <b>{conflitos.join(", ")}</b></div>}
+        {compacto && (dia.folga || []).length > 0 && <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>Folga: {dia.folga.join(", ")}</div>}
+
+        <div style={{ display: "grid", gap: 6, marginTop: 8 }}>
+          {itens.length === 0 && <div style={{ fontSize: 12, color: MUTED }}>Nada agendado.</div>}
+          {itens.map((i) => {
+            const tp = tipoTarefa(i.tipo);
+            return (
+              <div key={i.chave} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: compacto ? "4px 0" : "8px 10px", borderLeft: `4px solid ${tp.cor}`, background: i.feito ? "#F3F7F4" : "#FAFAF8", borderRadius: 6, opacity: i.feito ? 0.7 : 1 }}>
+                {!compacto && i.tarefa && <input type="checkbox" checked={!!i.feito} onChange={() => marcarFeito(i.tarefa)} title="Feito" style={{ marginTop: 3 }} />}
+                <div style={{ fontFamily: FONT_MONO, fontSize: 12, minWidth: 40, color: MUTED }}>{i.hora || "—"}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: compacto ? 12 : 14, textDecoration: i.feito ? "line-through" : "none" }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: tp.cor }}>{tp.label.toUpperCase()}</span> · <b>{i.descricao}</b>
+                    {i.os && <span onClick={() => onAbrirOS(i.os.id)} style={{ fontSize: 11, color: NAVY, background: "#EEF2F8", borderRadius: 4, padding: "1px 6px", marginLeft: 6, cursor: "pointer" }}>{numOS(i.os.numero)}{i.os.orcamentos?.numero_or ? ` · PR ${i.os.orcamentos.numero_or}` : ""}</span>}
+                  </div>
+                  {(i.equipe.length > 0 || i.freelas > 0 || i.veiculo) && (
+                    <div style={{ fontSize: 12, color: TEXT, marginTop: 2 }}>
+                      {i.equipe.length > 0 && <>👷 {i.equipe.map((n) => <span key={n} style={{ color: (dia.folga || []).includes(n) ? DANGER : TEXT }}>{n}</span>).reduce((a, b) => [a, " / ", b])}</>}
+                      {i.freelas > 0 && <> + {i.freelas} freela(s)</>}
+                      {i.veiculo && <> · 🚚 {i.veiculo}</>}
+                    </div>
+                  )}
+                  {i.tarefa?.obs && !compacto && <div style={{ fontSize: 11, color: MUTED }}>{i.tarefa.obs}</div>}
+                </div>
+                {!compacto && i.tarefa && (
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <button onClick={() => setNova({ ...i.tarefa, hora: i.tarefa.hora ? i.tarefa.hora.slice(0, 5) : "", os_id: i.tarefa.os_id || "", veiculo: i.tarefa.veiculo || "", obs: i.tarefa.obs || "" })} style={btnGhostSmall}>Editar</button>
+                    <button onClick={() => excluir(i.tarefa)} style={btnDangerSmall}><Trash2 size={12} /></button>
+                  </div>
+                )}
+                {!compacto && i.doOS && <button onClick={() => onAbrirOS(i.os.id)} style={btnGhostSmall}>Abrir OS</button>}
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+    );
+  };
+
+  const osDoPeriodo = lista.filter((o) => o.status !== "cancelada" && [o.montagem_inicio, o.evento_inicio, o.desmontagem_inicio].some((t) => t && diaISO(t) >= somaDias(data, -3) && diaISO(t) <= somaDias(data, 10)));
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+        <button onClick={() => setData(somaDias(data, modo === "dia" ? -1 : -7))} style={btnGhostSmall}>◀</button>
+        <input type="date" value={data} onChange={(e) => e.target.value && setData(e.target.value)} style={inputStyle} />
+        <button onClick={() => setData(somaDias(data, modo === "dia" ? 1 : 7))} style={btnGhostSmall}>▶</button>
+        <button onClick={() => setData(diaISO(new Date()))} style={btnGhostSmall}>Hoje</button>
+        <span style={{ width: 8 }} />
+        {[["dia", "Dia"], ["semana", "Semana"]].map(([id, lb]) => (
+          <button key={id} onClick={() => setModo(id)} style={{ ...btnGhostSmall, fontWeight: 700, background: modo === id ? NAVY : "#fff", color: modo === id ? "#fff" : TEXT, borderColor: modo === id ? NAVY : BORDER }}>{lb}</button>
+        ))}
+      </div>
+
+      {nova && (
+        <Card style={{ marginBottom: 14, background: "#F6F8FB" }}>
+          <div style={{ fontWeight: 700, color: NAVY, marginBottom: 10 }}>{nova.id ? "Editar tarefa" : "Nova tarefa"} · {nomeDiaLongo(nova.data)}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
+            <Field label="Data"><input type="date" value={nova.data} onChange={(e) => setNova({ ...nova, data: e.target.value })} style={inputStyle} /></Field>
+            <Field label="Hora"><input type="time" value={nova.hora} onChange={(e) => setNova({ ...nova, hora: e.target.value })} style={inputStyle} /></Field>
+            <Field label="Tipo"><select value={nova.tipo} onChange={(e) => setNova({ ...nova, tipo: e.target.value })} style={selStyle}>{TIPOS_TAREFA.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}</select></Field>
+            <Field label="Ligar a uma OS (opcional)"><select value={nova.os_id} onChange={(e) => { const o = lista.find((x) => x.id === e.target.value); setNova({ ...nova, os_id: e.target.value, descricao: nova.descricao || (o ? `${o.evento}${o.local ? ` — ${o.local}` : ""}` : "") }); }} style={selStyle}><option value="">— nenhuma —</option>{osDoPeriodo.map((o) => <option key={o.id} value={o.id}>{numOS(o.numero)} · {o.evento}</option>)}</select></Field>
+          </div>
+          <div style={{ marginTop: 10 }}><Field label="O que fazer"><input value={nova.descricao} onChange={(e) => setNova({ ...nova, descricao: e.target.value })} style={{ ...inputStyle, width: "100%" }} placeholder="Ex.: Desm. Fresa — recolher quadros" /></Field></div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, marginTop: 10 }}>
+            <CampoEquipe label="Equipe" valor={nova.equipe} onChange={(v) => setNova({ ...nova, equipe: v })} sugestoes={nomesEquipe} listaId="ag-eq" />
+            <Field label="Freelas"><input type="number" min={0} value={nova.freelas} onChange={(e) => setNova({ ...nova, freelas: e.target.value })} style={{ ...inputStyle, width: 90 }} /></Field>
+            <Field label="Veículo"><input value={nova.veiculo} onChange={(e) => setNova({ ...nova, veiculo: e.target.value })} style={inputStyle} placeholder="Ex.: Strada, caminhão locado" /></Field>
+            <Field label="Observação"><input value={nova.obs} onChange={(e) => setNova({ ...nova, obs: e.target.value })} style={inputStyle} /></Field>
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button onClick={salvarTarefa} disabled={salvando} style={btnPrimary}><Save size={14} /> {salvando ? "Salvando..." : "Salvar"}</button>
+            <button onClick={() => setNova(null)} style={btnGhostSmall}>Cancelar</button>
+          </div>
+        </Card>
+      )}
+
+      {modo === "dia" ? renderDia(data, false) : (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
+          {Array.from({ length: 7 }, (_, i) => somaDias(inicio, i)).map((d) => <React.Fragment key={d}>{renderDia(d, true)}</React.Fragment>)}
+        </div>
+      )}
+      <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>Montagem, evento e desmontagem das OS aparecem sozinhos na agenda. Use “Tarefa” para o resto: visita técnica, retirada, carregar caminhão, serviço na empresa.</div>
+    </div>
+  );
+}
+
 
 function FinanceiroView({ session, setErro }) {
   const [subtab, setSubtab] = useState("inicio");
