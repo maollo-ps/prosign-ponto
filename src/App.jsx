@@ -2606,6 +2606,16 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   const [salvando, setSalvando] = useState(false);
   const [composicaoDe, setComposicaoDe] = useState(null);
   const [custosDe, setCustosDe] = useState(null);
+  const [osDe, setOsDe] = useState(null); // { orcamento, osId }
+  const [osPorOrc, setOsPorOrc] = useState({});
+  // quais orçamentos da lista já têm OS aberta
+  useEffect(() => {
+    const ids = registros.filter((r) => ehVenda(r.status)).map((r) => r.id);
+    if (!ids.length) { setOsPorOrc({}); return; }
+    sbRequest(`ordens_servico?select=id,numero,orcamento_id,status,montagem_inicio&orcamento_id=in.(${ids.join(",")})&status=neq.cancelada`, session)
+      .then((rows) => setOsPorOrc(Object.fromEntries((rows || []).map((o) => [o.orcamento_id, o]))))
+      .catch(() => setOsPorOrc({}));
+  }, [registros]); // eslint-disable-line
 
   // busca (lupa): procura em todos os meses
   const [mostrarBusca, setMostrarBusca] = useState(false);
@@ -2862,6 +2872,11 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
     return <CustosEventoView orcamentoId={custosDe} session={session} setErro={setErro} onVoltar={() => setCustosDe(null)} />;
   }
 
+  if (osDe) {
+    return <FormOS session={session} setErro={setErro} osId={osDe.osId || null} orcamentoInicial={osDe.osId ? null : osDe.orcamento} doComercial
+      onFechar={() => { setOsDe(null); carregar(); }} onSalvo={() => {}} />;
+  }
+
   if (composicaoDe) {
     return (
       <ComposicaoOrcamentoView
@@ -3091,6 +3106,10 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
                     <td data-label="" style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
                       {r.status === "aprovado" && (
                         <><button onClick={() => handleAutorizarFaturamento(r)} style={{ ...btnGhostSmall, borderColor: "#1D6FA5", color: "#1D6FA5", fontWeight: 600 }}>Autorizar faturamento</button>{" "}</>
+                      )}
+                      {ehVenda(r.status) && (osPorOrc[r.id]
+                        ? <><button onClick={() => setOsDe({ osId: osPorOrc[r.id].id })} style={{ ...btnGhostSmall, borderColor: NAVY, color: NAVY, fontWeight: 600 }} title={osPorOrc[r.id].montagem_inicio ? "OS com data de montagem" : "OS aberta — logística ainda não definiu a montagem"}>{numOS(osPorOrc[r.id].numero)}{osPorOrc[r.id].montagem_inicio ? " ✓" : ""}</button>{" "}</>
+                        : <><button onClick={() => setOsDe({ orcamento: { id: r.id } })} style={{ ...btnGhostSmall, borderColor: NAVY, background: NAVY, color: "#fff", fontWeight: 600 }}>Gerar OS</button>{" "}</>
                       )}
                       {ehVenda(r.status) && (
                         <><button onClick={() => setCustosDe(r.id)} style={{ ...btnGhostSmall, borderColor: "#2E7D5B", color: "#2E7D5B", fontWeight: 600 }}>Custos</button>{" "}</>
@@ -8050,7 +8069,7 @@ function imprimirOS(os, itens, pr) {
 // ---------------------------------------------------------
 // Formulário da OS
 // ---------------------------------------------------------
-function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo }) {
+function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, doComercial }) {
   const [os, setOs] = useState(osVazia());
   const [itens, setItens] = useState([]);
   const [removidos, setRemovidos] = useState([]);
@@ -8180,6 +8199,16 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo })
         </div>
       </div>
 
+      {doComercial && (
+        <div style={{ marginTop: 12, background: "#FFF8E6", border: `1px solid ${GOLD}`, borderRadius: 8, padding: "10px 12px", fontSize: 13 }}>
+          {!os.id
+            ? <>Confira os itens, marque o <b>setor</b> do que precisa ser produzido e as medidas, e clique em <b>Salvar</b>. A OS vai para a <b>Logística</b> (datas, equipes e veículo) e os itens com setor entram na fila da <b>Produção</b>.</>
+            : !os.montagem_inicio
+              ? <>✅ OS criada. Agora a <b>Logística</b> completa a data de montagem, as equipes e o veículo. Os itens com setor já estão na fila da Produção.</>
+              : <>✅ Logística já agendou a montagem para <b>{fmtDH(os.montagem_inicio)}</b>.</>}
+        </div>
+      )}
+
       {!os.id && !os.orcamento_id && (
         <div style={{ marginTop: 14, background: "#F6F8FB", borderRadius: 8, padding: 12 }}>
           <div style={{ fontSize: 12, color: MUTED, marginBottom: 6 }}>Puxar dados do orçamento (PR) — preenche cliente, evento, local e os itens do orçamento para o cliente:</div>
@@ -8303,6 +8332,7 @@ function LogisticaView({ session, setErro }) {
   const [aberta, setAberta] = useState(null); // {id} | {novo:true}
   const [busca, setBusca] = useState("");
   const [nomesEquipe, setNomesEquipe] = useState([]);
+  const [soPendentes, setSoPendentes] = useState(false);
   useEffect(() => {
     sbRequest("funcionarios?select=nome&ativo=eq.true&order=nome.asc", session).then((r) => setNomesEquipe((r || []).map((f) => f.nome))).catch(() => {});
   }, []); // eslint-disable-line
@@ -8329,7 +8359,9 @@ function LogisticaView({ session, setErro }) {
     return { total: its.length, prod: prod.length, prontos: prod.filter((x) => x.status_producao === "pronto").length, ida: its.filter((x) => x.ida).length, volta: its.filter((x) => x.volta).length };
   };
   const t = busca.trim().toLowerCase();
-  const filtradas = lista.filter((o) => o.status !== "cancelada" && (!t || `${o.evento} ${o.cliente_nome || ""} ${o.local || ""} ${o.orcamentos?.numero_or || ""} ${numOS(o.numero)}`.toLowerCase().includes(t)));
+  const aCompletar = (o) => o.status === "aberta" && !o.montagem_inicio;
+  const pendentes = lista.filter(aCompletar);
+  const filtradas = lista.filter((o) => o.status !== "cancelada" && (!soPendentes || aCompletar(o)) && (!t || `${o.evento} ${o.cliente_nome || ""} ${o.local || ""} ${o.orcamentos?.numero_or || ""} ${numOS(o.numero)}`.toLowerCase().includes(t)));
 
   return (
     <div>
@@ -8345,11 +8377,20 @@ function LogisticaView({ session, setErro }) {
         </div>
       </div>
       {carregando && <div style={{ color: MUTED }}>Carregando...</div>}
+      {!carregando && pendentes.length > 0 && (
+        <div style={{ background: "#FFF8E6", border: `1px solid ${GOLD}`, borderRadius: 8, padding: "10px 14px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 14 }}>🆕 <b>{pendentes.length} OS nova(s) do Comercial</b> sem data de montagem: {pendentes.slice(0, 3).map((o) => o.evento).join(", ")}{pendentes.length > 3 ? "…" : ""}</span>
+          <button onClick={() => { setSub("lista"); setSoPendentes(true); }} style={btnPrimary}>Completar</button>
+        </div>
+      )}
 
       {!carregando && sub === "agenda" && (
         <AgendaLogistica session={session} setErro={setErro} lista={lista} nomesEquipe={nomesEquipe} onAbrirOS={(id) => setAberta({ id })} />
       )}
 
+      {!carregando && sub === "lista" && soPendentes && (
+        <div style={{ fontSize: 13, marginBottom: 8 }}>Mostrando só as OS a completar · <button onClick={() => setSoPendentes(false)} style={{ ...btnGhostSmall, padding: "3px 8px" }}>ver todas</button></div>
+      )}
       {!carregando && sub === "lista" && (
         <Card style={{ padding: 0, overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
@@ -8365,7 +8406,7 @@ function LogisticaView({ session, setErro }) {
                   <td style={{ ...tdS, whiteSpace: "nowrap" }}>{fmtDH(o.desmontagem_inicio)}</td>
                   <td style={{ ...tdS, color: r.prod && r.prontos === r.prod ? OK : TEXT }}>{r.prod ? `${r.prontos}/${r.prod}` : "—"}</td>
                   <td style={tdS}>ida {r.ida}/{r.total} · volta {r.volta}/{r.total}</td>
-                  <td style={tdS}>{nomeStatusOS(o.status)}</td>
+                  <td style={tdS}>{aCompletar(o) ? <span style={{ fontSize: 11, fontWeight: 700, color: "#8A6D1F", background: "#FFF4D6", borderRadius: 999, padding: "2px 8px" }}>Nova · falta completar</span> : nomeStatusOS(o.status)}</td>
                 </tr>
               ); })}
             </tbody>
