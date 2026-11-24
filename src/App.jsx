@@ -2608,6 +2608,8 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
   const [custosDe, setCustosDe] = useState(null);
   const [osDe, setOsDe] = useState(null); // { orcamento, osId }
   const [osPorOrc, setOsPorOrc] = useState({});
+  const [contratosDe, setContratosDe] = useState(null);
+  const [anexosPorOrc, setAnexosPorOrc] = useState({}); // { id: { n, assinado } }
   // quais orçamentos da lista já têm OS aberta
   useEffect(() => {
     const ids = registros.filter((r) => ehVenda(r.status)).map((r) => r.id);
@@ -2615,6 +2617,13 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
     sbRequest(`ordens_servico?select=id,numero,orcamento_id,status,montagem_inicio&orcamento_id=in.(${ids.join(",")})&status=neq.cancelada`, session)
       .then((rows) => setOsPorOrc(Object.fromEntries((rows || []).map((o) => [o.orcamento_id, o]))))
       .catch(() => setOsPorOrc({}));
+    sbRequest(`orcamento_anexos?select=orcamento_id,tipo&orcamento_id=in.(${ids.join(",")})`, session)
+      .then((rows) => {
+        const m = {};
+        (rows || []).forEach((a) => { const x = (m[a.orcamento_id] ||= { n: 0, assinado: false }); x.n += 1; if (a.tipo === "contrato_assinado") x.assinado = true; });
+        setAnexosPorOrc(m);
+      })
+      .catch(() => setAnexosPorOrc({}));
   }, [registros]); // eslint-disable-line
 
   // busca (lupa): procura em todos os meses
@@ -2872,6 +2881,10 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
     return <CustosEventoView orcamentoId={custosDe} session={session} setErro={setErro} onVoltar={() => setCustosDe(null)} />;
   }
 
+  if (contratosDe) {
+    return <ContratosOrcamentoView orcamentoId={contratosDe} session={session} setErro={setErro} onVoltar={() => { setContratosDe(null); carregar(); }} />;
+  }
+
   if (osDe) {
     return <FormOS session={session} setErro={setErro} osId={osDe.osId || null} orcamentoInicial={osDe.osId ? null : osDe.orcamento} doComercial
       onFechar={() => { setOsDe(null); carregar(); }} onSalvo={() => {}} />;
@@ -3111,6 +3124,10 @@ function OrcamentosComercialView({ session, setErro, clientes }) {
                         ? <><button onClick={() => setOsDe({ osId: osPorOrc[r.id].id })} style={{ ...btnGhostSmall, borderColor: NAVY, color: NAVY, fontWeight: 600 }} title={osPorOrc[r.id].montagem_inicio ? "OS com data de montagem" : "OS aberta — logística ainda não definiu a montagem"}>{numOS(osPorOrc[r.id].numero)}{osPorOrc[r.id].montagem_inicio ? " ✓" : ""}</button>{" "}</>
                         : <><button onClick={() => setOsDe({ orcamento: { id: r.id } })} style={{ ...btnGhostSmall, borderColor: NAVY, background: NAVY, color: "#fff", fontWeight: 600 }}>Gerar OS</button>{" "}</>
                       )}
+                      {ehVenda(r.status) && (() => {
+                        const ax = anexosPorOrc[r.id];
+                        return <><button onClick={() => setContratosDe(r.id)} title={ax?.assinado ? "Contrato assinado anexado" : ax?.n ? "Documentos anexados (sem contrato assinado)" : "Anexar contrato do cliente"} style={{ ...btnGhostSmall, borderColor: ax?.assinado ? OK : MUTED, color: ax?.assinado ? OK : MUTED, fontWeight: 600 }}>📎 Contrato{ax?.n ? ` (${ax.n})` : ""}{ax?.assinado ? " ✓" : ""}</button>{" "}</>;
+                      })()}
                       {ehVenda(r.status) && (
                         <><button onClick={() => setCustosDe(r.id)} style={{ ...btnGhostSmall, borderColor: "#2E7D5B", color: "#2E7D5B", fontWeight: 600 }}>Custos</button>{" "}</>
                       )}
@@ -5784,6 +5801,173 @@ function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
 // ---------------------------------------------------------
 // Custos do evento · liga um orçamento aos custos reais (variáveis vinculados + fixos rateados)
 // ---------------------------------------------------------
+// =========================================================
+// CONTRATOS / DOCUMENTOS DO CLIENTE (anexos do orçamento)
+// bucket privado "contratos": o arquivo abre por link temporário (5 min)
+// =========================================================
+const TIPOS_ANEXO = [
+  { id: "contrato_assinado", label: "Contrato assinado" },
+  { id: "contrato_minuta", label: "Contrato (minuta / para assinar)" },
+  { id: "pedido_compra", label: "Pedido de compra / AF" },
+  { id: "outro", label: "Outro documento" },
+];
+const labelTipoAnexo = (t) => (TIPOS_ANEXO.find((x) => x.id === t) || TIPOS_ANEXO[3]).label;
+const MAX_ANEXO_MB = 25;
+function nomeSeguro(n) {
+  return String(n || "arquivo").normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^A-Za-z0-9._-]+/g, "_").slice(-80);
+}
+function fmtTamanho(b) {
+  if (!b) return "";
+  return b > 1048576 ? `${(b / 1048576).toFixed(1).replace(".", ",")} MB` : `${Math.max(1, Math.round(b / 1024))} KB`;
+}
+async function abrirAnexo(caminho, session) {
+  const janela = window.open("", "_blank");
+  try {
+    const res = await fetch(`${SUPABASE_URL}/storage/v1/object/sign/contratos/${caminho}`, {
+      method: "POST",
+      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ expiresIn: 300 }),
+    });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok || !j.signedURL) throw new Error("Não foi possível abrir o arquivo.");
+    const url = `${SUPABASE_URL}/storage/v1${j.signedURL}`;
+    if (janela) janela.location.href = url; else window.location.href = url;
+  } catch (e) {
+    if (janela) janela.close();
+    throw e;
+  }
+}
+
+function ContratosOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
+  const meuNome = useMeuNome(session);
+  const [orc, setOrc] = useState(null);
+  const [anexos, setAnexos] = useState([]);
+  const [carregando, setCarregando] = useState(true);
+  const [tipo, setTipo] = useState("contrato_assinado");
+  const [obs, setObs] = useState("");
+  const [enviando, setEnviando] = useState(false);
+  const [semTabela, setSemTabela] = useState(false);
+  const inputRef = useRef(null);
+
+  const carregar = async () => {
+    setCarregando(true);
+    try {
+      const [o, a] = await Promise.all([
+        sbRequest(`orcamentos?select=id,numero_or,evento,data_evento,valor,status,clientes:pessoas(nome)&id=eq.${orcamentoId}`, session),
+        sbRequest(`orcamento_anexos?select=*&orcamento_id=eq.${orcamentoId}&order=criado_em.desc`, session),
+      ]);
+      setOrc((o || [])[0] || null); setAnexos(a || []); setSemTabela(false);
+    } catch (e) {
+      if (/orcamento_anexos/.test(e.message)) setSemTabela(true); else setErro(msgSupabase(e));
+    } finally { setCarregando(false); }
+  };
+  useEffect(() => { carregar(); }, [orcamentoId]); // eslint-disable-line
+
+  const enviar = async (files) => {
+    const lista = Array.from(files || []);
+    if (!lista.length) return;
+    const grande = lista.find((f) => f.size > MAX_ANEXO_MB * 1048576);
+    if (grande) { setErro(`"${grande.name}" passa de ${MAX_ANEXO_MB} MB. Reduza o PDF ou envie em partes.`); return; }
+    setEnviando(true);
+    try {
+      for (const f of lista) {
+        const caminho = `${orcamentoId}/${Date.now()}-${Math.random().toString(36).slice(2, 6)}-${nomeSeguro(f.name)}`;
+        const res = await fetch(`${SUPABASE_URL}/storage/v1/object/contratos/${caminho}`, {
+          method: "POST",
+          headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token}`, "Content-Type": f.type || "application/octet-stream" },
+          body: f,
+        });
+        if (!res.ok) throw new Error(`Não foi possível enviar "${f.name}". Verifique a conexão e tente de novo.`);
+        await sbRequest("orcamento_anexos", session, { method: "POST", body: {
+          orcamento_id: orcamentoId, tipo, nome_arquivo: f.name, caminho, tamanho: f.size,
+          content_type: f.type || null, observacao: obs.trim() || null, enviado_por_nome: meuNome || null,
+        } });
+      }
+      setObs("");
+      if (inputRef.current) inputRef.current.value = "";
+      await carregar();
+    } catch (e) { setErro(msgSupabase(e)); }
+    finally { setEnviando(false); }
+  };
+
+  const excluir = async (a) => {
+    if (!window.confirm(`Excluir "${a.nome_arquivo}"? O arquivo será apagado.`)) return;
+    try {
+      await fetch(`${SUPABASE_URL}/storage/v1/object/contratos/${a.caminho}`, { method: "DELETE", headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${session?.access_token}` } });
+      await sbRequest(`orcamento_anexos?id=eq.${a.id}`, session, { method: "DELETE" });
+      await carregar();
+    } catch (e) { setErro(msgSupabase(e)); }
+  };
+
+  const temAssinado = anexos.some((a) => a.tipo === "contrato_assinado");
+
+  return (
+    <div>
+      <button onClick={onVoltar} style={{ ...btnGhostSmall, marginBottom: 14 }}>← Voltar aos orçamentos</button>
+      <Card style={{ padding: 20, marginBottom: 16 }}>
+        <div style={{ fontSize: 12, color: MUTED, textTransform: "uppercase", letterSpacing: 1, fontWeight: 600 }}>Contrato e documentos do cliente</div>
+        <div style={{ fontSize: 20, fontWeight: 700, color: NAVY, marginTop: 4 }}>
+          {orc ? <>{orc.numero_or ? `${orc.numero_or} · ` : ""}{orc.evento || "—"}</> : "…"}
+        </div>
+        {orc && <div style={{ fontSize: 13, color: MUTED, marginTop: 4 }}>{orc.clientes?.nome || "—"} · {fmtDataBR(orc.data_evento)} · {brl(Number(orc.valor || 0))}</div>}
+        <div style={{ marginTop: 10 }}>
+          {temAssinado
+            ? <span style={{ fontSize: 12, fontWeight: 700, color: "#fff", background: OK, borderRadius: 999, padding: "3px 10px" }}>✓ Contrato assinado anexado</span>
+            : <span style={{ fontSize: 12, fontWeight: 700, color: "#8A5A00", background: "#FFF3D6", borderRadius: 999, padding: "3px 10px" }}>Sem contrato assinado</span>}
+        </div>
+      </Card>
+
+      {semTabela ? (
+        <Card style={{ padding: 20, color: DANGER }}>Os anexos ainda não foram ativados no banco (falta rodar o SQL migracao_contratos_orcamento.sql).</Card>
+      ) : (
+        <>
+          <Card style={{ padding: 20, marginBottom: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(200px, 260px) 1fr", gap: 12 }}>
+              <Field label="Tipo de documento">
+                <select value={tipo} onChange={(e) => setTipo(e.target.value)} style={selStyle}>{TIPOS_ANEXO.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}</select>
+              </Field>
+              <Field label="Observação (opcional)">
+                <input value={obs} onChange={(e) => setObs(e.target.value)} placeholder="Ex.: assinado pelo cliente em 20/11, multa de 20% por cancelamento" style={inputStyle} />
+              </Field>
+            </div>
+            <div style={{ marginTop: 12, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <input ref={inputRef} type="file" multiple accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,.webp" style={{ display: "none" }} onChange={(e) => enviar(e.target.files)} />
+              <button onClick={() => inputRef.current?.click()} disabled={enviando} style={btnPrimary}>
+                {enviando ? <><Loader2 size={15} className="spin" /> Enviando…</> : <><Upload size={15} /> Anexar arquivo</>}
+              </button>
+              <span style={{ fontSize: 12, color: MUTED }}>PDF, Word ou foto · até {MAX_ANEXO_MB} MB por arquivo · só Comercial, Financeiro e admin abrem</span>
+            </div>
+          </Card>
+
+          <Card style={{ padding: 0, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead><tr style={{ background: BG }}>
+                {["Documento", "Tipo", "Enviado", "Observação", ""].map((h) => <th key={h} style={{ textAlign: "left", padding: "10px 14px", fontSize: 11, color: MUTED, textTransform: "uppercase" }}>{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {carregando ? <tr><td colSpan={5} style={{ padding: 20, color: MUTED }}>Carregando…</td></tr>
+                  : !anexos.length ? <tr><td colSpan={5} style={{ padding: 20, color: MUTED }}>Nenhum documento anexado ainda.</td></tr>
+                  : anexos.map((a) => (
+                    <tr key={a.id} style={{ borderTop: `1px solid ${BORDER}` }}>
+                      <td data-label="Documento" style={{ padding: "10px 14px", fontWeight: 600 }}>📎 {a.nome_arquivo} <span style={{ fontWeight: 400, color: MUTED, fontSize: 12 }}>{fmtTamanho(a.tamanho)}</span></td>
+                      <td data-label="Tipo" style={{ padding: "10px 14px" }}>{labelTipoAnexo(a.tipo)}</td>
+                      <td data-label="Enviado" style={{ padding: "10px 14px", whiteSpace: "nowrap" }}>{fmtDataBR(String(a.criado_em).slice(0, 10))}{a.enviado_por_nome ? ` · ${a.enviado_por_nome}` : ""}</td>
+                      <td data-label="Observação" style={{ padding: "10px 14px", color: MUTED }}>{a.observacao || "—"}</td>
+                      <td data-label="" style={{ padding: "10px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                        <button onClick={() => abrirAnexo(a.caminho, session).catch((e) => setErro(e.message))} style={{ ...btnGhostSmall, borderColor: NAVY, color: NAVY, fontWeight: 600 }}>Abrir</button>{" "}
+                        <button onClick={() => excluir(a)} style={btnDangerSmall}><Trash2 size={13} /></button>
+                      </td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </Card>
+        </>
+      )}
+    </div>
+  );
+}
+
 function CustosEventoView({ orcamentoId, session, setErro, onVoltar }) {
   const [carregando, setCarregando] = useState(true);
   const [orc, setOrc] = useState(null);
@@ -8558,8 +8742,10 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
   const [salvando, setSalvando] = useState(false);
   const [semTabela, setSemTabela] = useState(false);
   const meuNome = useMeuNome(session);
-  const inicio = modo === "dia" ? data : segundaDa(data);
-  const fim = modo === "dia" ? data : somaDias(inicio, 6);
+  const nDias = { dia: 1, semana: 7, quinzena: 15, mes: 30 }[modo] || 1;
+  const inicio = modo === "semana" ? segundaDa(data) : data;
+  const fim = somaDias(inicio, nDias - 1);
+  const [soComAgenda, setSoComAgenda] = useState(false);
 
   async function carregar() {
     try {
@@ -8684,14 +8870,20 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
   return (
     <div>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
-        <button onClick={() => setData(somaDias(data, modo === "dia" ? -1 : -7))} style={btnGhostSmall}>◀</button>
+        <button onClick={() => setData(somaDias(data, -nDias))} style={btnGhostSmall} title={`Voltar ${nDias} dia(s)`}>◀</button>
         <input type="date" value={data} onChange={(e) => e.target.value && setData(e.target.value)} style={inputStyle} />
-        <button onClick={() => setData(somaDias(data, modo === "dia" ? 1 : 7))} style={btnGhostSmall}>▶</button>
+        <button onClick={() => setData(somaDias(data, nDias))} style={btnGhostSmall} title={`Avançar ${nDias} dia(s)`}>▶</button>
         <button onClick={() => setData(diaISO(new Date()))} style={btnGhostSmall}>Hoje</button>
         <span style={{ width: 8 }} />
-        {[["dia", "Dia"], ["semana", "Semana"]].map(([id, lb]) => (
+        {[["dia", "Dia"], ["semana", "Semana"], ["quinzena", "15 dias"], ["mes", "30 dias"]].map(([id, lb]) => (
           <button key={id} onClick={() => setModo(id)} style={{ ...btnGhostSmall, fontWeight: 700, background: modo === id ? NAVY : "#fff", color: modo === id ? "#fff" : TEXT, borderColor: modo === id ? NAVY : BORDER }}>{lb}</button>
         ))}
+        {nDias > 1 && <span style={{ fontSize: 13, color: MUTED }}>{fmtDataBR(inicio)} a {fmtDataBR(fim)}</span>}
+        {nDias > 7 && (
+          <label style={{ fontSize: 13, color: TEXT, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+            <input type="checkbox" checked={soComAgenda} onChange={(e) => setSoComAgenda(e.target.checked)} /> Só dias com agenda
+          </label>
+        )}
       </div>
 
       {nova && (
@@ -8719,8 +8911,13 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
 
       {modo === "dia" ? renderDia(data, false) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
-          {Array.from({ length: 7 }, (_, i) => somaDias(inicio, i)).map((d) => <React.Fragment key={d}>{renderDia(d, true)}</React.Fragment>)}
+          {Array.from({ length: nDias }, (_, i) => somaDias(inicio, i))
+            .filter((d) => !(nDias > 7 && soComAgenda) || itensDoDia(d).length > 0 || (dias[d]?.folga || []).length > 0)
+            .map((d) => <React.Fragment key={d}>{renderDia(d, true)}</React.Fragment>)}
         </div>
+      )}
+      {nDias > 7 && soComAgenda && !Array.from({ length: nDias }, (_, i) => somaDias(inicio, i)).some((d) => itensDoDia(d).length > 0 || (dias[d]?.folga || []).length > 0) && (
+        <Card style={{ padding: 18, color: MUTED }}>Nada agendado entre {fmtDataBR(inicio)} e {fmtDataBR(fim)}.</Card>
       )}
       <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>Montagem, evento e desmontagem das OS aparecem sozinhos na agenda. Use “Tarefa” para o resto: visita técnica, retirada, carregar caminhão, serviço na empresa.</div>
     </div>
