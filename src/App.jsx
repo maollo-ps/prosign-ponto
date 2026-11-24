@@ -8073,6 +8073,14 @@ const STATUS_OS = [
 const nomeStatusOS = (id) => STATUS_OS.find((s) => s.id === id)?.label || id;
 const PADRAO_OS = ["Mala de ferramenta", "Escada", "Extensão elétrica", "Parafusadeira e brocas", "Fita dupla face", "Abraçadeiras (enforca-gato)"];
 const COMBUSTIVEL = ["Vazio", "1/4", "1/2", "3/4", "Cheio"];
+const veiculoVazio = (terceiro = false) => ({ _k: Math.random().toString(36).slice(2), veiculo: "", terceiro, fornecedor: "", motorista: "", valor: "", km_ida: "", km_volta: "", data_abastecimento: "", combustivel_saida: null, combustivel_volta: null, obs: "" });
+// lê a lista de veículos da OS (ou o veículo único das OS antigas)
+function veiculosDaOS(o) {
+  const lista = Array.isArray(o?.veiculos) && o.veiculos.length ? o.veiculos
+    : (o && (o.veiculo || o.km_ida != null || o.km_volta != null)) ? [{ veiculo: o.veiculo, km_ida: o.km_ida, km_volta: o.km_volta, data_abastecimento: o.data_abastecimento, combustivel_saida: o.combustivel_saida, combustivel_volta: o.combustivel_volta }] : [];
+  return lista.map((v) => ({ ...veiculoVazio(!!v.terceiro), ...v, km_ida: v.km_ida ?? "", km_volta: v.km_volta ?? "", valor: v.valor ?? "", data_abastecimento: v.data_abastecimento || "", _k: Math.random().toString(36).slice(2) }));
+}
+const nomeVeiculo = (v) => `${v.veiculo || "veículo"}${v.terceiro ? ` (terceiro${v.fornecedor ? `: ${v.fornecedor}` : ""})` : ""}`;
 const numOS = (n) => `OS ${String(n || 0).padStart(4, "0")}`;
 const fotoProdUrl = (path) => (path ? `${SUPABASE_URL}/storage/v1/object/public/producao/${path}` : null);
 const m2Item = (it) => (Number(it.largura) > 0 && Number(it.altura) > 0 ? Number(it.largura) * Number(it.altura) * (Number(it.qtd) || 1) : 0);
@@ -8179,7 +8187,7 @@ const osVazia = () => ({
   montagem_inicio: null, montagem_fim: null, evento_inicio: null, evento_fim: null, desmontagem_inicio: null, desmontagem_fim: null,
   equipe_separacao: [], equipe_montagem: [], equipe_operacao: [],
   padrao: PADRAO_OS.map((d) => ({ descricao: d, qtd: 1, ida: false, volta: false })),
-  veiculo: "", km_ida: "", km_volta: "", data_abastecimento: "", combustivel_saida: null, combustivel_volta: null,
+  veiculos: [veiculoVazio()],
   resp_separacao: "", resp_desmontagem: "", entrega_meio: "", observacao: "", relatorio_instalacao: "", status: "aberta",
 });
 const itemVazio = () => ({ _k: Math.random().toString(36).slice(2), id: null, qtd: 1, descricao: "", largura: "", altura: "", setor: "", status_producao: "aguardando_arte", ida: false, volta: false, volta_obs: "", obs: "", foto_path: null, foto_instalado_path: null });
@@ -8196,7 +8204,8 @@ function imprimirOS(os, itens, pr) {
   const metade = Math.ceil(pad.length / 2);
   const linhaPad = (p) => (p ? `<td class="c">${caixa(p.ida)}</td><td class="c">${caixa(p.volta)}</td><td class="c">${e(p.qtd || "")}</td><td>${e(p.descricao)}</td>` : `<td></td><td></td><td></td><td></td>`);
   const linhasPad = Array.from({ length: Math.max(metade, 3) }, (_, i) => `<tr>${linhaPad(pad[i])}${linhaPad(pad[i + metade])}</tr>`).join("");
-  const comb = (v) => (v === null || v === undefined ? "______" : COMBUSTIVEL[v]);
+  const comb = (v) => (v === null || v === undefined || v === "" ? "______" : COMBUSTIVEL[v]);
+  const veics = os.veiculos || veiculosDaOS(os);
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${e(numOS(os.numero))} · ${e(os.evento)}</title><style>
   @page { size: A4; margin: 10mm; } body { font-family: Arial, sans-serif; font-size: 11px; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   table { width: 100%; border-collapse: collapse; margin-bottom: 8px; } td, th { border: 1px solid #333; padding: 4px 6px; vertical-align: top; }
@@ -8240,9 +8249,11 @@ function imprimirOS(os, itens, pr) {
     <tr><td class="ass">Assinatura:</td><td class="ass">Assinatura:</td></tr>
   </table>
   <table>
-    <tr><td class="h" colspan="4">ABASTECIMENTO</td></tr>
-    <tr><td><b>Veículo:</b> ${e(os.veiculo || "____________")}</td><td><b>KM ida:</b> ${e(os.km_ida ?? "______")}</td><td><b>KM volta:</b> ${e(os.km_volta ?? "______")}</td><td><b>Data:</b> ${e(os.data_abastecimento ? fmtDataBR(os.data_abastecimento) : "___/___/____")}</td></tr>
-    <tr><td colspan="2"><b>Combustível na saída:</b> ${e(comb(os.combustivel_saida))}</td><td colspan="2"><b>Combustível na volta:</b> ${e(comb(os.combustivel_volta))}</td></tr>
+    <tr><td class="h" colspan="4">VEÍCULOS E ABASTECIMENTO</td></tr>
+    ${(veics.length ? veics : [{}]).map((v) => v.terceiro
+      ? `<tr><td colspan="2"><b>Terceiro:</b> ${e(v.veiculo || "")}${v.fornecedor ? ` · ${e(v.fornecedor)}` : ""}</td><td><b>Motorista:</b> ${e(v.motorista || "______")}</td><td>${v.obs ? e(v.obs) : ""}</td></tr>`
+      : `<tr><td><b>Veículo:</b> ${e(v.veiculo || "____________")}${v.motorista ? ` · ${e(v.motorista)}` : ""}</td><td><b>KM ida:</b> ${e(v.km_ida === "" || v.km_ida == null ? "______" : v.km_ida)}</td><td><b>KM volta:</b> ${e(v.km_volta === "" || v.km_volta == null ? "______" : v.km_volta)}</td><td><b>Data:</b> ${e(v.data_abastecimento ? fmtDataBR(v.data_abastecimento) : "___/___/____")}</td></tr>
+         <tr><td colspan="2"><b>Combustível na saída:</b> ${e(comb(v.combustivel_saida))}</td><td colspan="2"><b>Combustível na volta:</b> ${e(comb(v.combustivel_volta))}</td></tr>`).join("")}
   </table>
   <script>window.onload = function () { setTimeout(function () { window.print(); }, 300); };<\/script></body></html>`;
   const w = window.open("", "_blank");
@@ -8261,6 +8272,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
   const [salvando, setSalvando] = useState(false);
   const [pr, setPr] = useState("");
   const [nomesEquipe, setNomesEquipe] = useState([]);
+  const [veiculosConhecidos, setVeiculosConhecidos] = useState([]);
   const [enviandoFoto, setEnviandoFoto] = useState(null);
   const meuNome = useMeuNome(session);
   const set = (k, v) => setOs((o) => ({ ...o, [k]: v }));
@@ -8268,6 +8280,9 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
 
   useEffect(() => {
     sbRequest("funcionarios?select=nome&ativo=eq.true&order=nome.asc", session).then((r) => setNomesEquipe((r || []).map((f) => f.nome))).catch(() => {});
+    sbRequest("ordens_servico?select=veiculos&order=criado_em.desc&limit=300", session)
+      .then((r) => setVeiculosConhecidos([...new Set((r || []).flatMap((o) => (o.veiculos || []).filter((v) => !v.terceiro && v.veiculo).map((v) => v.veiculo)))].sort()))
+      .catch(() => {});
   }, []); // eslint-disable-line
 
   useEffect(() => {
@@ -8277,7 +8292,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
           const [o] = (await sbRequest(`ordens_servico?select=*,orcamentos(numero_or)&id=eq.${osId}`, session)) || [];
           const its = (await sbRequest(`os_itens?select=*&os_id=eq.${osId}&order=ordem.asc`, session)) || [];
           if (o) {
-            setOs({ ...osVazia(), ...o, km_ida: o.km_ida ?? "", km_volta: o.km_volta ?? "", data_abastecimento: o.data_abastecimento || "", padrao: o.padrao || [] });
+            setOs({ ...osVazia(), ...o, veiculos: veiculosDaOS(o).length ? veiculosDaOS(o) : [veiculoVazio()], padrao: o.padrao || [] });
             setPr(o.orcamentos?.numero_or || "");
           }
           setItens(its.map((x) => ({ ...x, _k: x.id, setor: x.setor || "", largura: x.largura ?? "", altura: x.altura ?? "", obs: x.obs || "", volta_obs: x.volta_obs || "" })));
@@ -8309,6 +8324,14 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
   async function salvar() {
     if (!os.evento.trim()) { setErro("Informe o nome do evento."); return; }
     setSalvando(true); setErro("");
+    const veiculosParaSalvar = (os.veiculos || [])
+      .filter((v) => (v.veiculo || "").trim() || (v.fornecedor || "").trim() || numCampo(v.km_ida) != null || numCampo(v.valor))
+      .map(({ _k, ...v }) => ({
+        veiculo: (v.veiculo || "").trim(), terceiro: !!v.terceiro, fornecedor: v.terceiro ? (v.fornecedor || "").trim() || null : null,
+        motorista: (v.motorista || "").trim() || null, valor: v.terceiro ? numCampo(v.valor) : null,
+        km_ida: numCampo(v.km_ida), km_volta: numCampo(v.km_volta), data_abastecimento: v.data_abastecimento || null,
+        combustivel_saida: v.combustivel_saida ?? null, combustivel_volta: v.combustivel_volta ?? null, obs: (v.obs || "").trim() || null,
+      }));
     try {
       const corpo = {
         orcamento_id: os.orcamento_id, empresa: os.empresa, cliente_id: os.cliente_id, cliente_nome: os.cliente_nome || null, contato: os.contato || null, telefone: os.telefone || null,
@@ -8317,8 +8340,11 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
         desmontagem_inicio: os.desmontagem_inicio, desmontagem_fim: os.desmontagem_fim,
         equipe_separacao: os.equipe_separacao, equipe_montagem: os.equipe_montagem, equipe_operacao: os.equipe_operacao,
         padrao: (os.padrao || []).filter((p) => (p.descricao || "").trim()),
-        veiculo: os.veiculo || null, km_ida: numCampo(os.km_ida), km_volta: numCampo(os.km_volta), data_abastecimento: os.data_abastecimento || null,
-        combustivel_saida: os.combustivel_saida, combustivel_volta: os.combustivel_volta,
+        veiculos: veiculosParaSalvar,
+        // resumo nos campos antigos (agenda, relatórios e OS antigas)
+        veiculo: veiculosParaSalvar.map(nomeVeiculo).join(" + ") || null,
+        km_ida: veiculosParaSalvar[0]?.km_ida ?? null, km_volta: veiculosParaSalvar[0]?.km_volta ?? null, data_abastecimento: veiculosParaSalvar[0]?.data_abastecimento || null,
+        combustivel_saida: veiculosParaSalvar[0]?.combustivel_saida ?? null, combustivel_volta: veiculosParaSalvar[0]?.combustivel_volta ?? null,
         resp_separacao: os.resp_separacao || null, resp_desmontagem: os.resp_desmontagem || null, entrega_meio: os.entrega_meio || null,
         observacao: os.observacao || null, relatorio_instalacao: os.relatorio_instalacao || null, status: os.status,
       };
@@ -8477,16 +8503,49 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
       </div>
       <button onClick={() => set("padrao", [...(os.padrao || []), { descricao: "", qtd: 1, ida: false, volta: false }])} style={{ ...btnGhostSmall, marginTop: 8 }}><Plus size={13} /> Adicionar material</button>
 
-      {titulo("Veículo e abastecimento")}
-      <div style={grid}>
-        <Field label="Veículo"><input value={os.veiculo || ""} onChange={(e) => set("veiculo", e.target.value)} style={inputStyle} placeholder="placa ou apelido" /></Field>
-        <Field label="KM ida"><input inputMode="numeric" value={os.km_ida} onChange={(e) => set("km_ida", e.target.value)} style={inputStyle} /></Field>
-        <Field label="KM volta"><input inputMode="numeric" value={os.km_volta} onChange={(e) => set("km_volta", e.target.value)} style={inputStyle} /></Field>
-        <Field label="Data do abastecimento"><input type="date" value={os.data_abastecimento || ""} onChange={(e) => set("data_abastecimento", e.target.value)} style={inputStyle} /></Field>
-        <Field label="Combustível na saída"><select value={os.combustivel_saida ?? ""} onChange={(e) => set("combustivel_saida", e.target.value === "" ? null : Number(e.target.value))} style={selStyle}><option value="">—</option>{COMBUSTIVEL.map((c, i) => <option key={c} value={i}>{c}</option>)}</select></Field>
-        <Field label="Combustível na volta"><select value={os.combustivel_volta ?? ""} onChange={(e) => set("combustivel_volta", e.target.value === "" ? null : Number(e.target.value))} style={selStyle}><option value="">—</option>{COMBUSTIVEL.map((c, i) => <option key={c} value={i}>{c}</option>)}</select></Field>
+      {titulo(`Veículos da operação (${(os.veiculos || []).length})`)}
+      <datalist id="os-veiculos">{veiculosConhecidos.map((v) => <option key={v} value={v} />)}</datalist>
+      <datalist id="os-motoristas">{nomesEquipe.map((n) => <option key={n} value={n} />)}</datalist>
+      <div style={{ display: "grid", gap: 10 }}>
+        {(os.veiculos || []).map((v, i) => {
+          const setV = (k, val) => set("veiculos", os.veiculos.map((x, j) => (j === i ? { ...x, [k]: val } : x)));
+          const rod = numCampo(v.km_ida) > 0 && numCampo(v.km_volta) > numCampo(v.km_ida) ? numCampo(v.km_volta) - numCampo(v.km_ida) : null;
+          return (
+            <div key={v._k} style={{ border: `1px solid ${BORDER}`, borderLeft: `4px solid ${v.terceiro ? "#5B4B8A" : NAVY}`, borderRadius: 8, padding: 12, background: v.terceiro ? "#FAF8FE" : "#FBFCFE" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+                <b style={{ color: v.terceiro ? "#5B4B8A" : NAVY }}>Veículo {i + 1}</b>
+                <div style={{ display: "flex", border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden" }}>
+                  {[[false, "Próprio"], [true, "Terceiro"]].map(([t, lb]) => (
+                    <button key={lb} type="button" onClick={() => setV("terceiro", t)} style={{ border: "none", padding: "5px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", background: v.terceiro === t ? (t ? "#5B4B8A" : NAVY) : "#fff", color: v.terceiro === t ? "#fff" : TEXT }}>{lb}</button>
+                  ))}
+                </div>
+                <span style={{ flex: 1 }} />
+                {rod && <span style={{ fontSize: 12, color: MUTED }}>Rodados: <b>{rod} km</b></span>}
+                <button type="button" onClick={() => set("veiculos", os.veiculos.filter((_, j) => j !== i))} style={btnDangerSmall} title="Tirar este veículo"><X size={12} /></button>
+              </div>
+              <div style={grid}>
+                <Field label={v.terceiro ? "Veículo (tipo / placa)" : "Veículo"}><input list={v.terceiro ? undefined : "os-veiculos"} value={v.veiculo} onChange={(e) => setV("veiculo", e.target.value)} style={inputStyle} placeholder={v.terceiro ? "Ex.: caminhão baú 3/4, ABC1D23" : "placa ou apelido"} /></Field>
+                {v.terceiro && <Field label="Empresa / dono"><input value={v.fornecedor} onChange={(e) => setV("fornecedor", e.target.value)} style={inputStyle} placeholder="Ex.: locadora, fretista" /></Field>}
+                <Field label="Motorista"><input list={v.terceiro ? undefined : "os-motoristas"} value={v.motorista} onChange={(e) => setV("motorista", e.target.value)} style={inputStyle} /></Field>
+                {v.terceiro && <Field label="Valor combinado (R$)"><input inputMode="decimal" value={v.valor} onChange={(e) => setV("valor", e.target.value)} style={inputStyle} placeholder="0,00" /></Field>}
+                {!v.terceiro && <>
+                  <Field label="KM ida"><input inputMode="numeric" value={v.km_ida} onChange={(e) => setV("km_ida", e.target.value)} style={inputStyle} /></Field>
+                  <Field label="KM volta"><input inputMode="numeric" value={v.km_volta} onChange={(e) => setV("km_volta", e.target.value)} style={inputStyle} /></Field>
+                  <Field label="Data do abastecimento"><input type="date" value={v.data_abastecimento || ""} onChange={(e) => setV("data_abastecimento", e.target.value)} style={inputStyle} /></Field>
+                  <Field label="Combustível na saída"><select value={v.combustivel_saida ?? ""} onChange={(e) => setV("combustivel_saida", e.target.value === "" ? null : Number(e.target.value))} style={selStyle}><option value="">—</option>{COMBUSTIVEL.map((c, k) => <option key={c} value={k}>{c}</option>)}</select></Field>
+                  <Field label="Combustível na volta"><select value={v.combustivel_volta ?? ""} onChange={(e) => setV("combustivel_volta", e.target.value === "" ? null : Number(e.target.value))} style={selStyle}><option value="">—</option>{COMBUSTIVEL.map((c, k) => <option key={c} value={k}>{c}</option>)}</select></Field>
+                </>}
+                <Field label="Observação"><input value={v.obs} onChange={(e) => setV("obs", e.target.value)} style={inputStyle} placeholder={v.terceiro ? "Ex.: leva os palcos, volta só na desmontagem" : ""} /></Field>
+              </div>
+            </div>
+          );
+        })}
       </div>
-      {numCampo(os.km_ida) > 0 && numCampo(os.km_volta) > numCampo(os.km_ida) && <div style={{ fontSize: 12, color: MUTED, marginTop: 6 }}>Rodados: <b>{numCampo(os.km_volta) - numCampo(os.km_ida)} km</b></div>}
+      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+        <button type="button" onClick={() => set("veiculos", [...(os.veiculos || []), veiculoVazio(false)])} style={btnGhostSmall}><Plus size={13} /> Veículo próprio</button>
+        <button type="button" onClick={() => set("veiculos", [...(os.veiculos || []), veiculoVazio(true)])} style={{ ...btnGhostSmall, borderColor: "#5B4B8A", color: "#5B4B8A" }}><Plus size={13} /> Veículo de terceiro</button>
+        {(() => { const tot = (os.veiculos || []).filter((v) => v.terceiro).reduce((a, v) => a + (numCampo(v.valor) || 0), 0); return tot > 0 ? <span style={{ fontSize: 12, color: MUTED }}>Total com terceiros: <b>{brl(tot)}</b></span> : null; })()}
+      </div>
 
       {titulo("Responsáveis e observações")}
       <div style={grid}>
@@ -8806,7 +8865,7 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
     const res = [];
     lista.filter((o) => o.status !== "cancelada").forEach((o) => {
       [["montagem_inicio", "montagem", o.equipe_montagem], ["evento_inicio", "evento", o.equipe_operacao], ["desmontagem_inicio", "desmontagem", o.equipe_montagem]].forEach(([k, tipo, eq]) => {
-        if (o[k] && diaISO(o[k]) === d) res.push({ chave: `${o.id}-${k}`, os: o, hora: horaDe(o[k]), tipo, descricao: `${o.evento}${o.local ? ` — ${o.local}` : ""}`, equipe: eq || [], doOS: true });
+        if (o[k] && diaISO(o[k]) === d) res.push({ chave: `${o.id}-${k}`, os: o, hora: horaDe(o[k]), tipo, descricao: `${o.evento}${o.local ? ` — ${o.local}` : ""}`, equipe: eq || [], veiculo: tipo !== "evento" ? o.veiculo : null, doOS: true });
       });
     });
     tarefas.filter((t) => t.data === d).forEach((t) => res.push({ chave: t.id, tarefa: t, hora: t.hora ? t.hora.slice(0, 5) : "", tipo: t.tipo, descricao: t.descricao, equipe: t.equipe || [], freelas: t.freelas, veiculo: t.veiculo, feito: t.feito, os: lista.find((o) => o.id === t.os_id) }));
