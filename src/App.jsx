@@ -8932,6 +8932,50 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
     );
   };
 
+  // impressão do período que está na tela (dia, semana, 15 ou 30 dias)
+  function imprimirAgenda() {
+    const e = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const todos = Array.from({ length: nDias }, (_, i) => somaDias(inicio, i));
+    const comAgenda = (d) => itensDoDia(d).length > 0 || (dias[d]?.folga || []).length > 0 || (dias[d]?.empresa || []).length > 0;
+    const diasImp = nDias > 7 && soComAgenda ? todos.filter(comAgenda) : todos;
+    const nomeModo = { dia: "Agenda do dia", semana: "Agenda da semana", quinzena: "Agenda de 15 dias", mes: "Agenda de 30 dias" }[modo];
+    const blocos = diasImp.map((d) => {
+      const itens = itensDoDia(d);
+      const dia = dias[d] || {};
+      const folga = dia.folga || [], empresa = dia.empresa || [];
+      const linhas = itens.length ? itens.map((i) => {
+        const tp = tipoTarefa(i.tipo);
+        const os = i.os ? `${numOS(i.os.numero)}${i.os.orcamentos?.numero_or ? `<div class="s">PR ${e(i.os.orcamentos.numero_or)}</div>` : ""}` : "";
+        const eq = (i.equipe || []).map((n) => folga.includes(n) ? `<b style="color:#B00">${e(n)} (folga!)</b>` : e(n)).join(" / ");
+        return `<tr><td class="c"><span class="cx">${i.feito ? "✔" : ""}</span></td><td class="h1">${e(i.hora || "—")}</td><td><span class="tp" style="border-color:${tp.cor};color:${tp.cor}">${e(tp.label)}</span></td><td><b>${e(i.descricao)}</b>${i.tarefa?.obs ? `<div class="s">${e(i.tarefa.obs)}</div>` : ""}</td><td>${os}</td><td>${eq}${i.freelas > 0 ? ` + ${e(i.freelas)} freela(s)` : ""}</td><td>${e(i.veiculo || "")}</td></tr>`;
+      }).join("") : `<tr><td colspan="7" class="vazio">Nada agendado.</td></tr>`;
+      return `<div class="dia"><div class="cab"><span>${e(nomeDiaLongo(d))}</span>${folga.length ? `<span class="fx">Folga: <b>${e(folga.join(", "))}</b></span>` : ""}${empresa.length ? `<span class="fx">Fica na empresa: <b>${e(empresa.join(", "))}</b></span>` : ""}</div>
+        <table><thead><tr><th class="c">OK</th><th style="width:44px">Hora</th><th style="width:88px">Tipo</th><th>O que fazer</th><th style="width:70px">OS</th><th style="width:22%">Equipe</th><th style="width:15%">Veículo</th></tr></thead><tbody>${linhas}</tbody></table></div>`;
+    }).join("");
+    const periodo = nDias === 1 ? nomeDiaLongo(inicio) : `${fmtDataBR(inicio)} a ${fmtDataBR(fim)}`;
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${e(nomeModo)} · ${e(periodo)}</title><style>
+      @page { size: A4; margin: 10mm; } body { font-family: Arial, sans-serif; font-size: 11px; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .topo { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; border-bottom: 2px solid #152A4A; padding-bottom: 6px; } .topo img { height: 46px; }
+      .topo h1 { font-size: 16px; margin: 0; text-align: right; color: #152A4A; } .topo div div { text-align: right; color: #555; }
+      .dia { break-inside: avoid; page-break-inside: avoid; margin-bottom: 10px; }
+      .cab { background: #152A4A; color: #fff; padding: 5px 8px; font-weight: 700; display: flex; gap: 14px; flex-wrap: wrap; align-items: baseline; }
+      .cab span:first-child { font-size: 12px; } .fx { font-weight: 400; font-size: 10px; color: #DDE4EF; } .fx b { color: #fff; }
+      table { width: 100%; border-collapse: collapse; } td, th { border: 1px solid #999; padding: 4px 5px; vertical-align: top; text-align: left; }
+      th { background: #EEE; font-size: 10px; } .c { width: 22px; text-align: center; } .h1 { font-family: monospace; font-size: 11px; }
+      .cx { display: inline-block; width: 11px; height: 11px; border: 1px solid #333; line-height: 11px; font-size: 9px; }
+      .tp { display: inline-block; border: 1px solid; border-radius: 3px; padding: 0 4px; font-size: 9px; font-weight: 700; text-transform: uppercase; }
+      .s { color: #555; font-size: 10px; } .vazio { color: #888; font-style: italic; }
+      .rod { margin-top: 12px; color: #777; font-size: 9px; }
+    </style></head><body>
+      <div class="topo"><img src="${LOGO_PROSIGN}" alt="Prosign"><div><h1>${e(nomeModo.toUpperCase())}</h1><div>${e(periodo)}</div></div></div>
+      ${blocos || `<p class="vazio">Nada agendado no período.</p>`}
+      <div class="rod">Impresso em ${e(new Date().toLocaleString("pt-BR"))}${meuNome ? ` por ${e(meuNome)}` : ""} · PSView</div>
+      <script>window.onload = function () { setTimeout(function () { window.print(); }, 300); };<\/script></body></html>`;
+    const w = window.open("", "_blank");
+    if (!w) { setErro("O navegador bloqueou a janela de impressão. Libere pop-ups para este site."); return; }
+    w.document.open(); w.document.write(html); w.document.close();
+  }
+
   const osDoPeriodo = lista.filter((o) => o.status !== "cancelada" && [o.montagem_inicio, o.evento_inicio, o.desmontagem_inicio].some((t) => t && diaISO(t) >= somaDias(data, -3) && diaISO(t) <= somaDias(data, 10)));
 
   return (
@@ -8946,6 +8990,7 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
           <button key={id} onClick={() => setModo(id)} style={{ ...btnGhostSmall, fontWeight: 700, background: modo === id ? NAVY : "#fff", color: modo === id ? "#fff" : TEXT, borderColor: modo === id ? NAVY : BORDER }}>{lb}</button>
         ))}
         {nDias > 1 && <span style={{ fontSize: 13, color: MUTED }}>{fmtDataBR(inicio)} a {fmtDataBR(fim)}</span>}
+        <button onClick={imprimirAgenda} style={{ ...btnGhostSmall, fontWeight: 700, borderColor: NAVY, color: NAVY }} title="Imprime o período que está na tela">🖨 Imprimir {({ dia: "dia", semana: "semana", quinzena: "15 dias", mes: "30 dias" })[modo]}</button>
         {nDias > 7 && (
           <label style={{ fontSize: 13, color: TEXT, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
             <input type="checkbox" checked={soComAgenda} onChange={(e) => setSoComAgenda(e.target.checked)} /> Só dias com agenda
