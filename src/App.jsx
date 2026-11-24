@@ -8517,6 +8517,7 @@ function LogisticaView({ session, setErro }) {
   const [busca, setBusca] = useState("");
   const [nomesEquipe, setNomesEquipe] = useState([]);
   const [soPendentes, setSoPendentes] = useState(false);
+  const [origem, setOrigem] = useState("todas"); // todas | comercial | sem
   useEffect(() => {
     sbRequest("funcionarios?select=nome&ativo=eq.true&order=nome.asc", session).then((r) => setNomesEquipe((r || []).map((f) => f.nome))).catch(() => {});
   }, []); // eslint-disable-line
@@ -8545,7 +8546,7 @@ function LogisticaView({ session, setErro }) {
   const t = busca.trim().toLowerCase();
   const aCompletar = (o) => o.status === "aberta" && !o.montagem_inicio;
   const pendentes = lista.filter(aCompletar);
-  const filtradas = lista.filter((o) => o.status !== "cancelada" && (!soPendentes || aCompletar(o)) && (!t || `${o.evento} ${o.cliente_nome || ""} ${o.local || ""} ${o.orcamentos?.numero_or || ""} ${numOS(o.numero)}`.toLowerCase().includes(t)));
+  const filtradas = lista.filter((o) => o.status !== "cancelada" && (!soPendentes || aCompletar(o)) && (origem === "todas" || (origem === "sem" ? !o.orcamento_id : !!o.orcamento_id)) && (!t || `${o.evento} ${o.cliente_nome || ""} ${o.local || ""} ${o.orcamentos?.numero_or || ""} ${numOS(o.numero)}`.toLowerCase().includes(t)));
 
   return (
     <div>
@@ -8557,6 +8558,11 @@ function LogisticaView({ session, setErro }) {
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar evento, cliente, PR, OS" style={{ ...inputStyle, width: 240 }} />
+          <select value={origem} onChange={(e) => setOrigem(e.target.value)} style={{ ...selStyle, width: "auto" }} title="Origem da OS">
+            <option value="todas">Todas as OS</option>
+            <option value="comercial">Do Comercial ({lista.filter((o) => o.status !== "cancelada" && o.orcamento_id).length})</option>
+            <option value="sem">Sem orçamento ({lista.filter((o) => o.status !== "cancelada" && !o.orcamento_id).length})</option>
+          </select>
           <button onClick={() => setAberta({ novo: true })} style={btnPrimary}><Plus size={15} /> Nova OS</button>
         </div>
       </div>
@@ -8583,7 +8589,9 @@ function LogisticaView({ session, setErro }) {
               {filtradas.length === 0 && <tr><td colSpan={8} style={{ ...tdS, color: MUTED }}>Nenhuma OS.</td></tr>}
               {filtradas.map((o) => { const r = resumo(o); return (
                 <tr key={o.id} onClick={() => setAberta({ id: o.id })} style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }}>
-                  <td style={{ ...tdS, fontFamily: FONT_MONO }}>{numOS(o.numero)}{o.orcamentos?.numero_or && <div style={{ fontSize: 11, color: MUTED }}>PR {o.orcamentos.numero_or}</div>}</td>
+                  <td style={{ ...tdS, fontFamily: FONT_MONO }}>{numOS(o.numero)}{o.orcamento_id
+                    ? (o.orcamentos?.numero_or && <div style={{ fontSize: 11, color: MUTED }}>PR {o.orcamentos.numero_or}</div>)
+                    : <div><span style={{ fontFamily: FONT_BODY, fontSize: 10, fontWeight: 700, color: "#5B4B8A", background: "#EEEAF7", borderRadius: 999, padding: "1px 7px", whiteSpace: "nowrap" }}>sem orçamento</span></div>}</td>
                   <td style={{ ...tdS, fontWeight: 600 }}>{o.evento}<div style={{ fontSize: 11, color: MUTED, fontWeight: 400 }}>{o.local}</div></td>
                   <td style={tdS}>{o.cliente_nome || "—"}</td>
                   <td style={{ ...tdS, whiteSpace: "nowrap" }}>{fmtDH(o.montagem_inicio)}</td>
