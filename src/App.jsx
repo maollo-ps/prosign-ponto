@@ -8991,6 +8991,18 @@ const somaDias = (iso, n) => { const d = new Date(`${iso}T12:00:00`); d.setDate(
 const segundaDa = (iso) => { const d = new Date(`${iso}T12:00:00`); const w = (d.getDay() + 6) % 7; return somaDias(iso, -w); };
 const nomeDiaLongo = (iso) => { const s = new Date(`${iso}T12:00:00`).toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long" }); return s.charAt(0).toUpperCase() + s.slice(1); };
 const horaDe = (ts) => new Date(ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+const TIPOS_ANOTACAO = [
+  { id: "observacao", label: "Observação", icone: "📝", cor: "#5A5A5A" },
+  { id: "falta", label: "Falta", icone: "🚫", cor: "#B3261E" },
+  { id: "atestado", label: "Atestado", icone: "🩺", cor: "#8A3B2E" },
+  { id: "atraso", label: "Atraso", icone: "⏰", cor: "#B8902E" },
+  { id: "saida", label: "Saída antecipada", icone: "🚪", cor: "#A0522D" },
+  { id: "externo", label: "Serviço externo / saiu", icone: "🛻", cor: "#1F6F8A" },
+  { id: "outro", label: "Outro", icone: "•", cor: "#7A7A7A" },
+];
+const tipoAnotacao = (id) => TIPOS_ANOTACAO.find((t) => t.id === id) || TIPOS_ANOTACAO[0];
+const anotacaoVazia = (data) => ({ data, hora: "", hora_fim: "", tipo: "observacao", pessoa: "", texto: "" });
+const faixaHora = (a) => { const h1 = a.hora ? a.hora.slice(0, 5) : ""; const h2 = a.hora_fim ? a.hora_fim.slice(0, 5) : ""; return h1 && h2 ? `${h1}–${h2}` : h1 || (h2 ? `até ${h2}` : ""); };
 const tarefaVazia = (data) => ({ data, hora: "", tipo: "montagem", descricao: "", equipe: [], freelas: 0, veiculo: "", os_id: "", obs: "" });
 
 function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
@@ -9006,6 +9018,8 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
   const inicio = modo === "semana" ? segundaDa(data) : data;
   const fim = somaDias(inicio, nDias - 1);
   const [soComAgenda, setSoComAgenda] = useState(false);
+  const [anotacoes, setAnotacoes] = useState([]);
+  const [anot, setAnot] = useState(null); // linha sendo escrita/editada
 
   async function carregar() {
     try {
@@ -9015,12 +9029,34 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
       ]);
       setDias(Object.fromEntries((ds || []).map((d) => [d.data, d])));
       setTarefas(ts || []);
+      sbRequest(`agenda_anotacoes?select=*&data=gte.${inicio}&data=lte.${fim}&order=hora.asc.nullsfirst,criado_em.asc`, session).then((r) => setAnotacoes(r || [])).catch(() => setAnotacoes([]));
       setSemTabela(false);
     } catch (e) {
       if (/agenda_/.test(e.message)) setSemTabela(true); else setErro(msgSupabase(e));
     }
   }
-  useEffect(() => { carregar(); setNova(null); }, [inicio, fim]); // eslint-disable-line
+  useEffect(() => { carregar(); setNova(null); setAnot(null); }, [inicio, fim]); // eslint-disable-line
+
+  async function salvarAnotacao() {
+    const tp = tipoAnotacao(anot.tipo);
+    const texto = anot.texto.trim() || (anot.tipo !== "observacao" && anot.tipo !== "outro" && anot.pessoa.trim() ? tp.label : "");
+    if (!texto) { setErro("Escreva a anotação."); return; }
+    setErro("");
+    const corpo = { data: anot.data, hora: anot.hora || null, hora_fim: anot.hora_fim || null, tipo: anot.tipo, pessoa: anot.pessoa.trim() || null, texto };
+    try {
+      if (anot.id) await sbRequest(`agenda_anotacoes?id=eq.${anot.id}`, session, { method: "PATCH", body: corpo });
+      else await sbRequest("agenda_anotacoes", session, { method: "POST", body: { ...corpo, criado_por_nome: meuNome || null } });
+      setAnot(anotacaoVazia(anot.data));
+      const r = await sbRequest(`agenda_anotacoes?select=*&data=gte.${inicio}&data=lte.${fim}&order=hora.asc.nullsfirst,criado_em.asc`, session);
+      setAnotacoes(r || []);
+    } catch (e) { setErro(/agenda_anotacoes/.test(e.message) ? "As anotações ainda não foram ativadas no banco (falta rodar migracao_agenda_anotacoes.sql)." : msgSupabase(e)); }
+  }
+  async function excluirAnotacao(a) {
+    if (!window.confirm("Excluir esta anotação?")) return;
+    try { await sbRequest(`agenda_anotacoes?id=eq.${a.id}`, session, { method: "DELETE" }); setAnotacoes((xs) => xs.filter((x) => x.id !== a.id)); }
+    catch (e) { setErro(msgSupabase(e)); }
+  }
+  const anotacoesDoDia = (d) => anotacoes.filter((a) => a.data === d);
 
   async function salvarDia(d, campos) {
     const atual = dias[d] || { data: d, folga: [], empresa: [] };
@@ -9121,15 +9157,69 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
             );
           })}
         </div>
+        {renderAnotacoes(d, compacto)}
       </Card>
     );
   };
+
+  function renderAnotacoes(d, compacto) {
+    const lista_ = anotacoesDoDia(d);
+    if (compacto) {
+      if (!lista_.length) return null;
+      return (
+        <div style={{ marginTop: 6, borderTop: `1px dashed ${BORDER}`, paddingTop: 6, display: "grid", gap: 2 }}>
+          {lista_.map((a) => { const tp = tipoAnotacao(a.tipo); return (
+            <div key={a.id} style={{ fontSize: 11, color: tp.cor }}>{tp.icone} {faixaHora(a) && <span style={{ fontFamily: FONT_MONO }}>{faixaHora(a)} </span>}{a.pessoa ? <b>{a.pessoa}: </b> : null}<span style={{ color: TEXT }}>{a.texto}</span></div>
+          ); })}
+        </div>
+      );
+    }
+    const editando = anot && anot.data === d ? anot : null;
+    return (
+      <div style={{ marginTop: 14, borderTop: `1px solid ${BORDER}`, paddingTop: 12 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: MUTED, textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 }}>Anotações do dia</div>
+        <div style={{ display: "grid", gap: 6 }}>
+          {lista_.length === 0 && <div style={{ fontSize: 12, color: MUTED }}>Nenhuma anotação. Use a linha abaixo para registrar faltas, atestados, saídas ou qualquer observação.</div>}
+          {lista_.map((a) => { const tp = tipoAnotacao(a.tipo); return (
+            <div key={a.id} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "7px 10px", background: "#FBFAF6", borderLeft: `4px solid ${tp.cor}`, borderRadius: 6 }}>
+              <div style={{ fontFamily: FONT_MONO, fontSize: 12, minWidth: 78, color: MUTED }}>{faixaHora(a) || "—"}</div>
+              <div style={{ flex: 1, fontSize: 13 }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: tp.cor }}>{tp.icone} {tp.label.toUpperCase()}</span>
+                {a.pessoa && <> · <b>{a.pessoa}</b></>}
+                {a.texto && a.texto !== tp.label && <> · {a.texto}</>}
+                {a.criado_por_nome && <div style={{ fontSize: 10, color: MUTED }}>por {a.criado_por_nome}</div>}
+              </div>
+              <button onClick={() => setAnot({ ...a, hora: a.hora ? a.hora.slice(0, 5) : "", hora_fim: a.hora_fim ? a.hora_fim.slice(0, 5) : "", pessoa: a.pessoa || "", texto: a.texto === tipoAnotacao(a.tipo).label ? "" : a.texto })} style={btnGhostSmall}>Editar</button>
+              <button onClick={() => excluirAnotacao(a)} style={btnDangerSmall}><Trash2 size={12} /></button>
+            </div>
+          ); })}
+        </div>
+        {(() => {
+          const x = editando || anotacaoVazia(d);
+          const setX = (k, v) => setAnot({ ...x, [k]: v });
+          return (
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginTop: 8, padding: 8, background: editando?.id ? "#FFF8E6" : "#F4F6FA", borderRadius: 8 }}>
+              <input type="time" value={x.hora} onChange={(e) => setX("hora", e.target.value)} title="Das" style={{ ...inputStyle, width: 96 }} />
+              <span style={{ fontSize: 12, color: MUTED }}>até</span>
+              <input type="time" value={x.hora_fim} onChange={(e) => setX("hora_fim", e.target.value)} title="Até" style={{ ...inputStyle, width: 96 }} />
+              <select value={x.tipo} onChange={(e) => setX("tipo", e.target.value)} style={{ ...selStyle, width: "auto" }}>{TIPOS_ANOTACAO.map((t) => <option key={t.id} value={t.id}>{t.icone} {t.label}</option>)}</select>
+              <input list="ag-anot-pessoas" value={x.pessoa} onChange={(e) => setX("pessoa", e.target.value)} placeholder="Funcionário (opcional)" style={{ ...inputStyle, width: 170 }} />
+              <datalist id="ag-anot-pessoas">{nomesEquipe.map((n) => <option key={n} value={n} />)}</datalist>
+              <input value={x.texto} onChange={(e) => setX("texto", e.target.value)} onKeyDown={(e) => e.key === "Enter" && salvarAnotacao()} placeholder="Escreva o que aconteceu ou o que precisa ser feito…" style={{ ...inputStyle, flex: 1, minWidth: 220 }} />
+              <button onClick={() => (anot && anot.data === d ? salvarAnotacao() : null)} disabled={!editando} style={btnPrimary}>{editando?.id ? "Salvar" : "+ Anotar"}</button>
+              {editando?.id && <button onClick={() => setAnot(null)} style={btnGhostSmall}>Cancelar</button>}
+            </div>
+          );
+        })()}
+      </div>
+    );
+  }
 
   // impressão do período que está na tela (dia, semana, 15 ou 30 dias)
   function imprimirAgenda() {
     const e = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const todos = Array.from({ length: nDias }, (_, i) => somaDias(inicio, i));
-    const comAgenda = (d) => itensDoDia(d).length > 0 || (dias[d]?.folga || []).length > 0 || (dias[d]?.empresa || []).length > 0;
+    const comAgenda = (d) => itensDoDia(d).length > 0 || anotacoesDoDia(d).length > 0 || (dias[d]?.folga || []).length > 0 || (dias[d]?.empresa || []).length > 0;
     const diasImp = nDias > 7 && soComAgenda ? todos.filter(comAgenda) : todos;
     const nomeModo = { dia: "Agenda do dia", semana: "Agenda da semana", quinzena: "Agenda de 15 dias", mes: "Agenda de 30 dias" }[modo];
     const blocos = diasImp.map((d) => {
@@ -9143,6 +9233,7 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
         return `<tr><td class="c"><span class="cx">${i.feito ? "✔" : ""}</span></td><td class="h1">${e(i.hora || "—")}</td><td><span class="tp" style="border-color:${tp.cor};color:${tp.cor}">${e(tp.label)}</span></td><td><b>${e(i.descricao)}</b>${i.tarefa?.obs ? `<div class="s">${e(i.tarefa.obs)}</div>` : ""}</td><td>${os}</td><td>${eq}${i.freelas > 0 ? ` + ${e(i.freelas)} freela(s)` : ""}</td><td>${e(i.veiculo || "")}</td></tr>`;
       }).join("") : `<tr><td colspan="7" class="vazio">Nada agendado.</td></tr>`;
       return `<div class="dia"><div class="cab"><span>${e(nomeDiaLongo(d))}</span>${folga.length ? `<span class="fx">Folga: <b>${e(folga.join(", "))}</b></span>` : ""}${empresa.length ? `<span class="fx">Fica na empresa: <b>${e(empresa.join(", "))}</b></span>` : ""}</div>
+        ${anotacoesDoDia(d).length ? `<div class="anot">${anotacoesDoDia(d).map((a) => { const tp = tipoAnotacao(a.tipo); return `<div><b style="color:${tp.cor}">${e(tp.label)}</b>${faixaHora(a) ? ` <span class="h1">${e(faixaHora(a))}</span>` : ""}${a.pessoa ? ` · <b>${e(a.pessoa)}</b>` : ""}${a.texto && a.texto !== tp.label ? ` · ${e(a.texto)}` : ""}</div>`; }).join("")}</div>` : ""}
         <table><thead><tr><th class="c">OK</th><th style="width:44px">Hora</th><th style="width:88px">Tipo</th><th>O que fazer</th><th style="width:70px">OS</th><th style="width:22%">Equipe</th><th style="width:15%">Veículo</th></tr></thead><tbody>${linhas}</tbody></table></div>`;
     }).join("");
     const periodo = nDias === 1 ? nomeDiaLongo(inicio) : `${fmtDataBR(inicio)} a ${fmtDataBR(fim)}`;
@@ -9159,6 +9250,7 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
       .tp { display: inline-block; border: 1px solid; border-radius: 3px; padding: 0 4px; font-size: 9px; font-weight: 700; text-transform: uppercase; }
       .s { color: #555; font-size: 10px; } .vazio { color: #888; font-style: italic; }
       .rod { margin-top: 12px; color: #777; font-size: 9px; }
+      .anot { border: 1px solid #999; border-bottom: none; background: #FBF7EA; padding: 4px 6px; font-size: 10px; display: grid; gap: 2px; }
     </style></head><body>
       <div class="topo"><img src="${LOGO_PROSIGN}" alt="Prosign"><div><h1>${e(nomeModo.toUpperCase())}</h1><div>${e(periodo)}</div></div></div>
       ${blocos || `<p class="vazio">Nada agendado no período.</p>`}
@@ -9217,11 +9309,11 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
       {modo === "dia" ? renderDia(data, false) : (
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
           {Array.from({ length: nDias }, (_, i) => somaDias(inicio, i))
-            .filter((d) => !(nDias > 7 && soComAgenda) || itensDoDia(d).length > 0 || (dias[d]?.folga || []).length > 0)
+            .filter((d) => !(nDias > 7 && soComAgenda) || itensDoDia(d).length > 0 || anotacoesDoDia(d).length > 0 || (dias[d]?.folga || []).length > 0)
             .map((d) => <React.Fragment key={d}>{renderDia(d, true)}</React.Fragment>)}
         </div>
       )}
-      {nDias > 7 && soComAgenda && !Array.from({ length: nDias }, (_, i) => somaDias(inicio, i)).some((d) => itensDoDia(d).length > 0 || (dias[d]?.folga || []).length > 0) && (
+      {nDias > 7 && soComAgenda && !Array.from({ length: nDias }, (_, i) => somaDias(inicio, i)).some((d) => itensDoDia(d).length > 0 || anotacoesDoDia(d).length > 0 || (dias[d]?.folga || []).length > 0) && (
         <Card style={{ padding: 18, color: MUTED }}>Nada agendado entre {fmtDataBR(inicio)} e {fmtDataBR(fim)}.</Card>
       )}
       <div style={{ fontSize: 12, color: MUTED, marginTop: 10 }}>Montagem, evento e desmontagem das OS aparecem sozinhos na agenda. Use “Tarefa” para o resto: visita técnica, retirada, carregar caminhão, serviço na empresa.</div>
