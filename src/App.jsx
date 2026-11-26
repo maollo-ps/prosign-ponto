@@ -8323,6 +8323,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
   const [nomesEquipe, setNomesEquipe] = useState([]);
   const [veiculosConhecidos, setVeiculosConhecidos] = useState([]);
   const pessoas = usePessoasFin(session);
+  const podeValor = podeArea("comercial") || podeArea("financeiro"); // Logística não define valor de contratação
   const fornecedores = useMemo(() => { const f = pessoas.filter((p) => p.fornecedor); return f.length ? f : pessoas; }, [pessoas]);
   const pessoaPorNome = (n) => { const t = String(n || "").trim().toLowerCase(); return t ? pessoas.find((p) => p.nome.trim().toLowerCase() === t) || null : null; };
   const [enviandoFoto, setEnviandoFoto] = useState(null);
@@ -8602,7 +8603,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
                     {v.fornecedor && <div style={{ fontSize: 11, marginTop: 3, color: pForn ? OK : "#8A5A00" }}>{pForn ? "✓ no cadastro" : "não está no cadastro de fornecedores"}</div>}
                   </Field>
                 )}
-                {v.terceiro && <Field label={frete ? "Valor do frete (R$)" : "Valor do aluguel (R$)"}><input inputMode="decimal" value={v.valor} onChange={(e) => setV("valor", e.target.value)} style={inputStyle} placeholder="0,00" /></Field>}
+                {v.terceiro && podeValor && <Field label={frete ? "Valor do frete (R$)" : "Valor do aluguel (R$)"}><input inputMode="decimal" value={v.valor} onChange={(e) => setV("valor", e.target.value)} style={inputStyle} placeholder="0,00" /></Field>}
               </div>
 
               <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${BORDER}` }}>
@@ -8619,7 +8620,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
                       style={inputStyle} placeholder={v.motorista_origem === "freela" && !frete ? "digite para buscar no cadastro" : ""} />
                     {v.motorista_origem === "freela" && !frete && v.motorista && <div style={{ fontSize: 11, marginTop: 3, color: pFreela ? OK : "#8A5A00" }}>{pFreela ? "✓ no cadastro" : "não está no cadastro — cadastre em Financeiro para pagar"}</div>}
                   </Field>
-                  {v.motorista_origem === "freela" && !frete && <Field label="Diária do freela (R$)"><input inputMode="decimal" value={v.valor_motorista} onChange={(e) => setV("valor_motorista", e.target.value)} style={inputStyle} placeholder="0,00" /></Field>}
+                  {v.motorista_origem === "freela" && !frete && podeValor && <Field label="Diária do freela (R$)"><input inputMode="decimal" value={v.valor_motorista} onChange={(e) => setV("valor_motorista", e.target.value)} style={inputStyle} placeholder="0,00" /></Field>}
                 </div>
               </div>
 
@@ -8640,7 +8641,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
       <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
         <button type="button" onClick={() => set("veiculos", [...(os.veiculos || []), veiculoVazio(false)])} style={btnGhostSmall}><Plus size={13} /> Veículo próprio</button>
         <button type="button" onClick={() => set("veiculos", [...(os.veiculos || []), veiculoVazio(true)])} style={{ ...btnGhostSmall, borderColor: "#5B4B8A", color: "#5B4B8A" }}><Plus size={13} /> Veículo de terceiro</button>
-        {(() => { const tot = (os.veiculos || []).reduce((a, v) => a + custoVeiculo(v, numCampo), 0); return tot > 0 ? <span style={{ fontSize: 12, color: MUTED }}>Custo com aluguel, frete e freelas: <b>{brl(tot)}</b></span> : null; })()}
+        {podeValor && (() => { const tot = (os.veiculos || []).reduce((a, v) => a + custoVeiculo(v, numCampo), 0); return tot > 0 ? <span style={{ fontSize: 12, color: MUTED }}>Custo com aluguel, frete e freelas: <b>{brl(tot)}</b></span> : null; })()}
       </div>
 
       {titulo("Responsáveis e observações")}
@@ -9053,7 +9054,6 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
       data: anot.data, hora: anot.hora || null, hora_fim: anot.hora_fim || null, tipo: anot.tipo, pessoa: anot.pessoa.trim() || null, texto,
       fornecedor_id: ehForn ? (fornPorNome(anot.pessoa)?.id || null) : null,
       servico: ehForn ? (anot.servico || "").trim() || null : null,
-      valor: ehForn ? numDigitado(anot.valor) : null,
     };
     try {
       if (anot.id) await sbRequest(`agenda_anotacoes?id=eq.${anot.id}`, session, { method: "PATCH", body: corpo });
@@ -9124,6 +9124,7 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
           <div onClick={() => compacto && (setData(d), setModo("dia"))} style={{ fontWeight: 700, color: hoje ? DANGER : NAVY, fontSize: compacto ? 14 : 18, cursor: compacto ? "pointer" : "default" }}>{hoje ? "Hoje · " : ""}{nomeDiaLongo(d)}</div>
           {!compacto && <button onClick={() => setNova(tarefaVazia(d))} style={btnPrimary}><Plus size={14} /> Tarefa</button>}
+          {compacto && <button onClick={() => { setData(d); setModo("dia"); setAnot(anotacaoVazia(d)); }} style={{ ...btnGhostSmall, fontSize: 11, padding: "2px 8px" }} title="Abrir o dia para anotar">+ anotação</button>}
         </div>
 
         {!compacto && (
@@ -9199,12 +9200,11 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
                 <span style={{ fontSize: 11, fontWeight: 700, color: tp.cor }}>{tp.icone} {tp.label.toUpperCase()}</span>
                 {a.pessoa && <> · <b>{a.pessoa}</b></>}
                 {a.tipo === "fornecedor" && a.servico && <> <span style={{ fontSize: 12, color: "#5B4B8A" }}>({a.servico})</span></>}
-                {a.tipo === "fornecedor" && Number(a.valor) > 0 && <> · <b>{brl(Number(a.valor))}</b></>}
                 {a.tipo === "fornecedor" && a.pessoa && !a.fornecedor_id && <span style={{ fontSize: 10, color: "#8A5A00", marginLeft: 6 }}>(fora do cadastro)</span>}
                 {a.texto && a.texto !== tp.label && a.texto !== a.servico && <> · {a.texto}</>}
                 {a.criado_por_nome && <div style={{ fontSize: 10, color: MUTED }}>por {a.criado_por_nome}</div>}
               </div>
-              <button onClick={() => setAnot({ ...a, hora: a.hora ? a.hora.slice(0, 5) : "", hora_fim: a.hora_fim ? a.hora_fim.slice(0, 5) : "", pessoa: a.pessoa || "", servico: a.servico || "", valor: a.valor != null ? String(a.valor).replace(".", ",") : "", texto: a.texto === tipoAnotacao(a.tipo).label || a.texto === a.servico ? "" : a.texto })} style={btnGhostSmall}>Editar</button>
+              <button onClick={() => setAnot({ ...a, hora: a.hora ? a.hora.slice(0, 5) : "", hora_fim: a.hora_fim ? a.hora_fim.slice(0, 5) : "", pessoa: a.pessoa || "", servico: a.servico || "", texto: a.texto === tipoAnotacao(a.tipo).label || a.texto === a.servico ? "" : a.texto })} style={btnGhostSmall}>Editar</button>
               <button onClick={() => excluirAnotacao(a)} style={btnDangerSmall}><Trash2 size={12} /></button>
             </div>
           ); })}
@@ -9224,7 +9224,6 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
                   <datalist id="ag-anot-forn">{fornecedoresAg.map((p) => <option key={p.id} value={p.nome}>{p.documento || ""}</option>)}</datalist>
                   <input list="ag-anot-serv" value={x.servico} onChange={(e) => setX("servico", e.target.value)} placeholder="Serviço (motorista, técnico…)" style={{ ...inputStyle, width: 190 }} />
                   <datalist id="ag-anot-serv">{SERVICOS_TERCEIRO.map((n) => <option key={n} value={n} />)}</datalist>
-                  <input inputMode="decimal" value={x.valor} onChange={(e) => setX("valor", e.target.value)} placeholder="Valor R$" style={{ ...inputStyle, width: 100 }} />
                 </>
               ) : (
                 <>
@@ -9254,7 +9253,7 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
       const dia = dias[d] || {};
       const folga = dia.folga || [], empresa = dia.empresa || [];
       const anots = anotacoesDoDia(d);
-      const blocoAnot = anots.length ? `<table class="tanot"><thead><tr><th colspan="5" class="tit">ANOTAÇÕES DO DIA (${anots.length})</th></tr><tr><th style="width:80px">Horário</th><th style="width:120px">Tipo</th><th style="width:22%">Funcionário / fornecedor</th><th>Anotação</th><th style="width:90px">Anotado por</th></tr></thead><tbody>${anots.map((a) => { const tp = tipoAnotacao(a.tipo); return `<tr><td class="h1">${e(faixaHora(a) || "—")}</td><td><b style="color:${tp.cor}">${e(tp.curto || tp.label)}</b></td><td><b>${e(a.pessoa || "")}</b>${a.tipo === "fornecedor" && a.servico ? `<div class="s">${e(a.servico)}</div>` : ""}</td><td>${a.texto && a.texto !== tp.label && a.texto !== a.servico ? e(a.texto) : ""}${a.tipo === "fornecedor" && Number(a.valor) > 0 ? ` <b>· ${e(brl(Number(a.valor)))}</b>` : ""}</td><td class="s">${e(a.criado_por_nome || "")}</td></tr>`; }).join("")}</tbody></table>` : "";
+      const blocoAnot = anots.length ? `<table class="tanot"><thead><tr><th colspan="5" class="tit">ANOTAÇÕES DO DIA (${anots.length})</th></tr><tr><th style="width:80px">Horário</th><th style="width:120px">Tipo</th><th style="width:22%">Funcionário / fornecedor</th><th>Anotação</th><th style="width:90px">Anotado por</th></tr></thead><tbody>${anots.map((a) => { const tp = tipoAnotacao(a.tipo); return `<tr><td class="h1">${e(faixaHora(a) || "—")}</td><td><b style="color:${tp.cor}">${e(tp.curto || tp.label)}</b></td><td><b>${e(a.pessoa || "")}</b>${a.tipo === "fornecedor" && a.servico ? `<div class="s">${e(a.servico)}</div>` : ""}</td><td>${a.texto && a.texto !== tp.label && a.texto !== a.servico ? e(a.texto) : ""}</td><td class="s">${e(a.criado_por_nome || "")}</td></tr>`; }).join("")}</tbody></table>` : "";
       const linhas = itens.length ? itens.map((i) => {
         const tp = tipoTarefa(i.tipo);
         const os = i.os ? `${numOS(i.os.numero)}${i.os.orcamentos?.numero_or ? `<div class="s">PR ${e(i.os.orcamentos.numero_or)}</div>` : ""}` : "";
