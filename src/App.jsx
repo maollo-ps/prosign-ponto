@@ -8130,7 +8130,7 @@ const STATUS_OS = [
   { id: "cancelada", label: "Cancelada" },
 ];
 const nomeStatusOS = (id) => STATUS_OS.find((s) => s.id === id)?.label || id;
-const PADRAO_OS = ["Mala de ferramenta", "Escada", "Extensão elétrica", "Parafusadeira e brocas", "Fita dupla face", "Abraçadeiras (enforca-gato)"];
+const PADRAO_OS = ["MALA DE FERRAMENTA", "ESCADA", "EXTENSÃO ELÉTRICA", "PARAFUSADEIRA E BROCAS", "FITA DUPLA FACE", "ABRAÇADEIRAS (ENFORCA-GATO)"];
 const COMBUSTIVEL = ["Vazio", "1/4", "1/2", "3/4", "Cheio"];
 // Veículo da OS:
 //  próprio  → motorista da equipe ou freela
@@ -8291,7 +8291,7 @@ function imprimirOS(os, itens, pr) {
   const vazias = Math.max(0, 4 - itens.length);
   const pad = (os.padrao || []);
   const metade = Math.ceil(pad.length / 2);
-  const linhaPad = (p) => (p ? `<td class="c">${caixa(p.ida)}</td><td class="c">${caixa(p.volta)}</td><td class="c">${e(p.qtd || "")}</td><td>${e(p.descricao)}</td>` : `<td></td><td></td><td></td><td></td>`);
+  const linhaPad = (p) => (p ? `<td class="c">${caixa(p.ida)}</td><td class="c">${caixa(p.volta)}</td><td class="c">${e(p.qtd || "")}</td><td>${e(String(p.descricao || "").toUpperCase())}</td>` : `<td></td><td></td><td></td><td></td>`);
   const linhasPad = Array.from({ length: Math.max(metade, 3) }, (_, i) => `<tr>${linhaPad(pad[i])}${linhaPad(pad[i + metade])}</tr>`).join("");
   const comb = (v) => (v === null || v === undefined || v === "" ? "______" : COMBUSTIVEL[v]);
   const veics = os.veiculos || veiculosDaOS(os);
@@ -8447,7 +8447,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
         montagem_inicio: os.montagem_inicio, montagem_fim: os.montagem_fim, evento_inicio: os.evento_inicio, evento_fim: os.evento_fim,
         desmontagem_inicio: os.desmontagem_inicio, desmontagem_fim: os.desmontagem_fim,
         equipe_separacao: os.equipe_separacao, equipe_montagem: os.equipe_montagem, equipe_operacao: os.equipe_operacao, equipe_desmontagem: os.equipe_desmontagem || [],
-        padrao: (os.padrao || []).filter((p) => (p.descricao || "").trim()),
+        padrao: (os.padrao || []).filter((p) => (p.descricao || "").trim()).map((p) => ({ ...p, descricao: p.descricao.trim().toUpperCase() })),
         veiculos: veiculosParaSalvar,
         // resumo nos campos antigos (agenda, relatórios e OS antigas)
         veiculo: veiculosParaSalvar.map(nomeVeiculo).join(" + ") || null,
@@ -8610,7 +8610,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
             <label style={{ fontSize: 11 }}><input type="checkbox" checked={!!p.ida} onChange={(e) => set("padrao", os.padrao.map((q, j) => (j === i ? { ...q, ida: e.target.checked } : q)))} /> ida</label>
             <label style={{ fontSize: 11 }}><input type="checkbox" checked={!!p.volta} onChange={(e) => set("padrao", os.padrao.map((q, j) => (j === i ? { ...q, volta: e.target.checked } : q)))} /> volta</label>
             <input value={p.qtd ?? ""} onChange={(e) => set("padrao", os.padrao.map((q, j) => (j === i ? { ...q, qtd: e.target.value } : q)))} style={{ ...inputStyle, width: 44 }} />
-            <input value={p.descricao} onChange={(e) => set("padrao", os.padrao.map((q, j) => (j === i ? { ...q, descricao: e.target.value } : q)))} style={{ ...inputStyle, flex: 1 }} />
+            <input value={(p.descricao || "").toUpperCase()} onChange={(e) => set("padrao", os.padrao.map((q, j) => (j === i ? { ...q, descricao: e.target.value.toUpperCase() } : q)))} style={{ ...inputStyle, flex: 1, textTransform: "uppercase" }} />
             <button onClick={() => set("padrao", os.padrao.filter((_, j) => j !== i))} style={btnDangerSmall}><X size={12} /></button>
           </div>
         ))}
@@ -9299,8 +9299,9 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
                 </>
               ) : (
                 <>
-                  <input list="ag-anot-pessoas" value={x.pessoa} onChange={(e) => setX("pessoa", e.target.value)} placeholder="Funcionário (opcional)" style={{ ...inputStyle, width: 170 }} />
-                  <datalist id="ag-anot-pessoas">{nomesEquipe.map((n) => <option key={n} value={n} />)}</datalist>
+                  <input list="ag-anot-pessoas" value={x.pessoa} onChange={(e) => setX("pessoa", e.target.value)} placeholder="Funcionário ou Todos" style={{ ...inputStyle, width: 170 }} />
+                  <button type="button" onClick={() => setX("pessoa", "Todos")} title="Anotação vale para a equipe inteira" style={{ ...btnGhostSmall, fontWeight: 700, background: x.pessoa === "Todos" ? NAVY : "#fff", color: x.pessoa === "Todos" ? "#fff" : TEXT }}>Todos</button>
+                  <datalist id="ag-anot-pessoas"><option value="Todos">equipe inteira</option>{nomesEquipe.map((n) => <option key={n} value={n} />)}</datalist>
                 </>
               )}
               <input value={x.texto} onChange={(e) => setX("texto", e.target.value)} onKeyDown={(e) => e.key === "Enter" && salvarAnotacao()} placeholder={x.tipo === "fornecedor" ? "Motivo (ex.: manutenção da impressora, levar palco)" : "Escreva o que aconteceu ou o que precisa ser feito…"} style={{ ...inputStyle, flex: 1, minWidth: 220 }} />
