@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
-import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, LogOut, Loader2, Search, TrendingUp, UserCog, Wallet, Wrench, Truck } from "lucide-react";
+import { Users, Clock, FileBarChart, Plus, Trash2, Upload, X, Save, Briefcase, LogOut, Loader2, Search, TrendingUp, UserCog, Wallet, Wrench, Truck, Eye, EyeOff } from "lucide-react";
 
 // =========================================================
 // CONFIGURAÇÃO DO SUPABASE — preencha com os dados do seu projeto
@@ -45,7 +45,14 @@ function decimalToHHMM(dec) {
   const m = Math.round((dec - h) * 60);
   return `${h}:${String(m).padStart(2, "0")}`;
 }
+// "olho" do cabeçalho: esconde os valores na tela (reunião, tela compartilhada).
+// Impressões, PDFs e Excel continuam com os valores reais (brlR).
+let _ocultarValores = (() => { try { return localStorage.getItem("ocultar_valores") === "1"; } catch { return false; } })();
+function brlR(v) {
+  return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
 function brl(v) {
+  if (_ocultarValores) return "R$ •••••";
   return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
@@ -582,6 +589,13 @@ export default function App() {
   });
 
   // modo celular: "auto" (pela largura da tela), "cel" (forçado) ou "pc"
+  const [ocultar, setOcultar] = useState(_ocultarValores);
+  function alternarOcultar() {
+    const novo = !ocultar;
+    _ocultarValores = novo;
+    try { localStorage.setItem("ocultar_valores", novo ? "1" : "0"); } catch {}
+    setOcultar(novo);
+  }
   const [prefCelular, setPrefCelular] = useState(() => { try { return localStorage.getItem("modo_celular") || "auto"; } catch { return "auto"; } });
   const [celAtivo, setCelAtivo] = useState(() => modoCelularAtivo(prefCelular));
   useEffect(() => {
@@ -666,7 +680,7 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: TEXT, fontFamily: FONT_BODY }}>
-      <Header tab={tab} setTab={setTab} onLogout={() => setSession(null)} podeVerAba={podeVerAba} celAtivo={celAtivo} onAlternarCelular={alternarCelular} />
+      <Header tab={tab} setTab={setTab} onLogout={() => setSession(null)} podeVerAba={podeVerAba} celAtivo={celAtivo} onAlternarCelular={alternarCelular} ocultar={ocultar} onAlternarOcultar={alternarOcultar} />
       <main style={{ maxWidth: 1180, margin: "0 auto", padding: "28px 20px 80px" }}>
         {erro && (
           <div style={{ background: "#FDECEC", color: DANGER, padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
@@ -769,7 +783,7 @@ function LoginScreen({ onLogin }) {
 }
 
 // ---------- Header ----------
-function Header({ tab, setTab, onLogout, podeVerAba, celAtivo, onAlternarCelular }) {
+function Header({ tab, setTab, onLogout, podeVerAba, celAtivo, onAlternarCelular, ocultar, onAlternarOcultar }) {
   const items = [
     { id: "comercial", label: "Comercial", icon: TrendingUp },
     { id: "financeiro", label: "Financeiro", icon: Wallet },
@@ -795,6 +809,10 @@ function Header({ tab, setTab, onLogout, podeVerAba, celAtivo, onAlternarCelular
             </h1>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={onAlternarOcultar} title={ocultar ? "Mostrar os valores" : "Esconder os valores (reunião, tela compartilhada)"}
+              style={{ display: "flex", alignItems: "center", gap: 6, background: ocultar ? GOLD : "rgba(255,255,255,0.12)", border: "none", color: ocultar ? NAVY : "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700, borderRadius: 6, padding: "5px 9px" }}>
+              {ocultar ? <EyeOff size={15} /> : <Eye size={15} />} {ocultar ? "Valores ocultos" : "Valores"}
+            </button>
             <button onClick={onAlternarCelular} title={celAtivo ? "Voltar ao layout de computador" : "Usar layout de celular"} style={{ background: "rgba(255,255,255,0.12)", border: "none", color: "#fff", cursor: "pointer", fontSize: 12, borderRadius: 6, padding: "5px 9px" }}>
               {celAtivo ? "💻 Computador" : "📱 Celular"}
             </button>
@@ -3284,13 +3302,13 @@ function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, 
     if (interno) {
       if (lona) {
         cab = ["Item", "Largura", "Altura", "Qtd.", "m²/ml", "Custo m²", "Vlr custo", "Status", "Fornecedor"];
-        linhas = lista.map((i) => [i.descricao, num(i.largura), num(i.altura), num(i.qtd), num(numBR(i.largura) * numBR(i.altura)), brl(numBR(i.valorCusto)), brl(custoDoItem(i)), i.status, i.fornecedor]);
+        linhas = lista.map((i) => [i.descricao, num(i.largura), num(i.altura), num(i.qtd), num(numBR(i.largura) * numBR(i.altura)), brlR(numBR(i.valorCusto)), brlR(custoDoItem(i)), i.status, i.fornecedor]);
       } else if (serv) {
         cab = ["Item", "Qtd", "Diária", "Unit", "Contratado", "Ordem pagto", "Vlr custo", "Status", "Fornecedor"];
-        linhas = lista.map((i) => [i.descricao, num(i.qtd), num(i.diaria), brl(numBR(i.valorCusto)), i.contratado, i.ordemPagto, brl(custoDoItem(i)), i.status, i.fornecedor]);
+        linhas = lista.map((i) => [i.descricao, num(i.qtd), num(i.diaria), brlR(numBR(i.valorCusto)), i.contratado, i.ordemPagto, brlR(custoDoItem(i)), i.status, i.fornecedor]);
       } else {
         cab = ["Descrição", "Centro de resultado", "Qtd.", "Diária", "Valor custo", "Vlr custo", "Status", "Fornecedor"];
-        linhas = lista.map((i) => [i.descricao, nomeCentro(i.centroId), num(i.qtd), num(i.diaria), brl(numBR(i.valorCusto)), brl(custoDoItem(i)), i.status, i.fornecedor]);
+        linhas = lista.map((i) => [i.descricao, nomeCentro(i.centroId), num(i.qtd), num(i.diaria), brlR(numBR(i.valorCusto)), brlR(custoDoItem(i)), i.status, i.fornecedor]);
       }
     } else {
       if (serv) return ""; // serviços internos não aparecem pro cliente
@@ -3325,28 +3343,28 @@ function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, 
   const totaisInternos = `
     <div class="faixa" style="background:#ED1C24">TOTAIS</div>
     <table class="resumo"><tbody>
-      ${linhaR("Total custo lonas / adesivos", brl(calc.totalLona))}
-      ${linhaR("Total custo outros centros de resultado", brl(calc.totalOutros + calc.totalSub))}
-      ${linhaR("Total 3", brl(calc.total3), true)}
-      ${linhaR("Total 4 (logística)", brl(calc.total4), true)}
-      ${linhaR("Total 6 CUSTOS (Total 3 + Total 4)", brl(calc.total6), true)}
+      ${linhaR("Total custo lonas / adesivos", brlR(calc.totalLona))}
+      ${linhaR("Total custo outros centros de resultado", brlR(calc.totalOutros + calc.totalSub))}
+      ${linhaR("Total 3", brlR(calc.total3), true)}
+      ${linhaR("Total 4 (logística)", brlR(calc.total4), true)}
+      ${linhaR("Total 6 CUSTOS (Total 3 + Total 4)", brlR(calc.total6), true)}
     </tbody></table>
     <div class="faixa" style="background:#ED1C24">IMPOSTOS</div>
     <table class="resumo"><tbody>
-      ${linhaR(`BV (${num(params.bv * 100)}%)`, brl(calc.bvR))}
-      ${linhaR(`Simples (${num(params.simples * 100)}%)`, brl(calc.simplesR))}
-      ${linhaR(`Comissão (${num(params.comissao * 100)}%)`, brl(calc.comissaoR))}
-      ${linhaR(`Margem (${num(params.margem * 100)}%)`, brl(calc.margemR))}
+      ${linhaR(`BV (${num(params.bv * 100)}%)`, brlR(calc.bvR))}
+      ${linhaR(`Simples (${num(params.simples * 100)}%)`, brlR(calc.simplesR))}
+      ${linhaR(`Comissão (${num(params.comissao * 100)}%)`, brlR(calc.comissaoR))}
+      ${linhaR(`Margem (${num(params.margem * 100)}%)`, brlR(calc.margemR))}
     </tbody></table>
     <div class="faixa" style="background:#ED1C24">VALOR FINAL</div>
     <table class="resumo"><tbody>
-      ${linhaR("PREÇO DE VENDA", brl(calc.precoVenda), true)}
-      ${linhaR("Desconto / Acréscimo", brl(numBR(ajuste)))}
-      ${linhaR("PREÇO DE VENDA FINAL", brl(calc.precoFinal), true)}
+      ${linhaR("PREÇO DE VENDA", brlR(calc.precoVenda), true)}
+      ${linhaR("Desconto / Acréscimo", brlR(numBR(ajuste)))}
+      ${linhaR("PREÇO DE VENDA FINAL", brlR(calc.precoFinal), true)}
       ${linhaR("% LUCRO TOTAL", `${(calc.lucroPct * 100).toFixed(2).replace(".", ",")}%`, true)}
     </tbody></table>`;
 
-  const totalCliente = `<div class="total-cliente"><span>VALOR TOTAL</span><b>${esc(brl(calc.precoFinal))}</b></div>`;
+  const totalCliente = `<div class="total-cliente"><span>VALOR TOTAL</span><b>${esc(brlR(calc.precoFinal))}</b></div>`;
 
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
   <title>${esc(interno ? "Composição (interno)" : "Orçamento")} ${esc(numeroOr || "")} - ${esc(orc.evento)}</title>
@@ -5238,30 +5256,37 @@ function FormLancamento({ session, setErro, centros, valorInicial, ehNovo, onSal
 // ---------------------------------------------------------
 // Baixa (pagamento / recebimento) com juros, multa, desconto e parcial
 // ---------------------------------------------------------
-function BaixaLancamento({ l, onConfirmar, onCancelar, salvando }) {
-  const [data, setData] = useState(hojeISO());
-  const [juros, setJuros] = useState("");
-  const [multa, setMulta] = useState("");
-  const [desconto, setDesconto] = useState("");
+function BaixaLancamento({ l, onConfirmar, onCancelar, salvando, ajuste = false }) {
+  // ajuste = true: corrige uma baixa já feita (juros, desconto, antecipação) sem estornar
+  const txt = (v) => (Number(v) ? fmtNumBR(v) : "");
+  const [data, setData] = useState(ajuste && l.pagamento ? l.pagamento : hojeISO());
+  const [juros, setJuros] = useState(ajuste ? txt(l.juros) : "");
+  const [multa, setMulta] = useState(ajuste ? txt(l.multa) : "");
+  const [desconto, setDesconto] = useState(ajuste ? txt(l.desconto) : "");
+  const [antecip, setAntecip] = useState(ajuste ? txt(l.antecipacao) : "");
   const [pagoTxt, setPagoTxt] = useState("");
   const [banco, setBanco] = useState(l.banco || "");
   const [forma, setForma] = useState(l.forma_pagamento || "");
   const num = (t) => { const v = numDigitado(t); return isNaN(v) ? 0 : v; };
-  const devido = r2(Number(l.valor) + num(juros) + num(multa) - num(desconto));
+  const receber = l.tipo === "receber";
+  // líquido = valor + juros + multa − desconto − antecipação (calculado sozinho)
+  const devido = r2(Number(l.valor) + num(juros) + num(multa) - num(desconto) - num(antecip));
   const pago = pagoTxt.trim() ? num(pagoTxt) : devido;
-  const parcial = pago > 0 && pago < devido - 0.009;
-  const principalPago = r2(pago - num(juros) - num(multa) + num(desconto));
+  const parcial = !ajuste && pago > 0 && pago < devido - 0.009;
+  const principalPago = r2(pago - num(juros) - num(multa) + num(desconto) + num(antecip));
   const restante = r2(Number(l.valor) - principalPago);
-  const verbo = l.tipo === "receber" ? "Recebido" : "Pago";
+  const verbo = receber ? "Recebido" : "Pago";
+  const pctAntecip = num(antecip) > 0 && Number(l.valor) > 0 ? (num(antecip) / Number(l.valor)) * 100 : 0;
   return (
     <div style={{ display: "grid", gap: 10 }}>
-      <div style={{ fontWeight: 700, color: NAVY }}>Dar baixa · {l.fornecedor_cliente || "—"} · {brl(l.valor)} <span style={{ fontWeight: 400, color: MUTED }}>(venc. {fmtDataBR(l.vencimento)})</span></div>
+      <div style={{ fontWeight: 700, color: NAVY }}>{ajuste ? "Ajustar baixa" : "Dar baixa"} · {l.fornecedor_cliente || "—"} · {brl(l.valor)} <span style={{ fontWeight: 400, color: MUTED }}>(venc. {fmtDataBR(l.vencimento)})</span></div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10 }}>
-        <Field label={`Data ${l.tipo === "receber" ? "do recebimento" : "do pagamento"}`}><input type="date" value={data} onChange={(e) => setData(e.target.value)} style={inputStyle} /></Field>
-        <Field label="Juros (R$)"><input inputMode="decimal" value={juros} onChange={(e) => setJuros(e.target.value)} style={inputStyle} placeholder="0,00" /></Field>
-        <Field label="Multa (R$)"><input inputMode="decimal" value={multa} onChange={(e) => setMulta(e.target.value)} style={inputStyle} placeholder="0,00" /></Field>
-        <Field label="Desconto (R$)"><input inputMode="decimal" value={desconto} onChange={(e) => setDesconto(e.target.value)} style={inputStyle} placeholder="0,00" /></Field>
-        <Field label={`Valor ${verbo.toLowerCase()} (R$)`}><input inputMode="decimal" value={pagoTxt} onChange={(e) => setPagoTxt(e.target.value)} style={{ ...inputStyle, fontFamily: FONT_MONO }} placeholder={fmtNumBR(devido)} /></Field>
+        <Field label={`Data ${receber ? "do recebimento" : "do pagamento"}`}><input type="date" value={data} onChange={(e) => setData(e.target.value)} style={inputStyle} /></Field>
+        <Field label="Juros (R$) +"><input inputMode="decimal" value={juros} onChange={(e) => { setJuros(e.target.value); setPagoTxt(""); }} style={inputStyle} placeholder="0,00" /></Field>
+        <Field label="Multa (R$) +"><input inputMode="decimal" value={multa} onChange={(e) => { setMulta(e.target.value); setPagoTxt(""); }} style={inputStyle} placeholder="0,00" /></Field>
+        <Field label="Desconto (R$) −"><input inputMode="decimal" value={desconto} onChange={(e) => { setDesconto(e.target.value); setPagoTxt(""); }} style={inputStyle} placeholder="0,00" /></Field>
+        {receber && <Field label="Antecipação de boleto (R$) −"><input inputMode="decimal" value={antecip} onChange={(e) => { setAntecip(e.target.value); setPagoTxt(""); }} style={inputStyle} placeholder="0,00" title="Valor que o banco cobrou para antecipar o boleto" /></Field>}
+        <Field label={`Valor ${verbo.toLowerCase()} líquido (R$)`}><input inputMode="decimal" value={pagoTxt} onChange={(e) => setPagoTxt(e.target.value)} style={{ ...inputStyle, fontFamily: FONT_MONO, fontWeight: 700 }} placeholder={fmtNumBR(devido)} /></Field>
         <Field label="Banco / conta">
           <select value={banco} onChange={(e) => setBanco(e.target.value)} style={selStyle}><option value="">—</option>{[...new Set([...BANCOS_FIN, banco].filter(Boolean))].map((x) => <option key={x} value={x}>{x}</option>)}</select>
         </Field>
@@ -5269,14 +5294,21 @@ function BaixaLancamento({ l, onConfirmar, onCancelar, salvando }) {
           <select value={forma} onChange={(e) => setForma(e.target.value)} style={selStyle}><option value="">—</option>{[...new Set([...FORMAS_PGTO, forma].filter(Boolean))].map((x) => <option key={x} value={x}>{x}</option>)}</select>
         </Field>
       </div>
-      <div style={{ fontSize: 13 }}>
-        Total devido: <b>{brl(devido)}</b> · {verbo}: <b>{brl(pago)}</b>
-        {parcial && <span style={{ color: DANGER }}> · <b>Pagamento parcial</b>: o restante de <b>{brl(restante)}</b> continua em aberto num novo lançamento, com o mesmo vencimento.</span>}
-        {pago > devido + 0.009 && <span style={{ color: DANGER }}> · valor maior que o devido — confira juros/multa.</span>}
+      <div style={{ fontSize: 13, background: "#F7F9FC", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px", fontFamily: FONT_MONO }}>
+        {receber ? "Valor da NF" : "Valor"} {brl(l.valor)}
+        {num(juros) > 0 && <> + juros {brl(num(juros))}</>}
+        {num(multa) > 0 && <> + multa {brl(num(multa))}</>}
+        {num(desconto) > 0 && <> − desconto {brl(num(desconto))}</>}
+        {num(antecip) > 0 && <> − antecipação {brl(num(antecip))} <span style={{ color: MUTED }}>({pctAntecip.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%)</span></>}
+        {" "}= <b>líquido {brl(devido)}</b>
+        {pagoTxt.trim() && Math.abs(pago - devido) > 0.009 && <> · {verbo.toLowerCase()} {brl(pago)}</>}
+        {parcial && <div style={{ color: DANGER, fontFamily: FONT_BODY }}><b>Pagamento parcial</b>: o restante de <b>{brl(restante)}</b> continua em aberto num novo lançamento, com o mesmo vencimento.</div>}
+        {pago > devido + 0.009 && <div style={{ color: DANGER, fontFamily: FONT_BODY }}>Valor maior que o líquido calculado — confira juros/multa.</div>}
+        {ajuste && Math.abs(pago - devido) > 0.009 && <div style={{ color: DANGER, fontFamily: FONT_BODY }}>O valor {verbo.toLowerCase()} não bate com o líquido. Ajuste juros, desconto ou antecipação para fechar a diferença.</div>}
       </div>
       <div style={{ display: "flex", gap: 10 }}>
-        <button disabled={salvando || !data || !(pago > 0)} onClick={() => onConfirmar({ data, juros: num(juros), multa: num(multa), desconto: num(desconto), pago, parcial, principalPago, restante, banco, forma })} style={btnPrimary}>
-          <Save size={15} /> {salvando ? "Salvando..." : parcial ? "Baixar parcial" : "Confirmar baixa"}
+        <button disabled={salvando || !data || !(pago > 0)} onClick={() => onConfirmar({ data, juros: num(juros), multa: num(multa), desconto: num(desconto), antecipacao: receber ? num(antecip) : 0, pago, parcial, principalPago, restante, banco, forma })} style={btnPrimary}>
+          <Save size={15} /> {salvando ? "Salvando..." : ajuste ? "Salvar ajuste" : parcial ? "Baixar parcial" : "Confirmar baixa"}
         </button>
         <button onClick={onCancelar} style={btnGhostSmall}>Cancelar</button>
       </div>
@@ -5460,7 +5492,7 @@ function LancamentosFinView({ session, setErro, centros }) {
   async function confirmarBaixa(l, b) {
     setSalvando(true); setErro("");
     try {
-      const comum = { pagamento: b.data, juros: b.juros, multa: b.multa, desconto: b.desconto, banco: b.banco || null, forma_pagamento: b.forma || null, situacao: "quitada", valor_pago: r2(b.pago) };
+      const comum = { pagamento: b.data, juros: b.juros, multa: b.multa, desconto: b.desconto, antecipacao: b.antecipacao || 0, banco: b.banco || null, forma_pagamento: b.forma || null, situacao: "quitada", valor_pago: r2(b.pago) };
       if (b.parcial && b.restante > 0.009) {
         await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: { ...comum, valor: r2(b.principalPago) } });
         await sbRequest("lancamentos_fin", session, { method: "POST", body: {
@@ -5483,7 +5515,7 @@ function LancamentosFinView({ session, setErro, centros }) {
     setErro("");
     try {
       await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: {
-        situacao: l.vencimento && l.vencimento < hoje ? "vencida" : "aberta", pagamento: null, valor_pago: null, juros: 0, multa: 0, desconto: 0,
+        situacao: l.vencimento && l.vencimento < hoje ? "vencida" : "aberta", pagamento: null, valor_pago: null, juros: 0, multa: 0, desconto: 0, antecipacao: 0,
       } });
       carregar();
     } catch (e) { setErro(msgSupabase(e)); }
@@ -5627,17 +5659,22 @@ function LancamentosFinView({ session, setErro, centros }) {
                     <td style={{ ...tdS, fontSize: 12 }}>{l.orcamentos ? `${l.orcamentos.numero_or ? `PR ${l.orcamentos.numero_or} · ` : ""}${l.orcamentos.evento}` : <span style={{ color: MUTED }}>—</span>}</td>
                     <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, color: l.tipo === "receber" ? "#2E7D5B" : TEXT, whiteSpace: "nowrap" }}>
                       {brl(l.valor)}
-                      {l.valor_pago != null && Math.abs(Number(l.valor_pago) - Number(l.valor)) > 0.009 && <div style={{ fontSize: 11, color: MUTED }}>pago {brl(l.valor_pago)}</div>}
+                      {l.valor_pago != null && Math.abs(Number(l.valor_pago) - Number(l.valor)) > 0.009 && <div style={{ fontSize: 11, color: MUTED }}>{l.tipo === "receber" ? "recebido" : "pago"} {brl(l.valor_pago)}{Number(l.antecipacao) ? ` (antecip. ${brl(l.antecipacao)})` : ""}</div>}
                     </td>
                     <td style={{ ...tdS, fontSize: 12, fontWeight: 700, color: SIT_COR[sit] }}>{SIT_LABEL[sit]}</td>
                     <td style={{ ...tdS, whiteSpace: "nowrap" }}>
                       {sit !== "quitada"
                         ? <button onClick={() => { setBaixaId(baixaId === l.id ? null : l.id); setEditId(null); }} style={{ ...btnGhostSmall, color: "#2E7D5B", fontWeight: 700 }}>{l.tipo === "receber" ? "Receber" : "Pagar"}</button>
-                        : <button onClick={() => estornar(l)} style={btnGhostSmall} title="Desfazer a baixa">Estornar</button>}
+                        : <><button onClick={() => { setBaixaId(baixaId === `aj-${l.id}` ? null : `aj-${l.id}`); setEditId(null); }} style={{ ...btnGhostSmall, color: NAVY, fontWeight: 700 }} title="Corrigir juros, desconto, antecipação ou valor recebido">Ajustar</button>{" "}<button onClick={() => estornar(l)} style={btnGhostSmall} title="Desfazer a baixa">Estornar</button></>}
                       {" "}<button onClick={() => { setEditId(editId === l.id ? null : l.id); setBaixaId(null); }} style={btnGhostSmall}>{editId === l.id ? "Fechar" : "Editar"}</button>
                       {" "}<button onClick={() => excluir(l)} style={btnDangerSmall} title="Excluir"><Trash2 size={13} /></button>
                     </td>
                   </tr>
+                  {baixaId === `aj-${l.id}` && (
+                    <tr style={{ background: "#F3F7FB" }}><td colSpan={12} style={{ padding: 16 }}>
+                      <BaixaLancamento ajuste l={l} salvando={salvando} onConfirmar={(b) => confirmarBaixa(l, b)} onCancelar={() => setBaixaId(null)} />
+                    </td></tr>
+                  )}
                   {baixaId === l.id && (
                     <tr style={{ background: "#F2FAF5" }}><td colSpan={12} style={{ padding: 16 }}>
                       <BaixaLancamento l={l} salvando={salvando} onConfirmar={(b) => confirmarBaixa(l, b)} onCancelar={() => setBaixaId(null)} />
@@ -5645,7 +5682,7 @@ function LancamentosFinView({ session, setErro, centros }) {
                   )}
                   {editId === l.id && (
                     <tr style={{ background: "#F3F7FB" }}><td colSpan={12} style={{ padding: 16 }}>
-                      {l.situacao === "quitada" && <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>Quitada em {fmtDataBR(l.pagamento)}{l.valor_pago != null ? ` · ${brl(l.valor_pago)}` : ""}{Number(l.juros) || Number(l.multa) ? ` (juros ${brl(l.juros)}, multa ${brl(l.multa)})` : ""}{Number(l.desconto) ? ` · desconto ${brl(l.desconto)}` : ""}{l.banco ? ` · ${l.banco}` : ""} — para mudar a baixa, use Estornar.</div>}
+                      {l.situacao === "quitada" && <div style={{ fontSize: 12, color: MUTED, marginBottom: 8 }}>Quitada em {fmtDataBR(l.pagamento)}{l.valor_pago != null ? ` · ${brl(l.valor_pago)}` : ""}{Number(l.juros) || Number(l.multa) ? ` (juros ${brl(l.juros)}, multa ${brl(l.multa)})` : ""}{Number(l.desconto) ? ` · desconto ${brl(l.desconto)}` : ""}{Number(l.antecipacao) ? ` · antecipação ${brl(l.antecipacao)}` : ""}{l.banco ? ` · ${l.banco}` : ""} — para corrigir juros, desconto ou antecipação, use Ajustar.</div>}
                       <FormLancamento key={l.id} session={session} setErro={setErro} centros={centros} pessoas={pessoas} valorInicial={valorInicialDe(l)} onSalvar={(f) => salvarEdicao(l, f)} onCancelar={() => setEditId(null)} salvando={salvando} />
                     </td></tr>
                   )}
@@ -6799,7 +6836,7 @@ function imprimirOrdemPagamento(op) {
     </table>
     <table>
       ${linha("Favorecido", `<b>${esc(op.fornecedor_nome)}</b>`)}
-      ${linha("Valor", `<span class="valor">${esc(brl(Number(op.valor)))}</span>`)}
+      ${linha("Valor", `<span class="valor">${esc(brlR(Number(op.valor)))}</span>`)}
       ${linha(parcelasDaOrdem(op).length > 1 ? "Parcelas" : "Vencimento", esc(parcelasDaOrdem(op).length > 1 ? `${parcelasDaOrdem(op).length} parcelas (abaixo)` : fmtDataBR(parcelasDaOrdem(op)[0].vencimento)))}
       ${linha("Forma de pagamento", esc(formaPagLabel(op.forma_pagamento)))}
       ${linha("Dados para pagamento", esc(op.dados_pagamento || "—"))}
@@ -6807,12 +6844,12 @@ function imprimirOrdemPagamento(op) {
       ${op.obs ? linha("Observação", esc(op.obs)) : ""}
     </table>
     ${parcelasDaOrdem(op).length > 1 ? `<table><thead><tr><th style="width:60px">Parcela</th><th>Descrição</th><th style="width:110px">Vencimento</th><th class="num" style="width:120px">Valor</th><th style="width:200px">Pagamento</th></tr></thead><tbody>
-      ${parcelasDaOrdem(op).map((p, i, arr) => `<tr><td>${i + 1}/${arr.length}</td><td>${esc(p.descricao || "")}</td><td>${esc(fmtDataBR(p.vencimento))}</td><td class="num">${esc(brl(Number(p.valor)))}</td><td>${p.status === "paga" ? esc(`Paga em ${fmtDataBR(p.pago_em)}${p.conta_saida ? ` · ${p.conta_saida}` : ""}`) : "Em aberto"}</td></tr>`).join("")}</tbody></table>` : ""}
+      ${parcelasDaOrdem(op).map((p, i, arr) => `<tr><td>${i + 1}/${arr.length}</td><td>${esc(p.descricao || "")}</td><td>${esc(fmtDataBR(p.vencimento))}</td><td class="num">${esc(brlR(Number(p.valor)))}</td><td>${p.status === "paga" ? esc(`Paga em ${fmtDataBR(p.pago_em)}${p.conta_saida ? ` · ${p.conta_saida}` : ""}`) : "Em aberto"}</td></tr>`).join("")}</tbody></table>` : ""}
     ${itens.length ? `<table><thead><tr><th>Itens da composição</th><th class="num" style="width:140px">Valor</th></tr></thead><tbody>
-      ${itens.map((i) => `<tr><td>${esc(i.descricao)}</td><td class="num">${esc(brl(Number(i.valor)))}</td></tr>`).join("")}</tbody></table>` : ""}
+      ${itens.map((i) => `<tr><td>${esc(i.descricao)}</td><td class="num">${esc(brlR(Number(i.valor)))}</td></tr>`).join("")}</tbody></table>` : ""}
     <table>
       ${linha("Solicitado por", esc(`${op.criado_por_nome || "—"} em ${fmtDataBR(op.criado_em)}`))}
-      ${op.status === "paga" && parcelasDaOrdem(op).length === 1 ? linha("Pago em", esc(`${fmtDataBR(op.pago_em)} · ${brl(Number(op.valor_pago ?? op.valor))}${op.conta_saida ? ` · ${op.conta_saida}` : ""}${op.pago_por_nome ? ` · baixa por ${op.pago_por_nome}` : ""}`)) : ""}
+      ${op.status === "paga" && parcelasDaOrdem(op).length === 1 ? linha("Pago em", esc(`${fmtDataBR(op.pago_em)} · ${brlR(Number(op.valor_pago ?? op.valor))}${op.conta_saida ? ` · ${op.conta_saida}` : ""}${op.pago_por_nome ? ` · baixa por ${op.pago_por_nome}` : ""}`)) : ""}
       ${op.status === "paga" && op.obs_pagamento ? linha("Obs. do pagamento", esc(op.obs_pagamento)) : ""}
       ${op.status === "cancelada" ? linha("Cancelada", esc(op.cancelado_motivo || "")) : ""}
     </table>
@@ -7778,8 +7815,8 @@ function RelatoriosFinView({ session, setErro, centros }) {
   function imprimir() {
     const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const corpo = grupos.map((g) => `
-      ${g.chave ? `<tr class="g"><td colspan="5">${esc(g.chave)} <span>(${g.itens.length})</span></td><td class="n">${esc(brl(soma(g.itens)))}</td></tr>` : ""}
-      ${g.itens.map((l) => `<tr><td>${esc(fmtDataBR(l[f.campo]))}</td><td>${esc(l.fornecedor_cliente || "")}<div class="s">${esc(l.historico || "")}</div></td><td>${esc(porId[l.centro_custo_id]?.nome || "")}</td><td>${esc(l.tipo === "pagar" ? "Pagar" : "Receber")} · ${esc(nomeEmpresa(l.empresa))}</td><td>${esc({ quitada: "Quitada", vencida: "Vencida", aberta: "Em aberto" }[situacaoDe(l)])}</td><td class="n">${esc(brl(Number(l.valor)))}</td></tr>`).join("")}`).join("");
+      ${g.chave ? `<tr class="g"><td colspan="5">${esc(g.chave)} <span>(${g.itens.length})</span></td><td class="n">${esc(brlR(soma(g.itens)))}</td></tr>` : ""}
+      ${g.itens.map((l) => `<tr><td>${esc(fmtDataBR(l[f.campo]))}</td><td>${esc(l.fornecedor_cliente || "")}<div class="s">${esc(l.historico || "")}</div></td><td>${esc(porId[l.centro_custo_id]?.nome || "")}</td><td>${esc(l.tipo === "pagar" ? "Pagar" : "Receber")} · ${esc(nomeEmpresa(l.empresa))}</td><td>${esc({ quitada: "Quitada", vencida: "Vencida", aberta: "Em aberto" }[situacaoDe(l)])}</td><td class="n">${esc(brlR(Number(l.valor)))}</td></tr>`).join("")}`).join("");
     const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${esc(titulo)}</title><style>
       @page { size: A4 landscape; margin: 12mm; } body { font-family: Arial, sans-serif; font-size: 11px; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
       .topo { display:flex; justify-content:space-between; align-items:center; border-bottom: 3px solid #B8902E; padding-bottom: 6px; margin-bottom: 8px; } .topo img { height: 40px; }
@@ -7790,9 +7827,9 @@ function RelatoriosFinView({ session, setErro, centros }) {
     </style></head><body>
       <div class="topo"><img src="${LOGO_PROSIGN}" alt=""><div style="text-align:right"><h1>${esc(titulo)}</h1><div>Emitido em ${esc(fmtDataBR(hoje))}</div></div></div>
       <div class="f">${esc(descricaoFiltros)}</div>
-      <div class="cards">${f.tipo !== "receber" ? `<div>A pagar<b>${esc(brl(totPagar))}</b></div>` : ""}${f.tipo !== "pagar" ? `<div>A receber<b>${esc(brl(totReceber))}</b></div>` : ""}<div>Em aberto<b>${esc(brl(totAberto))}</b></div><div>Vencido<b>${esc(brl(totVencido))}</b></div><div>Quitado<b>${esc(brl(totQuitado))}</b></div><div>Lançamentos<b>${lista.length}</b></div></div>
+      <div class="cards">${f.tipo !== "receber" ? `<div>A pagar<b>${esc(brlR(totPagar))}</b></div>` : ""}${f.tipo !== "pagar" ? `<div>A receber<b>${esc(brlR(totReceber))}</b></div>` : ""}<div>Em aberto<b>${esc(brlR(totAberto))}</b></div><div>Vencido<b>${esc(brlR(totVencido))}</b></div><div>Quitado<b>${esc(brlR(totQuitado))}</b></div><div>Lançamentos<b>${lista.length}</b></div></div>
       <table><thead><tr><th>${esc(REL_CAMPOS[f.campo])}</th><th>Fornecedor / cliente</th><th>Conta</th><th>Tipo</th><th>Situação</th><th class="n">Valor</th></tr></thead>
-      <tbody>${corpo}</tbody><tfoot><tr><td colspan="5">Total (${lista.length})</td><td class="n">${esc(brl(soma(lista)))}</td></tr></tfoot></table>
+      <tbody>${corpo}</tbody><tfoot><tr><td colspan="5">Total (${lista.length})</td><td class="n">${esc(brlR(soma(lista)))}</td></tr></tfoot></table>
       <script>window.onload = function () { setTimeout(function () { window.print(); }, 300); };<\/script></body></html>`;
     const w = window.open("", "_blank");
     if (!w) { setErro("O navegador bloqueou a janela. Libere pop-ups para este site."); return; }
