@@ -9158,6 +9158,8 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
     const res = [];
     lista.filter((o) => o.status !== "cancelada").forEach((o) => {
       [["montagem_inicio", "montagem", o.equipe_montagem], ["evento_inicio", "evento", o.equipe_operacao], ["desmontagem_inicio", "desmontagem", o.equipe_desmontagem || []]].forEach(([k, tipo, eq]) => {
+        // evento só aparece quando há equipe de operação (serviço só de montagem fica com uma linha)
+        if (tipo === "evento" && !(o.equipe_operacao || []).length) return;
         if (o[k] && diaISO(o[k]) === d) res.push({ chave: `${o.id}-${k}`, os: o, hora: horaDe(o[k]), tipo, descricao: `${o.evento}${o.local ? ` — ${o.local}` : ""}`, equipe: eq || [], veiculo: tipo !== "evento" ? veiculosDaEtapa(o, tipo) : null, doOS: true });
       });
     });
