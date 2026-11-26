@@ -622,6 +622,7 @@ export default function App() {
       .then(([p, ua]) => {
         setPerfil((p && p[0]) || null);
         setAreasPermitidas((ua || []).map((a) => a.area));
+        _acessoAtual = { admin: !!(p && p[0]?.is_admin), areas: (ua || []).map((a) => a.area) };
       })
       .catch((e) => setErro(e.message))
       .finally(() => setCarregandoAcesso(false));
@@ -8051,16 +8052,37 @@ const SETORES_PROD = [
   { id: "marcenaria", label: "Marcenaria" },
   { id: "serralheria", label: "Serralheria (metalon)" },
   { id: "pintura", label: "Pintura" },
-  { id: "terceiro", label: "Terceirizado" },
+  { id: "terceiro", label: "Terceirizado (compra)" },
 ];
 const nomeSetor = (id) => SETORES_PROD.find((s) => s.id === id)?.label || id || "—";
 const STATUS_PROD = [
   { id: "aguardando_arte", label: "Aguardando arte", cor: "#8A6D1F", bg: "#FFF4D6" },
-  { id: "liberado", label: "Liberado", cor: "#1F4E8A", bg: "#E4EEFB" },
+  { id: "liberado", label: "Arte disponibilizada", cor: "#1F4E8A", bg: "#E4EEFB" },
   { id: "em_producao", label: "Em produção", cor: "#6B2FA0", bg: "#F1E8FA" },
   { id: "pronto", label: "Pronto", cor: OK, bg: "#E5F3EB" },
+  // terceirizado: não produz, só compra e leva
+  { id: "a_comprar", label: "A comprar", cor: "#A0522D", bg: "#FBEDE4" },
+  { id: "comprado", label: "Comprado / a caminho", cor: "#1F6F8A", bg: "#E3F2F6" },
 ];
 const statusProd = (id) => STATUS_PROD.find((s) => s.id === id) || STATUS_PROD[0];
+const FLUXO_PROD = ["aguardando_arte", "liberado", "em_producao", "pronto"];
+const FLUXO_COMPRA = ["a_comprar", "comprado", "pronto"];
+const fluxoDoSetor = (setor) => (setor === "terceiro" ? FLUXO_COMPRA : FLUXO_PROD);
+const statusDoSetor = (setor) => fluxoDoSetor(setor).map(statusProd);
+const proximoStatus = (setor, st) => { const f = fluxoDoSetor(setor); const i = f.indexOf(st); return i >= 0 && i < f.length - 1 ? f[i + 1] : null; };
+// rótulo do "pronto" muda para compra: o item já está na empresa
+const labelStatus = (setor, st) => (setor === "terceiro" && st === "pronto" ? "Recebido / separado" : statusProd(st).label);
+// Quem mexe em cada etapa:
+//  Aguardando arte / Arte disponibilizada → Comercial
+//  Em produção / Pronto                   → Produção (impressão)
+//  Terceirizado (compra)                  → livre para quem acessa a OS
+let _acessoAtual = { admin: false, areas: [] };
+const podeArea = (area) => _acessoAtual.admin || _acessoAtual.areas.includes(area);
+const AREA_DO_STATUS = { aguardando_arte: "comercial", liberado: "comercial", em_producao: "producao", pronto: "producao" };
+const podeMudarPara = (setor, st) => setor === "terceiro" || !AREA_DO_STATUS[st] || podeArea(AREA_DO_STATUS[st]);
+const quemFaz = (st) => (AREA_DO_STATUS[st] === "comercial" ? "Comercial" : "Produção");
+// ajusta o status quando troca o setor (produz ↔ compra)
+const statusAjustado = (setor, st) => { const f = fluxoDoSetor(setor); return f.includes(st) ? st : f[0]; };
 const STATUS_OS = [
   { id: "aberta", label: "Aberta" },
   { id: "separacao", label: "Em separação" },
@@ -8161,9 +8183,9 @@ async function enviarFotoProducao(file, pasta, session) {
   return path;
 }
 
-function BadgeProd({ status }) {
+function BadgeProd({ status, setor }) {
   const s = statusProd(status);
-  return <span style={{ fontSize: 11, fontWeight: 700, color: s.cor, background: s.bg, borderRadius: 999, padding: "2px 9px", whiteSpace: "nowrap" }}>{s.label}</span>;
+  return <span style={{ fontSize: 11, fontWeight: 700, color: s.cor, background: s.bg, borderRadius: 999, padding: "2px 9px", whiteSpace: "nowrap" }}>{labelStatus(setor, status)}</span>;
 }
 function BadgePrazo({ ts }) {
   const d = diasAte(ts);
@@ -8398,7 +8420,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
       const validos = itens.filter((x) => x.descricao.trim());
       const linha = (x, i) => ({
         os_id: id, ordem: i, qtd: numCampo(x.qtd) || 1, descricao: x.descricao.trim(), largura: numCampo(x.largura), altura: numCampo(x.altura),
-        setor: x.setor || null, status_producao: x.status_producao, ida: !!x.ida, volta: !!x.volta, volta_obs: x.volta_obs || null, obs: x.obs || null,
+        setor: x.setor || null, status_producao: statusAjustado(x.setor, x.status_producao), ida: !!x.ida, volta: !!x.volta, volta_obs: x.volta_obs || null, obs: x.obs || null,
       });
       for (let i = 0; i < validos.length; i++) {
         const x = validos[i];
@@ -8514,8 +8536,8 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
                 </td>
                 <td style={tdS}><input value={x.largura} onChange={(e) => setIt(x._k, "largura", e.target.value)} style={{ ...inputStyle, width: 70 }} placeholder="0,00" /></td>
                 <td style={tdS}><input value={x.altura} onChange={(e) => setIt(x._k, "altura", e.target.value)} style={{ ...inputStyle, width: 70 }} placeholder="0,00" />{m2Item({ ...x, largura: numCampo(x.largura), altura: numCampo(x.altura) }) > 0 && <div style={{ fontSize: 11, color: MUTED }}>{fmtM2(m2Item({ ...x, largura: numCampo(x.largura), altura: numCampo(x.altura) }))}</div>}</td>
-                <td style={tdS}><select value={x.setor} onChange={(e) => setIt(x._k, "setor", e.target.value)} style={{ ...selStyle, maxWidth: 160 }}><option value="">— não produz —</option>{SETORES_PROD.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select></td>
-                <td style={tdS}>{x.setor ? <select value={x.status_producao} onChange={(e) => setIt(x._k, "status_producao", e.target.value)} style={{ ...selStyle, maxWidth: 150 }}>{STATUS_PROD.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select> : <span style={{ color: MUTED, fontSize: 12 }}>—</span>}</td>
+                <td style={tdS}><select value={x.setor} onChange={(e) => { const st = e.target.value; setItens((xs) => xs.map((y) => (y._k === x._k ? { ...y, setor: st, status_producao: statusAjustado(st, y.status_producao) } : y))); }} style={{ ...selStyle, maxWidth: 160 }}><option value="">— não produz —</option>{SETORES_PROD.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select></td>
+                <td style={tdS}>{x.setor ? <select value={statusAjustado(x.setor, x.status_producao)} onChange={(e) => setIt(x._k, "status_producao", e.target.value)} style={{ ...selStyle, maxWidth: 150 }}>{statusDoSetor(x.setor).map((s) => { const ok = s.id === statusAjustado(x.setor, x.status_producao) || podeMudarPara(x.setor, s.id); return <option key={s.id} value={s.id} disabled={!ok}>{labelStatus(x.setor, s.id)}{ok ? "" : ` (só ${quemFaz(s.id)})`}</option>; })}</select> : <span style={{ color: MUTED, fontSize: 12 }}>—</span>}</td>
                 <td style={{ ...tdS, whiteSpace: "nowrap" }}>
                   {x.foto_path && <a href={fotoProdUrl(x.foto_path)} target="_blank" rel="noreferrer" title="Peça pronta"><img src={fotoProdUrl(x.foto_path)} alt="Peça pronta" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, marginRight: 4 }} /></a>}
                   {x.foto_instalado_path && <a href={fotoProdUrl(x.foto_instalado_path)} target="_blank" rel="noreferrer" title="Instalado"><img src={fotoProdUrl(x.foto_instalado_path)} alt="Instalado" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6, border: `2px solid ${OK}` }} /></a>}
@@ -8797,7 +8819,6 @@ function ProducaoView({ session, setErro }) {
   const hoje = diaISO(new Date());
   const prontosHoje = itens.filter((x) => x.status_producao === "pronto" && x.produzido_em && diaISO(x.produzido_em) === hoje);
   const m2Hoje = prontosHoje.reduce((s, x) => s + m2Item(x), 0);
-  const proximo = { aguardando_arte: "liberado", liberado: "em_producao", em_producao: "pronto" };
 
   function renderItem(x, dentroDoGrupo) {
     const m2 = m2Item(x);
@@ -8813,14 +8834,22 @@ function ProducaoView({ session, setErro }) {
                   <div style={{ fontWeight: 700, color: NAVY, fontSize: 15 }}>{Number(x.qtd) !== 1 ? `${String(x.qtd).replace(".", ",")} × ` : ""}{x.descricao}</div>
                   {(Number(x.largura) > 0 || x.obs) && <div style={{ fontSize: 12, color: TEXT }}>{Number(x.largura) > 0 && Number(x.altura) > 0 ? `${String(x.largura).replace(".", ",")} x ${String(x.altura).replace(".", ",")} m · ${fmtM2(m2)}` : ""}{x.obs ? ` · ${x.obs}` : ""}</div>}
                   {!dentroDoGrupo && <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{x.os?.orcamentos?.numero_or ? `PR ${x.os.orcamentos.numero_or} · ` : ""}{x.os?.evento} · {x.os?.cliente_nome || "—"} · {numOS(x.os?.numero)}</div>}
-                  {x.status_producao === "pronto" && x.produzido_por && <div style={{ fontSize: 11, color: OK, marginTop: 2 }}>✔ pronto por {x.produzido_por}{x.produzido_em ? ` em ${fmtDH(x.produzido_em)}` : ""}</div>}
+                  {x.status_producao === "pronto" && x.produzido_por && <div style={{ fontSize: 11, color: OK, marginTop: 2 }}>✔ {x.setor === "terceiro" ? "recebido" : "pronto"} por {x.produzido_por}{x.produzido_em ? ` em ${fmtDH(x.produzido_em)}` : ""}</div>}
                 </div>
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
-                  <BadgeProd status={x.status_producao} />
+                  <BadgeProd status={x.status_producao} setor={x.setor} />
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                    {proximo[x.status_producao] && <button onClick={() => marcar(x, proximo[x.status_producao])} style={{ ...btnPrimary, padding: "7px 12px" }}>→ {statusProd(proximo[x.status_producao]).label}</button>}
-                    <BotaoFoto enviando={enviando === x.id} onArquivo={(f) => foto(x, f)} rotulo={x.foto_path ? "📷 Trocar foto" : "📷 Foto pronta"} />
-                    {x.status_producao !== "aguardando_arte" && <select value="" onChange={(e) => e.target.value && marcar(x, e.target.value)} style={{ ...selStyle, fontSize: 12, padding: "5px 6px" }}><option value="">voltar para…</option>{STATUS_PROD.filter((s) => s.id !== x.status_producao).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select>}
+                    {(() => {
+                      const prox = proximoStatus(x.setor, x.status_producao);
+                      if (!prox) return null;
+                      if (!podeMudarPara(x.setor, prox)) return <span style={{ fontSize: 12, color: MUTED, alignSelf: "center" }}>aguarda o {quemFaz(prox)}: {labelStatus(x.setor, prox)}</span>;
+                      return <button onClick={() => marcar(x, prox)} style={{ ...btnPrimary, padding: "7px 12px" }}>→ {labelStatus(x.setor, prox)}</button>;
+                    })()}
+                    {podeMudarPara(x.setor, "pronto") && (x.setor === "terceiro" || x.status_producao !== "aguardando_arte") && <BotaoFoto enviando={enviando === x.id} onArquivo={(f) => foto(x, f)} rotulo={x.foto_path ? "📷 Trocar foto" : x.setor === "terceiro" ? "📷 Foto recebido" : "📷 Foto pronta"} />}
+                    {(() => {
+                      const opc = fluxoDoSetor(x.setor).filter((st) => st !== x.status_producao && st !== proximoStatus(x.setor, x.status_producao) && podeMudarPara(x.setor, st));
+                      return opc.length > 0 && x.status_producao !== fluxoDoSetor(x.setor)[0] ? <select value="" onChange={(e) => e.target.value && marcar(x, e.target.value)} style={{ ...selStyle, fontSize: 12, padding: "5px 6px" }}><option value="">mudar para…</option>{opc.map((st) => <option key={st} value={st}>{labelStatus(x.setor, st)}</option>)}</select> : null;
+                    })()}
                   </div>
                 </div>
               </div>
@@ -8847,6 +8876,8 @@ function ProducaoView({ session, setErro }) {
       aguardando: g.todos.filter((x) => x.status_producao === "aguardando_arte").length,
       liberados: g.todos.filter((x) => x.status_producao === "liberado").length,
       emProducao: g.todos.filter((x) => x.status_producao === "em_producao").length,
+      aComprar: g.todos.filter((x) => x.status_producao === "a_comprar").length,
+      comprados: g.todos.filter((x) => x.status_producao === "comprado").length,
       m2: g.todos.reduce((a, x) => a + m2Item(x), 0),
       setores: [...new Set(g.todos.map((x) => x.setor))],
     }))
@@ -8857,6 +8888,7 @@ function ProducaoView({ session, setErro }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginBottom: 14 }}>
         <Card style={{ padding: 12 }}><div style={{ fontSize: 12, color: MUTED }}>Pendentes</div><div style={{ fontSize: 22, fontWeight: 700, color: NAVY }}>{itens.filter((x) => x.status_producao !== "pronto").length}</div></Card>
         <Card style={{ padding: 12 }}><div style={{ fontSize: 12, color: MUTED }}>Aguardando arte</div><div style={{ fontSize: 22, fontWeight: 700, color: "#8A6D1F" }}>{itens.filter((x) => x.status_producao === "aguardando_arte").length}</div></Card>
+        <Card style={{ padding: 12 }}><div style={{ fontSize: 12, color: MUTED }}>Terceirizados a comprar</div><div style={{ fontSize: 22, fontWeight: 700, color: "#A0522D" }}>{itens.filter((x) => x.status_producao === "a_comprar").length}{itens.some((x) => x.status_producao === "comprado") ? <span style={{ fontSize: 13, color: MUTED }}> · {itens.filter((x) => x.status_producao === "comprado").length} a caminho</span> : null}</div></Card>
         <Card style={{ padding: 12 }}><div style={{ fontSize: 12, color: MUTED }}>Prontos hoje</div><div style={{ fontSize: 22, fontWeight: 700, color: OK }}>{prontosHoje.length}{m2Hoje ? <span style={{ fontSize: 13, color: MUTED }}> · {fmtM2(m2Hoje)}</span> : null}</div></Card>
       </div>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
@@ -8913,8 +8945,10 @@ function ProducaoView({ session, setErro }) {
                     <div style={{ height: 8, background: "#E6E9EF", borderRadius: 999, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: OK }} /></div>
                     <div style={{ display: "flex", gap: 8, fontSize: 11, marginTop: 5, flexWrap: "wrap" }}>
                       {g.aguardando > 0 && <span style={{ color: "#8A6D1F" }}>{g.aguardando} aguardando arte</span>}
-                      {g.liberados > 0 && <span style={{ color: NAVY }}>{g.liberados} liberado(s)</span>}
-                      {g.emProducao > 0 && <span style={{ color: "#1F6F8A" }}>{g.emProducao} em produção</span>}
+                      {g.liberados > 0 && <span style={{ color: NAVY }}>{g.liberados} com arte disponibilizada</span>}
+                      {g.emProducao > 0 && <span style={{ color: "#6B2FA0" }}>{g.emProducao} em produção</span>}
+                      {g.aComprar > 0 && <span style={{ color: "#A0522D" }}>{g.aComprar} a comprar</span>}
+                      {g.comprados > 0 && <span style={{ color: "#1F6F8A" }}>{g.comprados} a caminho</span>}
                     </div>
                   </div>
                 </button>
