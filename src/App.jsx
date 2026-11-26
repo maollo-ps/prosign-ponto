@@ -8276,7 +8276,7 @@ const osVazia = () => ({
   montagem_inicio: null, montagem_fim: null, evento_inicio: null, evento_fim: null, desmontagem_inicio: null, desmontagem_fim: null,
   equipe_separacao: [], equipe_montagem: [], equipe_operacao: [], equipe_desmontagem: [],
   padrao: PADRAO_OS.map((d) => ({ descricao: d, qtd: 1, ida: false, volta: false })),
-  veiculos: [veiculoVazio()],
+  veiculos: [],
   resp_separacao: "", resp_desmontagem: "", entrega_meio: "", observacao: "", relatorio_instalacao: "", status: "aberta",
 });
 const itemVazio = () => ({ _k: Math.random().toString(36).slice(2), id: null, qtd: 1, descricao: "", largura: "", altura: "", setor: "", status_producao: "aguardando_arte", ida: false, volta: false, volta_obs: "", obs: "", foto_path: null, foto_instalado_path: null });
@@ -8390,7 +8390,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
           const [o] = (await sbRequest(`ordens_servico?select=*,orcamentos(numero_or)&id=eq.${osId}`, session)) || [];
           const its = (await sbRequest(`os_itens?select=*&os_id=eq.${osId}&order=ordem.asc`, session)) || [];
           if (o) {
-            setOs({ ...osVazia(), ...o, veiculos: veiculosDaOS(o).length ? veiculosDaOS(o) : [veiculoVazio()], padrao: o.padrao || [] });
+            setOs({ ...osVazia(), ...o, veiculos: veiculosDaOS(o), padrao: o.padrao || [] });
             setPr(o.orcamentos?.numero_or || "");
           }
           setItens(its.map((x) => ({ ...x, _k: x.id, setor: x.setor || "", largura: x.largura ?? "", altura: x.altura ?? "", obs: x.obs || "", volta_obs: x.volta_obs || "" })));
@@ -8621,8 +8621,8 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
       <datalist id="os-veiculos">{veiculosConhecidos.map((v) => <option key={v} value={v} />)}</datalist>
       <datalist id="os-motoristas">{nomesEquipe.map((n) => <option key={n} value={n} />)}</datalist>
       <datalist id="os-fornecedores">{fornecedores.map((p) => <option key={p.id} value={p.nome}>{p.documento || ""}</option>)}</datalist>
-      <div style={{ display: "grid", gap: 10 }}>
-        {(os.veiculos || []).map((v, i) => {
+      {(() => {
+        const cartao = (v, i) => {
           const setV = (k, val) => set("veiculos", os.veiculos.map((x, j) => (j === i ? { ...x, [k]: val } : x)));
           const setVs = (obj) => set("veiculos", os.veiculos.map((x, j) => (j === i ? { ...x, ...obj } : x)));
           const rod = numCampo(v.km_ida) > 0 && numCampo(v.km_volta) > numCampo(v.km_ida) ? numCampo(v.km_volta) - numCampo(v.km_ida) : null;
@@ -8688,11 +8688,29 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
               <div style={{ marginTop: 10 }}><Field label="Observação"><input value={v.obs} onChange={(e) => setV("obs", e.target.value)} style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }} placeholder={v.terceiro ? "Ex.: leva os palcos, volta só na desmontagem" : ""} /></Field></div>
             </div>
           );
-        })}
-      </div>
-      <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
-        <button type="button" onClick={() => set("veiculos", [...(os.veiculos || []), veiculoVazio(false)])} style={btnGhostSmall}><Plus size={13} /> Veículo próprio</button>
-        <button type="button" onClick={() => set("veiculos", [...(os.veiculos || []), veiculoVazio(true)])} style={{ ...btnGhostSmall, borderColor: "#5B4B8A", color: "#5B4B8A" }}><Plus size={13} /> Veículo de terceiro</button>
+        };
+        const novo = (terceiro, etapa) => set("veiculos", [...(os.veiculos || []).filter((x) => (x.veiculo || "").trim() || (x.fornecedor || "").trim() || (x.motorista || "").trim() || x.etapa !== "ambas"), { ...veiculoVazio(terceiro), etapa }]);
+        const SECOES = [["montagem", "🚚 Veículos da MONTAGEM", "#152A4A"], ["desmontagem", "🚚 Veículos da DESMONTAGEM", "#8A3B2E"], ["ambas", "🚚 Mesmo veículo na montagem e na desmontagem", "#2F6F4F"]];
+        return SECOES.map(([et, rot, cor]) => {
+          const doGrupo = (os.veiculos || []).map((v, i) => [v, i]).filter(([v]) => (v.etapa || "ambas") === et);
+          if (et === "ambas" && !doGrupo.length) return null;
+          return (
+            <div key={et} style={{ border: `1px solid ${BORDER}`, borderTop: `3px solid ${cor}`, borderRadius: 8, padding: 10, marginBottom: 10, background: "#fff" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: doGrupo.length ? 8 : 0 }}>
+                <b style={{ color: cor, fontSize: 13 }}>{rot}</b>
+                {!doGrupo.length && <span style={{ fontSize: 12, color: MUTED }}>nenhum veículo</span>}
+                <span style={{ flex: 1 }} />
+                {et !== "ambas" && <>
+                  <button type="button" onClick={() => novo(false, et)} style={btnGhostSmall}><Plus size={13} /> Próprio</button>
+                  <button type="button" onClick={() => novo(true, et)} style={{ ...btnGhostSmall, borderColor: "#5B4B8A", color: "#5B4B8A" }}><Plus size={13} /> Terceiro</button>
+                </>}
+              </div>
+              <div style={{ display: "grid", gap: 10 }}>{doGrupo.map(([v, i]) => cartao(v, i))}</div>
+            </div>
+          );
+        });
+      })()}
+      <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap", alignItems: "center" }}>
         {podeValor && (() => { const tot = (os.veiculos || []).reduce((a, v) => a + custoVeiculo(v, numCampo), 0); return tot > 0 ? <span style={{ fontSize: 12, color: MUTED }}>Custo com aluguel, frete e freelas: <b>{brl(tot)}</b></span> : null; })()}
       </div>
 
