@@ -9226,15 +9226,16 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
       const itens = itensDoDia(d);
       const dia = dias[d] || {};
       const folga = dia.folga || [], empresa = dia.empresa || [];
+      const anots = anotacoesDoDia(d);
+      const blocoAnot = anots.length ? `<table class="tanot"><thead><tr><th colspan="5" class="tit">ANOTAÇÕES DO DIA (${anots.length})</th></tr><tr><th style="width:80px">Horário</th><th style="width:120px">Tipo</th><th style="width:22%">Funcionário</th><th>Anotação</th><th style="width:90px">Anotado por</th></tr></thead><tbody>${anots.map((a) => { const tp = tipoAnotacao(a.tipo); return `<tr><td class="h1">${e(faixaHora(a) || "—")}</td><td><b style="color:${tp.cor}">${e(tp.label)}</b></td><td><b>${e(a.pessoa || "")}</b></td><td>${a.texto && a.texto !== tp.label ? e(a.texto) : ""}</td><td class="s">${e(a.criado_por_nome || "")}</td></tr>`; }).join("")}</tbody></table>` : "";
       const linhas = itens.length ? itens.map((i) => {
         const tp = tipoTarefa(i.tipo);
         const os = i.os ? `${numOS(i.os.numero)}${i.os.orcamentos?.numero_or ? `<div class="s">PR ${e(i.os.orcamentos.numero_or)}</div>` : ""}` : "";
         const eq = (i.equipe || []).map((n) => folga.includes(n) ? `<b style="color:#B00">${e(n)} (folga!)</b>` : e(n)).join(" / ");
         return `<tr><td class="c"><span class="cx">${i.feito ? "✔" : ""}</span></td><td class="h1">${e(i.hora || "—")}</td><td><span class="tp" style="border-color:${tp.cor};color:${tp.cor}">${e(tp.label)}</span></td><td><b>${e(i.descricao)}</b>${i.tarefa?.obs ? `<div class="s">${e(i.tarefa.obs)}</div>` : ""}</td><td>${os}</td><td>${eq}${i.freelas > 0 ? ` + ${e(i.freelas)} freela(s)` : ""}</td><td>${e(i.veiculo || "")}</td></tr>`;
-      }).join("") : `<tr><td colspan="7" class="vazio">Nada agendado.</td></tr>`;
+      }).join("") : `<tr><td colspan="7" class="vazio">Nenhum compromisso de OS ou tarefa.</td></tr>`;
       return `<div class="dia"><div class="cab"><span>${e(nomeDiaLongo(d))}</span>${folga.length ? `<span class="fx">Folga: <b>${e(folga.join(", "))}</b></span>` : ""}${empresa.length ? `<span class="fx">Fica na empresa: <b>${e(empresa.join(", "))}</b></span>` : ""}</div>
-        ${anotacoesDoDia(d).length ? `<div class="anot">${anotacoesDoDia(d).map((a) => { const tp = tipoAnotacao(a.tipo); return `<div><b style="color:${tp.cor}">${e(tp.label)}</b>${faixaHora(a) ? ` <span class="h1">${e(faixaHora(a))}</span>` : ""}${a.pessoa ? ` · <b>${e(a.pessoa)}</b>` : ""}${a.texto && a.texto !== tp.label ? ` · ${e(a.texto)}` : ""}</div>`; }).join("")}</div>` : ""}
-        <table><thead><tr><th class="c">OK</th><th style="width:44px">Hora</th><th style="width:88px">Tipo</th><th>O que fazer</th><th style="width:70px">OS</th><th style="width:22%">Equipe</th><th style="width:15%">Veículo</th></tr></thead><tbody>${linhas}</tbody></table></div>`;
+        <table><thead><tr><th class="c">OK</th><th style="width:44px">Hora</th><th style="width:88px">Tipo</th><th>O que fazer</th><th style="width:70px">OS</th><th style="width:22%">Equipe</th><th style="width:15%">Veículo</th></tr></thead><tbody>${linhas}</tbody></table>${blocoAnot}</div>`;
     }).join("");
     const periodo = nDias === 1 ? nomeDiaLongo(inicio) : `${fmtDataBR(inicio)} a ${fmtDataBR(fim)}`;
     const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${e(nomeModo)} · ${e(periodo)}</title><style>
@@ -9250,7 +9251,7 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
       .tp { display: inline-block; border: 1px solid; border-radius: 3px; padding: 0 4px; font-size: 9px; font-weight: 700; text-transform: uppercase; }
       .s { color: #555; font-size: 10px; } .vazio { color: #888; font-style: italic; }
       .rod { margin-top: 12px; color: #777; font-size: 9px; }
-      .anot { border: 1px solid #999; border-bottom: none; background: #FBF7EA; padding: 4px 6px; font-size: 10px; display: grid; gap: 2px; }
+      .tanot { margin-top: 4px; } .tanot th { background: #FBF3DC; } .tanot th.tit { background: #F3E3B5; color: #5A4300; letter-spacing: 0.5px; }
     </style></head><body>
       <div class="topo"><img src="${LOGO_PROSIGN}" alt="Prosign"><div><h1>${e(nomeModo.toUpperCase())}</h1><div>${e(periodo)}</div></div></div>
       ${blocos || `<p class="vazio">Nada agendado no período.</p>`}
