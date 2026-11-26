@@ -8136,7 +8136,7 @@ const COMBUSTIVEL = ["Vazio", "1/4", "1/2", "3/4", "Cheio"];
 //  próprio  → motorista da equipe ou freela
 //  terceiro → "aluguel" (carro alugado, motorista nosso/freela) ou "frete" (fornecedor traz carro e motorista)
 const veiculoVazio = (terceiro = false) => ({
-  _k: Math.random().toString(36).slice(2), veiculo: "", terceiro, modalidade: terceiro ? "aluguel" : null,
+  _k: Math.random().toString(36).slice(2), veiculo: "", terceiro, modalidade: terceiro ? "aluguel" : null, etapa: "ambas",
   fornecedor: "", fornecedor_id: null, valor: "",
   motorista_origem: "equipe", motorista: "", motorista_pessoa_id: null, valor_motorista: "",
   km_ida: "", km_volta: "", data_abastecimento: "", combustivel_saida: null, combustivel_volta: null, obs: "",
@@ -8151,17 +8151,24 @@ function veiculosDaOS(o) {
     if (r.terceiro && !r.modalidade) r.modalidade = "frete"; // OS antigas: terceiro = frete
     if (r.terceiro && r.modalidade === "frete") r.motorista_origem = "fornecedor";
     if (!r.motorista_origem) r.motorista_origem = "equipe";
+    if (!r.etapa) r.etapa = "ambas";
     ["km_ida", "km_volta", "valor", "valor_motorista"].forEach((k) => { r[k] = r[k] ?? ""; });
     r.fornecedor = r.fornecedor || ""; r.motorista = r.motorista || ""; r.obs = r.obs || ""; r.data_abastecimento = r.data_abastecimento || "";
     return r;
   });
 }
+const ETAPAS_VEICULO = [["montagem", "Montagem"], ["desmontagem", "Desmontagem"], ["ambas", "As duas"]];
+const veiculosDaEtapa = (o, etapa) => (Array.isArray(o?.veiculos) && o.veiculos.length
+  ? o.veiculos.filter((v) => !v.etapa || v.etapa === "ambas" || v.etapa === etapa).map(nomeVeiculoCurto).join(" + ")
+  : o?.veiculo || "");
+const nomeVeiculoCurto = (v) => `${v.veiculo || "veículo"}${v.terceiro ? (v.modalidade === "aluguel" ? " (alugado)" : ` (frete${v.fornecedor ? `: ${v.fornecedor}` : ""})`) : ""}${v.motorista ? ` · mot. ${v.motorista}${v.motorista_origem === "freela" ? " (freela)" : ""}` : ""}`;
 const usaKm = (v) => !v.terceiro || v.modalidade === "aluguel";
 const custoVeiculo = (v, num) => (v.terceiro ? num(v.valor) || 0 : 0) + (v.motorista_origem === "freela" ? num(v.valor_motorista) || 0 : 0);
 const nomeVeiculo = (v) => {
   const tipo = !v.terceiro ? "" : v.modalidade === "aluguel" ? ` (alugado${v.fornecedor ? `: ${v.fornecedor}` : ""})` : ` (frete${v.fornecedor ? `: ${v.fornecedor}` : ""})`;
   const mot = v.motorista ? ` · mot. ${v.motorista}${v.motorista_origem === "freela" ? " (freela)" : ""}` : "";
-  return `${v.veiculo || "veículo"}${tipo}${mot}`;
+  const et = v.etapa === "montagem" ? " [montagem]" : v.etapa === "desmontagem" ? " [desmontagem]" : "";
+  return `${v.veiculo || "veículo"}${tipo}${mot}${et}`;
 };
 const numOS = (n) => `OS ${String(n || 0).padStart(4, "0")}`;
 const fotoProdUrl = (path) => (path ? `${SUPABASE_URL}/storage/v1/object/public/producao/${path}` : null);
@@ -8267,7 +8274,7 @@ function CampoEquipe({ label, valor, onChange, sugestoes, listaId }) {
 const osVazia = () => ({
   id: null, orcamento_id: null, empresa: "prosign", cliente_id: null, cliente_nome: "", contato: "", telefone: "", evento: "", local: "", endereco: "", ponto_referencia: "",
   montagem_inicio: null, montagem_fim: null, evento_inicio: null, evento_fim: null, desmontagem_inicio: null, desmontagem_fim: null,
-  equipe_separacao: [], equipe_montagem: [], equipe_operacao: [],
+  equipe_separacao: [], equipe_montagem: [], equipe_operacao: [], equipe_desmontagem: [],
   padrao: PADRAO_OS.map((d) => ({ descricao: d, qtd: 1, ida: false, volta: false })),
   veiculos: [veiculoVazio()],
   resp_separacao: "", resp_desmontagem: "", entrega_meio: "", observacao: "", relatorio_instalacao: "", status: "aberta",
@@ -8312,6 +8319,7 @@ function imprimirOS(os, itens, pr) {
     <tr><td class="l" style="width:16%">SEPARAÇÃO:</td><td>${e((os.equipe_separacao || []).join(", "))}</td></tr>
     <tr><td class="l">MONTAGEM:</td><td>${e((os.equipe_montagem || []).join(", "))}</td></tr>
     <tr><td class="l">OPERAÇÃO:</td><td>${e((os.equipe_operacao || []).join(", "))}</td></tr>
+    <tr><td class="l">DESMONTAGEM:</td><td>${e((os.equipe_desmontagem || []).join(", "))}</td></tr>
   </table>
   <table>
     <tr><td class="h" colspan="4">EQUIPAMENTOS / COMUNICAÇÃO</td></tr>
@@ -8334,7 +8342,7 @@ function imprimirOS(os, itens, pr) {
     <tr><td class="h" colspan="4">VEÍCULOS E ABASTECIMENTO</td></tr>
     ${(veics.length ? veics : [{}]).map((v) => {
       const frete = v.terceiro && v.modalidade !== "aluguel";
-      const tipo = !v.terceiro ? "Próprio" : frete ? "Frete" : "Alugado";
+      const tipo = (!v.terceiro ? "Próprio" : frete ? "Frete" : "Alugado") + (v.etapa === "montagem" ? " (montagem)" : v.etapa === "desmontagem" ? " (desmontagem)" : "");
       const mot = frete ? `${e(v.motorista || "do fornecedor")}` : `${e(v.motorista || "______")}${v.motorista_origem === "freela" ? " (freela)" : ""}`;
       const l1 = `<tr><td><b>${tipo}:</b> ${e(v.veiculo || "____________")}${v.terceiro && v.fornecedor ? ` · ${e(v.fornecedor)}` : ""}</td><td colspan="2"><b>Motorista:</b> ${mot}</td><td>${e(v.obs || "")}</td></tr>`;
       if (frete) return l1;
@@ -8420,7 +8428,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
         const frete = v.terceiro && v.modalidade === "frete";
         const origem = frete ? "fornecedor" : v.motorista_origem === "freela" ? "freela" : "equipe";
         return {
-          veiculo: (v.veiculo || "").trim(), terceiro: !!v.terceiro, modalidade: v.terceiro ? (v.modalidade || "aluguel") : null,
+          veiculo: (v.veiculo || "").trim(), terceiro: !!v.terceiro, modalidade: v.terceiro ? (v.modalidade || "aluguel") : null, etapa: v.etapa || "ambas",
           fornecedor: v.terceiro ? (v.fornecedor || "").trim() || null : null, fornecedor_id: v.terceiro ? v.fornecedor_id || null : null,
           valor: v.terceiro ? numCampo(v.valor) : null,
           motorista_origem: origem, motorista: (v.motorista || "").trim() || null,
@@ -8438,7 +8446,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
         evento: os.evento.trim(), local: os.local || null, endereco: os.endereco || null, ponto_referencia: os.ponto_referencia || null,
         montagem_inicio: os.montagem_inicio, montagem_fim: os.montagem_fim, evento_inicio: os.evento_inicio, evento_fim: os.evento_fim,
         desmontagem_inicio: os.desmontagem_inicio, desmontagem_fim: os.desmontagem_fim,
-        equipe_separacao: os.equipe_separacao, equipe_montagem: os.equipe_montagem, equipe_operacao: os.equipe_operacao,
+        equipe_separacao: os.equipe_separacao, equipe_montagem: os.equipe_montagem, equipe_operacao: os.equipe_operacao, equipe_desmontagem: os.equipe_desmontagem || [],
         padrao: (os.padrao || []).filter((p) => (p.descricao || "").trim()),
         veiculos: veiculosParaSalvar,
         // resumo nos campos antigos (agenda, relatórios e OS antigas)
@@ -8553,6 +8561,12 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
         <CampoEquipe label="Separação" valor={os.equipe_separacao} onChange={(v) => set("equipe_separacao", v)} sugestoes={nomesEquipe} listaId="eq-sep" />
         <CampoEquipe label="Montagem" valor={os.equipe_montagem} onChange={(v) => set("equipe_montagem", v)} sugestoes={nomesEquipe} listaId="eq-mon" />
         <CampoEquipe label="Operação" valor={os.equipe_operacao} onChange={(v) => set("equipe_operacao", v)} sugestoes={nomesEquipe} listaId="eq-op" />
+        <div>
+          <CampoEquipe label="Desmontagem" valor={os.equipe_desmontagem || []} onChange={(v) => set("equipe_desmontagem", v)} sugestoes={nomesEquipe} listaId="eq-desm" />
+          {(os.equipe_montagem || []).length > 0 && !(os.equipe_desmontagem || []).length && (
+            <button type="button" onClick={() => set("equipe_desmontagem", [...os.equipe_montagem])} style={{ ...btnGhostSmall, fontSize: 11, marginTop: 4 }}>copiar a equipe da montagem</button>
+          )}
+        </div>
       </div>
 
       {titulo(`Equipamentos / comunicação${totalM2 ? ` · ${fmtM2(totalM2)}` : ""}`)}
@@ -8627,6 +8641,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
                 <b style={{ color: cor }}>Veículo {i + 1}</b>
                 {grupo([[false, "Próprio"], [true, "Terceiro"]], v.terceiro, (t) => setVs({ terceiro: t, modalidade: t ? (v.modalidade || "aluguel") : null, motorista_origem: t && v.modalidade === "frete" ? "fornecedor" : (v.motorista_origem === "fornecedor" ? "equipe" : v.motorista_origem) }), cor)}
+                {grupo(ETAPAS_VEICULO, v.etapa || "ambas", (et) => setV("etapa", et), "#2F6F4F")}
                 {v.terceiro && grupo([["aluguel", "Carro alugado"], ["frete", "Frete com motorista"]], v.modalidade, (m) => setVs({ modalidade: m, motorista_origem: m === "frete" ? "fornecedor" : (v.motorista_origem === "fornecedor" ? "equipe" : v.motorista_origem) }), "#5B4B8A")}
                 <span style={{ flex: 1 }} />
                 {rod && <span style={{ fontSize: 12, color: MUTED }}>Rodados: <b>{rod} km</b></span>}
@@ -9142,8 +9157,8 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
   function itensDoDia(d) {
     const res = [];
     lista.filter((o) => o.status !== "cancelada").forEach((o) => {
-      [["montagem_inicio", "montagem", o.equipe_montagem], ["evento_inicio", "evento", o.equipe_operacao], ["desmontagem_inicio", "desmontagem", o.equipe_montagem]].forEach(([k, tipo, eq]) => {
-        if (o[k] && diaISO(o[k]) === d) res.push({ chave: `${o.id}-${k}`, os: o, hora: horaDe(o[k]), tipo, descricao: `${o.evento}${o.local ? ` — ${o.local}` : ""}`, equipe: eq || [], veiculo: tipo !== "evento" ? o.veiculo : null, doOS: true });
+      [["montagem_inicio", "montagem", o.equipe_montagem], ["evento_inicio", "evento", o.equipe_operacao], ["desmontagem_inicio", "desmontagem", o.equipe_desmontagem || []]].forEach(([k, tipo, eq]) => {
+        if (o[k] && diaISO(o[k]) === d) res.push({ chave: `${o.id}-${k}`, os: o, hora: horaDe(o[k]), tipo, descricao: `${o.evento}${o.local ? ` — ${o.local}` : ""}`, equipe: eq || [], veiculo: tipo !== "evento" ? veiculosDaEtapa(o, tipo) : null, doOS: true });
       });
     });
     tarefas.filter((t) => t.data === d).forEach((t) => res.push({ chave: t.id, tarefa: t, hora: t.hora ? t.hora.slice(0, 5) : "", tipo: t.tipo, descricao: t.descricao, equipe: t.equipe || [], freelas: t.freelas, veiculo: t.veiculo, feito: t.feito, os: lista.find((o) => o.id === t.os_id) }));
