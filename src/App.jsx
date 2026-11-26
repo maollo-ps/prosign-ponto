@@ -3287,7 +3287,7 @@ function LinhaPct({ rotulo, valor, setValor, valorR, verde, onEdit }) {
 // Gera o PDF da composição numa janela de impressão (o navegador salva como PDF).
 // modo "cliente": só itens + valor final (sem custos, margem, impostos ou fornecedores).
 // modo "interno": layout da planilha, com custos e margem.
-function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, nomeCentro = () => "" }) {
+function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, nomeCentro = () => "", descontoFinal = 0 }) {
   const esc = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const num = (v, casas = 2) => numBR(v).toLocaleString("pt-BR", { maximumFractionDigits: casas });
   const dataBR = (d) => (d ? `${d.slice(8, 10)}/${d.slice(5, 7)}/${d.slice(0, 4)}` : "-");
@@ -3360,6 +3360,7 @@ function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, 
     <table class="resumo"><tbody>
       ${linhaR("PREÇO DE VENDA", brlR(calc.precoVenda), true)}
       ${linhaR("Desconto / Acréscimo", brlR(numBR(ajuste)))}
+      ${descontoFinal > 0 ? linhaR("Desconto final ao cliente", "− " + brlR(descontoFinal)) : ""}
       ${linhaR("PREÇO DE VENDA FINAL", brlR(calc.precoFinal), true)}
       ${linhaR("% LUCRO TOTAL", `${(calc.lucroPct * 100).toFixed(2).replace(".", ",")}%`, true)}
     </tbody></table>`;
@@ -3536,6 +3537,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   // orçamento para o cliente: "texto" (um item só, valor total) ou "itens" (itens com valor, abatidos do total)
   const [clienteModo, setClienteModo] = useState("texto");
   const [mostrarDesc, setMostrarDesc] = useState(false); // mostrar o desconto concedido no orçamento do cliente
+  const [descontoFinal, setDescontoFinal] = useState(""); // desconto dado ao cliente depois de tudo fechado (separado do ajuste/arredondamento)
   const [itemUnico, setItemUnico] = useState({ titulo: "", descricao: "" });
   const [itensCli, setItensCli] = useState([]); // [{ id, titulo, descricao, qtd, diarias, unitario, itemId, unidade }]
   const [obsCliente, setObsCliente] = useState("");
@@ -3589,6 +3591,8 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
           const pct = (f) => String(Math.round(Number(f || 0) * 10000) / 100).replace(".", ",");
           setBv(pct(row.bv_pct)); setSimples(pct(row.simples_pct)); setComissao(pct(row.comissao_pct)); setMargem(pct(row.margem_pct));
           setAjuste(String(Number(row.ajuste || 0)).replace(".", ","));
+          setDescontoFinal(Number(row.desconto_final) ? String(Number(row.desconto_final)).replace(".", ",") : "");
+          setMostrarDesc(!!row.mostrar_desconto);
         }
         setItens((its || []).map(itemFromRow));
       })
@@ -3597,7 +3601,10 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   }, [orcamentoId]); // eslint-disable-line
 
   const params = { bv: numBR(bv) / 100, simples: numBR(simples) / 100, comissao: numBR(comissao) / 100, margem: numBR(margem) / 100 };
-  const calc = useMemo(() => calcularComposicao(itens, params, numBR(ajuste)), [itens, bv, simples, comissao, margem, ajuste]); // eslint-disable-line
+  const descFinalR = (() => { const v = numDigitado(descontoFinal); return isNaN(v) ? 0 : Math.max(0, Math.round(v * 100) / 100); })();
+  // preço antes do desconto final (o que já estava fechado) e preço final já com o desconto
+  const calcSemDesc = useMemo(() => calcularComposicao(itens, params, numBR(ajuste)), [itens, bv, simples, comissao, margem, ajuste]); // eslint-disable-line
+  const calc = useMemo(() => calcularComposicao(itens, params, numBR(ajuste) - descFinalR), [itens, bv, simples, comissao, margem, ajuste, descFinalR]); // eslint-disable-line
 
   // ---- centros de resultado: blocos da composição e agrupador de valores ----
   const nCR = (t) => String(t ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toUpperCase();
@@ -3680,7 +3687,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         body: {
           numero_or: numeroOr || null,
           bv_pct: params.bv, simples_pct: params.simples, comissao_pct: params.comissao, margem_pct: params.margem,
-          ajuste: numBR(ajuste),
+          ajuste: numBR(ajuste), desconto_final: descFinalR, mostrar_desconto: !!mostrarDesc,
           ...(usarComposicao ? { tem_composicao: true, valor: valorComposicao } : {}),
         },
       });
@@ -3742,10 +3749,11 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
   }
 
   function abrirPdf(modo) {
-    const ok = gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, nomeCentro });
+    const ok = gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, nomeCentro, descontoFinal: descFinalR });
     if (!ok) setErro("O navegador bloqueou a janela do PDF. Libere pop-ups para este site e tente de novo.");
   }
-  const descontoR = Math.max(0, -numBR(ajuste)); // desconto concedido (ajuste negativo)
+  // desconto mostrado ao cliente: o "desconto final"; sem ele, vale o ajuste negativo (como antes)
+  const descontoR = descFinalR > 0 ? descFinalR : Math.max(0, -numBR(ajuste));
   const usaDesc = mostrarDesc && descontoR > 0;
   const baseCliente = usaDesc ? calc.precoFinal + descontoR : calc.precoFinal; // com desconto: os itens somam o valor cheio
   const totalCentavos = Math.round(baseCliente * 100);
@@ -3957,6 +3965,19 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
                 <input style={{ ...CELULA_DIGITAVEL, background: "#FCF305", textAlign: "right", fontSize: 15 }} inputMode="decimal" value={ajuste} onChange={(e) => { setSalvo(false); setAjuste(e.target.value); }} />
               </td>
             </tr>
+            {descFinalR > 0 && (
+              <tr>
+                <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 600, color: MUTED }}>Valor antes do desconto final</td>
+                <td style={{ ...CELULA_CALCULADA, width: 220, fontSize: 15, color: MUTED }}>{brl(calcSemDesc.precoFinal)}</td>
+              </tr>
+            )}
+            <tr>
+              <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700, color: DANGER }}>Desconto final ao cliente (R$) −<div style={{ fontSize: 11, fontWeight: 400, color: MUTED }}>depois de tudo fechado</div></td>
+              <td style={{ padding: 3, width: 220 }}>
+                <input style={{ ...CELULA_DIGITAVEL, background: "#FFE3E3", textAlign: "right", fontSize: 15 }} inputMode="decimal" placeholder="0,00" value={descontoFinal} onChange={(e) => { setSalvo(false); setDescontoFinal(e.target.value.replace("-", "")); }} />
+                {descFinalR > 0 && calcSemDesc.precoFinal > 0 && <div style={{ fontSize: 11, color: MUTED, textAlign: "right", padding: "2px 6px" }}>{((descFinalR / calcSemDesc.precoFinal) * 100).toFixed(2).replace(".", ",")}% de desconto</div>}
+              </td>
+            </tr>
             <tr>
               <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 700 }}>PREÇO DE VENDA FINAL</td>
               <td style={{ ...CELULA_CALCULADA, width: 220, fontSize: 22, fontWeight: 700 }}>{brl(calc.precoFinal)}</td>
@@ -3993,7 +4014,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
         {descontoR > 0 && (
           <div style={{ padding: "0 12px 10px", fontSize: 13 }}>
             <label style={{ display: "inline-flex", gap: 6, alignItems: "center", cursor: "pointer" }}>
-              <input type="checkbox" checked={mostrarDesc} onChange={(e) => setMostrarDesc(e.target.checked)} />
+              <input type="checkbox" checked={mostrarDesc} onChange={(e) => { setSalvo(false); setMostrarDesc(e.target.checked); }} />
               <b>Mostrar o desconto concedido no orçamento do cliente</b>
               <span style={{ color: MUTED }}>({brl(descontoR)} — os itens somam {brl(calc.precoFinal + descontoR)} e o desconto aparece abatido até o valor final {brl(calc.precoFinal)})</span>
             </label>
