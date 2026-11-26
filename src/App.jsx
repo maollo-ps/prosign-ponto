@@ -3359,7 +3359,7 @@ function gerarPdfComposicao({ orc, itens, calc, params, ajuste, numeroOr, modo, 
     <div class="faixa" style="background:#ED1C24">VALOR FINAL</div>
     <table class="resumo"><tbody>
       ${linhaR("PREÇO DE VENDA", brlR(calc.precoVenda), true)}
-      ${linhaR("Desconto / Acréscimo", brlR(numBR(ajuste)))}
+      ${linhaR("Arredondamento", brlR(numBR(ajuste)))}
       ${descontoFinal > 0 ? linhaR("Desconto final ao cliente", "− " + brlR(descontoFinal)) : ""}
       ${linhaR("PREÇO DE VENDA FINAL", brlR(calc.precoFinal), true)}
       ${linhaR("% LUCRO TOTAL", `${(calc.lucroPct * 100).toFixed(2).replace(".", ",")}%`, true)}
@@ -3753,7 +3753,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
     if (!ok) setErro("O navegador bloqueou a janela do PDF. Libere pop-ups para este site e tente de novo.");
   }
   // desconto mostrado ao cliente: o "desconto final"; sem ele, vale o ajuste negativo (como antes)
-  const descontoR = descFinalR > 0 ? descFinalR : Math.max(0, -numBR(ajuste));
+  const descontoR = descFinalR; // só o "desconto final" aparece como desconto ao cliente (arredondamento não)
   const usaDesc = mostrarDesc && descontoR > 0;
   const baseCliente = usaDesc ? calc.precoFinal + descontoR : calc.precoFinal; // com desconto: os itens somam o valor cheio
   const totalCentavos = Math.round(baseCliente * 100);
@@ -3960,7 +3960,7 @@ function ComposicaoOrcamentoView({ orcamentoId, session, setErro, onVoltar }) {
               <td style={{ ...CELULA_CALCULADA, width: 220, fontSize: 20, fontWeight: 700 }}>{brl(calc.precoVenda)}</td>
             </tr>
             <tr>
-              <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 600 }}>Desconto / Acréscimo (R$)</td>
+              <td style={{ padding: "8px 12px", textAlign: "right", fontWeight: 600 }}>Arredondamento (R$)<div style={{ fontSize: 11, fontWeight: 400, color: MUTED }}>ajuste de centavos para fechar o valor (+ ou −)</div></td>
               <td style={{ padding: 3, width: 220 }}>
                 <input style={{ ...CELULA_DIGITAVEL, background: "#FCF305", textAlign: "right", fontSize: 15 }} inputMode="decimal" value={ajuste} onChange={(e) => { setSalvo(false); setAjuste(e.target.value); }} />
               </td>
