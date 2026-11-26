@@ -8752,6 +8752,8 @@ function ProducaoView({ session, setErro }) {
   const [filtro, setFiltro] = useState("pendentes");
   const [busca, setBusca] = useState("");
   const [enviando, setEnviando] = useState(null);
+  const [agrupar, setAgrupar] = useState(true);
+  const [abertos, setAbertos] = useState({}); // { os_id: true }
   const meuNome = useMeuNome(session);
 
   async function carregar() {
@@ -8797,6 +8799,59 @@ function ProducaoView({ session, setErro }) {
   const m2Hoje = prontosHoje.reduce((s, x) => s + m2Item(x), 0);
   const proximo = { aguardando_arte: "liberado", liberado: "em_producao", em_producao: "pronto" };
 
+  function renderItem(x, dentroDoGrupo) {
+    const m2 = m2Item(x);
+    return (
+            <Card key={x.id} style={{ padding: 14, ...(dentroDoGrupo ? { boxShadow: "none" } : {}), borderLeft: `5px solid ${statusProd(x.status_producao).cor}` }}>
+              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
+                {x.foto_path && <a href={fotoProdUrl(x.foto_path)} target="_blank" rel="noreferrer"><img src={fotoProdUrl(x.foto_path)} alt="Peça pronta" style={{ width: 88, height: 88, objectFit: "cover", borderRadius: 8 }} /></a>}
+                <div style={{ flex: 1, minWidth: 220 }}>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 4 }}>
+                    {!dentroDoGrupo && <BadgePrazo ts={x.os?.montagem_inicio} />}
+                    <span style={{ fontSize: 11, color: dentroDoGrupo ? NAVY : MUTED, fontWeight: dentroDoGrupo ? 700 : 400 }}>{nomeSetor(x.setor)}</span>
+                  </div>
+                  <div style={{ fontWeight: 700, color: NAVY, fontSize: 15 }}>{Number(x.qtd) !== 1 ? `${String(x.qtd).replace(".", ",")} × ` : ""}{x.descricao}</div>
+                  {(Number(x.largura) > 0 || x.obs) && <div style={{ fontSize: 12, color: TEXT }}>{Number(x.largura) > 0 && Number(x.altura) > 0 ? `${String(x.largura).replace(".", ",")} x ${String(x.altura).replace(".", ",")} m · ${fmtM2(m2)}` : ""}{x.obs ? ` · ${x.obs}` : ""}</div>}
+                  {!dentroDoGrupo && <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{x.os?.orcamentos?.numero_or ? `PR ${x.os.orcamentos.numero_or} · ` : ""}{x.os?.evento} · {x.os?.cliente_nome || "—"} · {numOS(x.os?.numero)}</div>}
+                  {x.status_producao === "pronto" && x.produzido_por && <div style={{ fontSize: 11, color: OK, marginTop: 2 }}>✔ pronto por {x.produzido_por}{x.produzido_em ? ` em ${fmtDH(x.produzido_em)}` : ""}</div>}
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
+                  <BadgeProd status={x.status_producao} />
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                    {proximo[x.status_producao] && <button onClick={() => marcar(x, proximo[x.status_producao])} style={{ ...btnPrimary, padding: "7px 12px" }}>→ {statusProd(proximo[x.status_producao]).label}</button>}
+                    <BotaoFoto enviando={enviando === x.id} onArquivo={(f) => foto(x, f)} rotulo={x.foto_path ? "📷 Trocar foto" : "📷 Foto pronta"} />
+                    {x.status_producao !== "aguardando_arte" && <select value="" onChange={(e) => e.target.value && marcar(x, e.target.value)} style={{ ...selStyle, fontSize: 12, padding: "5px 6px" }}><option value="">voltar para…</option>{STATUS_PROD.filter((s) => s.id !== x.status_producao).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select>}
+                  </div>
+                </div>
+              </div>
+            </Card>
+    );
+  }
+
+  // agrupado por PR (ou OS quando não tem orçamento)
+  const daSetor = base.filter((x) => setor === "todos" || x.setor === setor);
+  const mapa = new Map();
+  daSetor.forEach((x) => {
+    const id = x.os_id || x.os?.id;
+    if (!mapa.has(id)) mapa.set(id, { id, os: x.os, pr: x.os?.orcamentos?.numero_or || null, todos: [] });
+    mapa.get(id).todos.push(x);
+  });
+  const idsNaLista = new Set(lista.map((x) => x.os_id || x.os?.id));
+  const grupos = [...mapa.values()]
+    .filter((g) => idsNaLista.has(g.id))
+    .map((g) => ({
+      ...g,
+      itens: lista.filter((x) => (x.os_id || x.os?.id) === g.id),
+      total: g.todos.length,
+      prontos: g.todos.filter((x) => x.status_producao === "pronto").length,
+      aguardando: g.todos.filter((x) => x.status_producao === "aguardando_arte").length,
+      liberados: g.todos.filter((x) => x.status_producao === "liberado").length,
+      emProducao: g.todos.filter((x) => x.status_producao === "em_producao").length,
+      m2: g.todos.reduce((a, x) => a + m2Item(x), 0),
+      setores: [...new Set(g.todos.map((x) => x.setor))],
+    }))
+    .sort((a, b) => new Date(a.os?.montagem_inicio || "2999-01-01") - new Date(b.os?.montagem_inicio || "2999-01-01"));
+
   return (
     <div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginBottom: 14 }}>
@@ -8814,40 +8869,70 @@ function ProducaoView({ session, setErro }) {
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
         <select value={filtro} onChange={(e) => setFiltro(e.target.value)} style={selStyle}><option value="pendentes">A fazer</option><option value="prontos">Prontos</option><option value="todos">Todos</option></select>
         <input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="Buscar peça, evento, cliente ou PR" style={{ ...inputStyle, flex: 1, minWidth: 200 }} />
+        <div style={{ display: "flex", border: `1px solid ${BORDER}`, borderRadius: 8, overflow: "hidden" }}>
+          {[[true, "Por PR"], [false, "Por item"]].map(([v, lb]) => (
+            <button key={lb} type="button" onClick={() => setAgrupar(v)} style={{ border: "none", padding: "7px 12px", fontSize: 12, fontWeight: 700, cursor: "pointer", background: agrupar === v ? NAVY : "#fff", color: agrupar === v ? "#fff" : TEXT }}>{lb}</button>
+          ))}
+        </div>
+        {agrupar && grupos.length > 0 && (
+          Object.values(abertos).some(Boolean)
+            ? <button onClick={() => setAbertos({})} style={btnGhostSmall}>Recolher todos</button>
+            : <button onClick={() => setAbertos(Object.fromEntries(grupos.map((g) => [g.id, true])))} style={btnGhostSmall}>Abrir todos</button>
+        )}
         <button onClick={carregar} style={btnGhostSmall}>Atualizar</button>
       </div>
       {carregando && <div style={{ color: MUTED }}>Carregando...</div>}
       {!carregando && lista.length === 0 && <Card><span style={{ color: MUTED }}>Nada na fila com esses filtros. Os itens chegam aqui quando a Logística escolhe um setor na OS.</span></Card>}
-      <div style={{ display: "grid", gap: 10 }}>
-        {lista.map((x) => {
-          const m2 = m2Item(x);
-          return (
-            <Card key={x.id} style={{ padding: 14, borderLeft: `5px solid ${statusProd(x.status_producao).cor}` }}>
-              <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
-                {x.foto_path && <a href={fotoProdUrl(x.foto_path)} target="_blank" rel="noreferrer"><img src={fotoProdUrl(x.foto_path)} alt="Peça pronta" style={{ width: 88, height: 88, objectFit: "cover", borderRadius: 8 }} /></a>}
-                <div style={{ flex: 1, minWidth: 220 }}>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", marginBottom: 4 }}>
-                    <BadgePrazo ts={x.os?.montagem_inicio} />
-                    <span style={{ fontSize: 11, color: MUTED }}>{nomeSetor(x.setor)}</span>
+      {agrupar ? (
+        <div style={{ display: "grid", gap: 10 }}>
+          {grupos.map((g) => {
+            const aberto = !!abertos[g.id];
+            const pct = g.total ? Math.round((g.prontos / g.total) * 100) : 0;
+            return (
+              <Card key={g.id} style={{ padding: 0, overflow: "hidden", borderLeft: `5px solid ${g.prontos === g.total ? OK : g.aguardando ? "#B8902E" : NAVY}` }}>
+                <button type="button" onClick={() => setAbertos((a) => ({ ...a, [g.id]: !a[g.id] }))}
+                  style={{ width: "100%", textAlign: "left", background: aberto ? "#F4F6FA" : "#fff", border: "none", padding: 14, cursor: "pointer", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", fontFamily: "inherit" }}>
+                  <span style={{ fontSize: 16, color: MUTED, width: 14 }}>{aberto ? "▾" : "▸"}</span>
+                  <div style={{ flex: 1, minWidth: 240 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 3 }}>
+                      <span style={{ fontFamily: FONT_MONO, fontWeight: 700, color: NAVY, fontSize: 15 }}>{g.pr ? `PR ${g.pr}` : numOS(g.os?.numero)}</span>
+                      {g.pr && <span style={{ fontSize: 11, color: MUTED }}>{numOS(g.os?.numero)}</span>}
+                      {!g.pr && <span style={{ fontSize: 10, fontWeight: 700, color: "#5B4B8A", background: "#EEEAF7", borderRadius: 999, padding: "1px 7px" }}>sem orçamento</span>}
+                      <BadgePrazo ts={g.os?.montagem_inicio} />
+                    </div>
+                    <div style={{ fontWeight: 700, color: TEXT }}>{g.os?.evento || "—"}</div>
+                    <div style={{ fontSize: 12, color: MUTED }}>{g.os?.cliente_nome || "—"}{g.os?.montagem_inicio ? ` · montagem ${fmtDH(g.os.montagem_inicio)}` : ""}</div>
+                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6 }}>
+                      {g.setores.map((st) => <span key={st} style={{ fontSize: 10, fontWeight: 700, color: NAVY, background: "#E9EEF6", borderRadius: 999, padding: "2px 8px" }}>{nomeSetor(st)}</span>)}
+                    </div>
                   </div>
-                  <div style={{ fontWeight: 700, color: NAVY, fontSize: 15 }}>{Number(x.qtd) !== 1 ? `${String(x.qtd).replace(".", ",")} × ` : ""}{x.descricao}</div>
-                  {(Number(x.largura) > 0 || x.obs) && <div style={{ fontSize: 12, color: TEXT }}>{Number(x.largura) > 0 && Number(x.altura) > 0 ? `${String(x.largura).replace(".", ",")} x ${String(x.altura).replace(".", ",")} m · ${fmtM2(m2)}` : ""}{x.obs ? ` · ${x.obs}` : ""}</div>}
-                  <div style={{ fontSize: 12, color: MUTED, marginTop: 2 }}>{x.os?.orcamentos?.numero_or ? `PR ${x.os.orcamentos.numero_or} · ` : ""}{x.os?.evento} · {x.os?.cliente_nome || "—"} · {numOS(x.os?.numero)}</div>
-                  {x.status_producao === "pronto" && x.produzido_por && <div style={{ fontSize: 11, color: OK, marginTop: 2 }}>✔ pronto por {x.produzido_por}{x.produzido_em ? ` em ${fmtDH(x.produzido_em)}` : ""}</div>}
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end" }}>
-                  <BadgeProd status={x.status_producao} />
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-                    {proximo[x.status_producao] && <button onClick={() => marcar(x, proximo[x.status_producao])} style={{ ...btnPrimary, padding: "7px 12px" }}>→ {statusProd(proximo[x.status_producao]).label}</button>}
-                    <BotaoFoto enviando={enviando === x.id} onArquivo={(f) => foto(x, f)} rotulo={x.foto_path ? "📷 Trocar foto" : "📷 Foto pronta"} />
-                    {x.status_producao !== "aguardando_arte" && <select value="" onChange={(e) => e.target.value && marcar(x, e.target.value)} style={{ ...selStyle, fontSize: 12, padding: "5px 6px" }}><option value="">voltar para…</option>{STATUS_PROD.filter((s) => s.id !== x.status_producao).map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select>}
+                  <div style={{ minWidth: 190 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: MUTED, marginBottom: 4 }}>
+                      <span><b style={{ color: TEXT }}>{g.prontos}</b> de {g.total} prontos</span>{g.m2 > 0 && <span>{fmtM2(g.m2)}</span>}
+                    </div>
+                    <div style={{ height: 8, background: "#E6E9EF", borderRadius: 999, overflow: "hidden" }}><div style={{ width: `${pct}%`, height: "100%", background: OK }} /></div>
+                    <div style={{ display: "flex", gap: 8, fontSize: 11, marginTop: 5, flexWrap: "wrap" }}>
+                      {g.aguardando > 0 && <span style={{ color: "#8A6D1F" }}>{g.aguardando} aguardando arte</span>}
+                      {g.liberados > 0 && <span style={{ color: NAVY }}>{g.liberados} liberado(s)</span>}
+                      {g.emProducao > 0 && <span style={{ color: "#1F6F8A" }}>{g.emProducao} em produção</span>}
+                    </div>
                   </div>
-                </div>
-              </div>
-            </Card>
-          );
-        })}
-      </div>
+                </button>
+                {aberto && (
+                  <div style={{ padding: "0 14px 14px", display: "grid", gap: 8, background: "#F4F6FA" }}>
+                    {g.itens.length === 0 && <div style={{ fontSize: 13, color: MUTED, padding: 6 }}>Nenhum item com o filtro "{filtro === "pendentes" ? "A fazer" : "Prontos"}".</div>}
+                    {g.itens.map((x) => renderItem(x, true))}
+                  </div>
+                )}
+              </Card>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 10 }}>
+          {lista.map((x) => renderItem(x, false))}
+        </div>
+      )}
     </div>
   );
 }
