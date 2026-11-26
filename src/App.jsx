@@ -8998,10 +8998,12 @@ const TIPOS_ANOTACAO = [
   { id: "atraso", label: "Atraso", icone: "⏰", cor: "#B8902E" },
   { id: "saida", label: "Saída antecipada", icone: "🚪", cor: "#A0522D" },
   { id: "externo", label: "Serviço externo / saiu", icone: "🛻", cor: "#1F6F8A" },
+  { id: "fornecedor", label: "Chamada de fornecedor / terceiro", curto: "Fornecedor", icone: "🤝", cor: "#5B4B8A" },
   { id: "outro", label: "Outro", icone: "•", cor: "#7A7A7A" },
 ];
 const tipoAnotacao = (id) => TIPOS_ANOTACAO.find((t) => t.id === id) || TIPOS_ANOTACAO[0];
-const anotacaoVazia = (data) => ({ data, hora: "", hora_fim: "", tipo: "observacao", pessoa: "", texto: "" });
+const anotacaoVazia = (data) => ({ data, hora: "", hora_fim: "", tipo: "observacao", pessoa: "", texto: "", fornecedor_id: null, servico: "", valor: "" });
+const SERVICOS_TERCEIRO = ["Motorista", "Técnico / manutenção de equipamento", "Montador", "Eletricista", "Frete / transporte", "Locação de equipamento", "Segurança", "Limpeza"];
 const faixaHora = (a) => { const h1 = a.hora ? a.hora.slice(0, 5) : ""; const h2 = a.hora_fim ? a.hora_fim.slice(0, 5) : ""; return h1 && h2 ? `${h1}–${h2}` : h1 || (h2 ? `até ${h2}` : ""); };
 const tarefaVazia = (data) => ({ data, hora: "", tipo: "montagem", descricao: "", equipe: [], freelas: 0, veiculo: "", os_id: "", obs: "" });
 
@@ -9020,6 +9022,9 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
   const [soComAgenda, setSoComAgenda] = useState(false);
   const [anotacoes, setAnotacoes] = useState([]);
   const [anot, setAnot] = useState(null); // linha sendo escrita/editada
+  const pessoasAg = usePessoasFin(session);
+  const fornecedoresAg = useMemo(() => pessoasAg.filter((p) => p.fornecedor), [pessoasAg]);
+  const fornPorNome = (n) => { const t = String(n || "").trim().toLowerCase(); return t ? fornecedoresAg.find((p) => p.nome.trim().toLowerCase() === t) || null : null; };
 
   async function carregar() {
     try {
@@ -9039,10 +9044,17 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
 
   async function salvarAnotacao() {
     const tp = tipoAnotacao(anot.tipo);
-    const texto = anot.texto.trim() || (anot.tipo !== "observacao" && anot.tipo !== "outro" && anot.pessoa.trim() ? tp.label : "");
+    const ehForn = anot.tipo === "fornecedor";
+    if (ehForn && !anot.pessoa.trim()) { setErro("Informe o fornecedor chamado."); return; }
+    const texto = anot.texto.trim() || (ehForn ? (anot.servico || "").trim() || tp.label : anot.tipo !== "observacao" && anot.tipo !== "outro" && anot.pessoa.trim() ? tp.label : "");
     if (!texto) { setErro("Escreva a anotação."); return; }
     setErro("");
-    const corpo = { data: anot.data, hora: anot.hora || null, hora_fim: anot.hora_fim || null, tipo: anot.tipo, pessoa: anot.pessoa.trim() || null, texto };
+    const corpo = {
+      data: anot.data, hora: anot.hora || null, hora_fim: anot.hora_fim || null, tipo: anot.tipo, pessoa: anot.pessoa.trim() || null, texto,
+      fornecedor_id: ehForn ? (fornPorNome(anot.pessoa)?.id || null) : null,
+      servico: ehForn ? (anot.servico || "").trim() || null : null,
+      valor: ehForn ? numDigitado(anot.valor) : null,
+    };
     try {
       if (anot.id) await sbRequest(`agenda_anotacoes?id=eq.${anot.id}`, session, { method: "PATCH", body: corpo });
       else await sbRequest("agenda_anotacoes", session, { method: "POST", body: { ...corpo, criado_por_nome: meuNome || null } });
@@ -9169,7 +9181,7 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
       return (
         <div style={{ marginTop: 6, borderTop: `1px dashed ${BORDER}`, paddingTop: 6, display: "grid", gap: 2 }}>
           {lista_.map((a) => { const tp = tipoAnotacao(a.tipo); return (
-            <div key={a.id} style={{ fontSize: 11, color: tp.cor }}>{tp.icone} {faixaHora(a) && <span style={{ fontFamily: FONT_MONO }}>{faixaHora(a)} </span>}{a.pessoa ? <b>{a.pessoa}: </b> : null}<span style={{ color: TEXT }}>{a.texto}</span></div>
+            <div key={a.id} style={{ fontSize: 11, color: tp.cor }}>{tp.icone} {faixaHora(a) && <span style={{ fontFamily: FONT_MONO }}>{faixaHora(a)} </span>}{a.pessoa ? <b>{a.pessoa}{a.tipo === "fornecedor" && a.servico && a.texto !== a.servico ? ` (${a.servico})` : ""}: </b> : null}<span style={{ color: TEXT }}>{a.texto}</span></div>
           ); })}
         </div>
       );
@@ -9186,10 +9198,13 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
               <div style={{ flex: 1, fontSize: 13 }}>
                 <span style={{ fontSize: 11, fontWeight: 700, color: tp.cor }}>{tp.icone} {tp.label.toUpperCase()}</span>
                 {a.pessoa && <> · <b>{a.pessoa}</b></>}
-                {a.texto && a.texto !== tp.label && <> · {a.texto}</>}
+                {a.tipo === "fornecedor" && a.servico && <> <span style={{ fontSize: 12, color: "#5B4B8A" }}>({a.servico})</span></>}
+                {a.tipo === "fornecedor" && Number(a.valor) > 0 && <> · <b>{brl(Number(a.valor))}</b></>}
+                {a.tipo === "fornecedor" && a.pessoa && !a.fornecedor_id && <span style={{ fontSize: 10, color: "#8A5A00", marginLeft: 6 }}>(fora do cadastro)</span>}
+                {a.texto && a.texto !== tp.label && a.texto !== a.servico && <> · {a.texto}</>}
                 {a.criado_por_nome && <div style={{ fontSize: 10, color: MUTED }}>por {a.criado_por_nome}</div>}
               </div>
-              <button onClick={() => setAnot({ ...a, hora: a.hora ? a.hora.slice(0, 5) : "", hora_fim: a.hora_fim ? a.hora_fim.slice(0, 5) : "", pessoa: a.pessoa || "", texto: a.texto === tipoAnotacao(a.tipo).label ? "" : a.texto })} style={btnGhostSmall}>Editar</button>
+              <button onClick={() => setAnot({ ...a, hora: a.hora ? a.hora.slice(0, 5) : "", hora_fim: a.hora_fim ? a.hora_fim.slice(0, 5) : "", pessoa: a.pessoa || "", servico: a.servico || "", valor: a.valor != null ? String(a.valor).replace(".", ",") : "", texto: a.texto === tipoAnotacao(a.tipo).label || a.texto === a.servico ? "" : a.texto })} style={btnGhostSmall}>Editar</button>
               <button onClick={() => excluirAnotacao(a)} style={btnDangerSmall}><Trash2 size={12} /></button>
             </div>
           ); })}
@@ -9203,9 +9218,21 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
               <span style={{ fontSize: 12, color: MUTED }}>até</span>
               <input type="time" value={x.hora_fim} onChange={(e) => setX("hora_fim", e.target.value)} title="Até" style={{ ...inputStyle, width: 96 }} />
               <select value={x.tipo} onChange={(e) => setX("tipo", e.target.value)} style={{ ...selStyle, width: "auto" }}>{TIPOS_ANOTACAO.map((t) => <option key={t.id} value={t.id}>{t.icone} {t.label}</option>)}</select>
-              <input list="ag-anot-pessoas" value={x.pessoa} onChange={(e) => setX("pessoa", e.target.value)} placeholder="Funcionário (opcional)" style={{ ...inputStyle, width: 170 }} />
-              <datalist id="ag-anot-pessoas">{nomesEquipe.map((n) => <option key={n} value={n} />)}</datalist>
-              <input value={x.texto} onChange={(e) => setX("texto", e.target.value)} onKeyDown={(e) => e.key === "Enter" && salvarAnotacao()} placeholder="Escreva o que aconteceu ou o que precisa ser feito…" style={{ ...inputStyle, flex: 1, minWidth: 220 }} />
+              {x.tipo === "fornecedor" ? (
+                <>
+                  <input list="ag-anot-forn" value={x.pessoa} onChange={(e) => setX("pessoa", e.target.value)} placeholder="Fornecedor (do cadastro)" title={x.pessoa ? (fornPorNome(x.pessoa) ? "✓ no cadastro de fornecedores" : "não encontrado no cadastro") : ""} style={{ ...inputStyle, width: 200, borderColor: x.pessoa ? (fornPorNome(x.pessoa) ? OK : "#C9A227") : BORDER }} />
+                  <datalist id="ag-anot-forn">{fornecedoresAg.map((p) => <option key={p.id} value={p.nome}>{p.documento || ""}</option>)}</datalist>
+                  <input list="ag-anot-serv" value={x.servico} onChange={(e) => setX("servico", e.target.value)} placeholder="Serviço (motorista, técnico…)" style={{ ...inputStyle, width: 190 }} />
+                  <datalist id="ag-anot-serv">{SERVICOS_TERCEIRO.map((n) => <option key={n} value={n} />)}</datalist>
+                  <input inputMode="decimal" value={x.valor} onChange={(e) => setX("valor", e.target.value)} placeholder="Valor R$" style={{ ...inputStyle, width: 100 }} />
+                </>
+              ) : (
+                <>
+                  <input list="ag-anot-pessoas" value={x.pessoa} onChange={(e) => setX("pessoa", e.target.value)} placeholder="Funcionário (opcional)" style={{ ...inputStyle, width: 170 }} />
+                  <datalist id="ag-anot-pessoas">{nomesEquipe.map((n) => <option key={n} value={n} />)}</datalist>
+                </>
+              )}
+              <input value={x.texto} onChange={(e) => setX("texto", e.target.value)} onKeyDown={(e) => e.key === "Enter" && salvarAnotacao()} placeholder={x.tipo === "fornecedor" ? "Motivo (ex.: manutenção da impressora, levar palco)" : "Escreva o que aconteceu ou o que precisa ser feito…"} style={{ ...inputStyle, flex: 1, minWidth: 220 }} />
               <button onClick={() => (anot && anot.data === d ? salvarAnotacao() : null)} disabled={!editando} style={btnPrimary}>{editando?.id ? "Salvar" : "+ Anotar"}</button>
               {editando?.id && <button onClick={() => setAnot(null)} style={btnGhostSmall}>Cancelar</button>}
             </div>
@@ -9227,7 +9254,7 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
       const dia = dias[d] || {};
       const folga = dia.folga || [], empresa = dia.empresa || [];
       const anots = anotacoesDoDia(d);
-      const blocoAnot = anots.length ? `<table class="tanot"><thead><tr><th colspan="5" class="tit">ANOTAÇÕES DO DIA (${anots.length})</th></tr><tr><th style="width:80px">Horário</th><th style="width:120px">Tipo</th><th style="width:22%">Funcionário</th><th>Anotação</th><th style="width:90px">Anotado por</th></tr></thead><tbody>${anots.map((a) => { const tp = tipoAnotacao(a.tipo); return `<tr><td class="h1">${e(faixaHora(a) || "—")}</td><td><b style="color:${tp.cor}">${e(tp.label)}</b></td><td><b>${e(a.pessoa || "")}</b></td><td>${a.texto && a.texto !== tp.label ? e(a.texto) : ""}</td><td class="s">${e(a.criado_por_nome || "")}</td></tr>`; }).join("")}</tbody></table>` : "";
+      const blocoAnot = anots.length ? `<table class="tanot"><thead><tr><th colspan="5" class="tit">ANOTAÇÕES DO DIA (${anots.length})</th></tr><tr><th style="width:80px">Horário</th><th style="width:120px">Tipo</th><th style="width:22%">Funcionário / fornecedor</th><th>Anotação</th><th style="width:90px">Anotado por</th></tr></thead><tbody>${anots.map((a) => { const tp = tipoAnotacao(a.tipo); return `<tr><td class="h1">${e(faixaHora(a) || "—")}</td><td><b style="color:${tp.cor}">${e(tp.curto || tp.label)}</b></td><td><b>${e(a.pessoa || "")}</b>${a.tipo === "fornecedor" && a.servico ? `<div class="s">${e(a.servico)}</div>` : ""}</td><td>${a.texto && a.texto !== tp.label && a.texto !== a.servico ? e(a.texto) : ""}${a.tipo === "fornecedor" && Number(a.valor) > 0 ? ` <b>· ${e(brl(Number(a.valor)))}</b>` : ""}</td><td class="s">${e(a.criado_por_nome || "")}</td></tr>`; }).join("")}</tbody></table>` : "";
       const linhas = itens.length ? itens.map((i) => {
         const tp = tipoTarefa(i.tipo);
         const os = i.os ? `${numOS(i.os.numero)}${i.os.orcamentos?.numero_or ? `<div class="s">PR ${e(i.os.orcamentos.numero_or)}</div>` : ""}` : "";
