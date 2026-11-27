@@ -5309,7 +5309,7 @@ function BaixaLancamento({ l, onConfirmar, onCancelar, salvando, ajuste = false 
         <Field label="Juros (R$) +"><input inputMode="decimal" value={juros} onChange={(e) => { setJuros(e.target.value); setPagoTxt(""); }} style={inputStyle} placeholder="0,00" /></Field>
         <Field label="Multa (R$) +"><input inputMode="decimal" value={multa} onChange={(e) => { setMulta(e.target.value); setPagoTxt(""); }} style={inputStyle} placeholder="0,00" /></Field>
         <Field label="Desconto (R$) −"><input inputMode="decimal" value={desconto} onChange={(e) => { setDesconto(e.target.value); setPagoTxt(""); }} style={inputStyle} placeholder="0,00" /></Field>
-        {receber && <Field label="Antecipação de boleto (R$) −"><input inputMode="decimal" value={antecip} onChange={(e) => { setAntecip(e.target.value); setPagoTxt(""); }} style={inputStyle} placeholder="0,00" title="Valor que o banco cobrou para antecipar o boleto" /></Field>}
+        {<Field label="Antecipação de boleto (R$) −"><input inputMode="decimal" value={antecip} onChange={(e) => { setAntecip(e.target.value); setPagoTxt(""); }} style={inputStyle} placeholder="0,00" title="Valor que o banco cobrou para antecipar o boleto" /></Field>}
         <Field label={`Valor ${verbo.toLowerCase()} líquido (R$)`}><input inputMode="decimal" value={pagoTxt} onChange={(e) => setPagoTxt(e.target.value)} style={{ ...inputStyle, fontFamily: FONT_MONO, fontWeight: 700 }} placeholder={fmtNumBR(devido)} /></Field>
         <Field label="Banco / conta">
           <select value={banco} onChange={(e) => setBanco(e.target.value)} style={selStyle}><option value="">—</option>{[...new Set([...BANCOS_FIN, banco].filter(Boolean))].map((x) => <option key={x} value={x}>{x}</option>)}</select>
@@ -5319,7 +5319,7 @@ function BaixaLancamento({ l, onConfirmar, onCancelar, salvando, ajuste = false 
         </Field>
       </div>
       <div style={{ fontSize: 13, background: "#F7F9FC", border: `1px solid ${BORDER}`, borderRadius: 8, padding: "8px 12px", fontFamily: FONT_MONO }}>
-        {receber ? "Valor da NF" : "Valor"} {brl(l.valor)}
+        {receber ? "Valor da NF" : "Valor do título"} {brl(l.valor)}
         {num(juros) > 0 && <> + juros {brl(num(juros))}</>}
         {num(multa) > 0 && <> + multa {brl(num(multa))}</>}
         {num(desconto) > 0 && <> − desconto {brl(num(desconto))}</>}
@@ -5331,7 +5331,7 @@ function BaixaLancamento({ l, onConfirmar, onCancelar, salvando, ajuste = false 
         {ajuste && Math.abs(pago - devido) > 0.009 && <div style={{ color: DANGER, fontFamily: FONT_BODY }}>O valor {verbo.toLowerCase()} não bate com o líquido. Ajuste juros, desconto ou antecipação para fechar a diferença.</div>}
       </div>
       <div style={{ display: "flex", gap: 10 }}>
-        <button disabled={salvando || !data || !(pago > 0)} onClick={() => onConfirmar({ data, juros: num(juros), multa: num(multa), desconto: num(desconto), antecipacao: receber ? num(antecip) : 0, pago, parcial, principalPago, restante, banco, forma })} style={btnPrimary}>
+        <button disabled={salvando || !data || !(pago > 0)} onClick={() => onConfirmar({ data, juros: num(juros), multa: num(multa), desconto: num(desconto), antecipacao: num(antecip), pago, parcial, principalPago, restante, banco, forma })} style={btnPrimary}>
           <Save size={15} /> {salvando ? "Salvando..." : ajuste ? "Salvar ajuste" : parcial ? "Baixar parcial" : "Confirmar baixa"}
         </button>
         <button onClick={onCancelar} style={btnGhostSmall}>Cancelar</button>
