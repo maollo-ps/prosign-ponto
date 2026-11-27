@@ -5057,22 +5057,72 @@ function CartaoNumero({ rotulo, valor, cor, sub }) {
 // Seletor de conta (centro de custo) — só contas analíticas, filtradas por natureza
 // ---------------------------------------------------------
 function SelectConta({ centros, value, onChange, natureza, style }) {
+  // campo de conta com busca: digite o código (02.04) ou parte do nome, setas ↑↓ e Enter para escolher
   const lista = centros.filter((c) => c.tipo === "analitico" && (c.ativo !== false || String(c.id) === String(value)) && (!natureza || c.natureza === natureza));
   const nomeCurto = (c) => c.nome.replace(/^Despesas? (Administrativas?|com Insumos|com Evento|Folha de Pagamento( Pessoal)?|Impostos|com Máquinas e Equipamentos|Financiamento e Empréstimo) - /i, "");
-  // agrupa por classificação (Fixas, Variáveis, ...) para ficar fácil trocar uma despesa de fixa para variável
   const ordemGrupos = ["variavel", "fixo", "operacional", "nao_operacional", "a_classificar"];
-  const grupos = {};
-  lista.forEach((c) => { const k = c.classificacao || "a_classificar"; (grupos[k] = grupos[k] || []).push(c); });
-  const chaves = Object.keys(grupos).sort((a, b) => (ordemGrupos.indexOf(a) + 99 * (ordemGrupos.indexOf(a) < 0)) - (ordemGrupos.indexOf(b) + 99 * (ordemGrupos.indexOf(b) < 0)));
+  const ordemDe = (k) => { const i = ordemGrupos.indexOf(k || "a_classificar"); return i < 0 ? 99 : i; };
+  const ordenada = [...lista].sort((a, b) => ordemDe(a.classificacao) - ordemDe(b.classificacao) || String(a.codigo).localeCompare(String(b.codigo), undefined, { numeric: true }));
+  const sel = lista.find((c) => String(c.id) === String(value)) || centros.find((c) => String(c.id) === String(value));
+  const rotulo = (c) => `${c.codigo} · ${nomeCurto(c)}`;
+  const semAcento = (t) => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const [aberto, setAberto] = useState(false);
+  const [q, setQ] = useState("");
+  const [hl, setHl] = useState(0);
+  const [pos, setPos] = useState(null);
+  const inpRef = useRef(null);
+  const listaRef = useRef(null);
+  const termo = semAcento(q.trim());
+  const achadas = !termo ? ordenada : ordenada.filter((c) => /^[0-9.]+$/.test(termo) ? String(c.codigo).startsWith(termo) : semAcento(`${c.codigo} ${c.nome}`).includes(termo));
+  const opcoes = [{ id: null, vazio: true }, ...achadas];
+  function abrir() {
+    const r = inpRef.current?.getBoundingClientRect();
+    if (r) setPos({ left: r.left, top: r.bottom + 2, width: Math.max(r.width, 340), acima: window.innerHeight - r.bottom < 260 ? r.top : null });
+    setQ(""); setHl(value ? Math.max(1, achadas.findIndex((c) => String(c.id) === String(value)) + 1) : 0); setAberto(true);
+  }
+  function escolher(o) { setAberto(false); setQ(""); inpRef.current?.blur(); if (String(o.id || "") !== String(value || "")) onChange(o.id || null); }
+  useEffect(() => {
+    if (!aberto) return;
+    const fechar = (e) => { if (listaRef.current && listaRef.current.contains(e.target)) return; setAberto(false); };
+    window.addEventListener("scroll", fechar, true); window.addEventListener("resize", fechar);
+    return () => { window.removeEventListener("scroll", fechar, true); window.removeEventListener("resize", fechar); };
+  }, [aberto]);
+  useEffect(() => { if (aberto && listaRef.current) { const el = listaRef.current.querySelector(`[data-i="${hl}"]`); if (el) el.scrollIntoView({ block: "nearest" }); } }, [hl, aberto]);
+  let grupoAnt = "";
   return (
-    <select value={value || ""} onChange={(e) => onChange(e.target.value || null)} style={{ ...selStyle, ...style }}>
-      <option value="">— sem conta —</option>
-      {chaves.map((k) => (
-        <optgroup key={k} label={(CLASSIF_LABEL[k] || k).toUpperCase()}>
-          {grupos[k].map((c) => <option key={c.id} value={c.id}>{c.codigo} · {nomeCurto(c)}</option>)}
-        </optgroup>
-      ))}
-    </select>
+    <div style={{ position: "relative", display: "inline-block", minWidth: style?.minWidth || 200, maxWidth: style?.maxWidth, width: style?.width || "100%", opacity: style?.opacity }}>
+      <input ref={inpRef} value={aberto ? q : (sel ? rotulo(sel) : "")} placeholder={aberto ? "digite código ou nome..." : "— sem conta —"}
+        onFocus={abrir} onClick={() => { if (!aberto) abrir(); }} onBlur={() => setTimeout(() => setAberto(false), 150)}
+        onChange={(e) => { setQ(e.target.value); setHl(1); if (!aberto) abrir(); }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") { e.preventDefault(); setHl((h) => Math.min(h + 1, opcoes.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setHl((h) => Math.max(h - 1, 0)); }
+          else if (e.key === "Enter") { e.preventDefault(); if (aberto && opcoes[hl]) escolher(opcoes[hl]); }
+          else if (e.key === "Escape") { setAberto(false); setQ(""); inpRef.current?.blur(); }
+        }}
+        title={sel ? `${sel.codigo} · ${sel.nome}` : "Digite para buscar a conta"}
+        style={{ ...selStyle, ...style, opacity: 1, width: "100%", minWidth: 0, maxWidth: "none", boxSizing: "border-box", paddingRight: 22, textOverflow: "ellipsis" }} />
+      <span style={{ position: "absolute", right: 8, top: "50%", transform: "translateY(-50%)", fontSize: 10, color: MUTED, pointerEvents: "none" }}>▼</span>
+      {aberto && pos && (
+        <div ref={listaRef} onMouseDown={(e) => e.preventDefault()}
+          style={{ position: "fixed", left: Math.min(pos.left, window.innerWidth - pos.width - 8), width: pos.width, ...(pos.acima != null ? { bottom: window.innerHeight - pos.acima + 2 } : { top: pos.top }), maxHeight: 300, overflowY: "auto", background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,.15)", zIndex: 1000, fontSize: 13, textAlign: "left" }}>
+          {opcoes.map((o, i) => {
+            const g = o.vazio ? "" : (o.classificacao || "a_classificar");
+            const cab = !o.vazio && g !== grupoAnt ? (grupoAnt = g, <div key={"g" + g} style={{ padding: "6px 10px 2px", fontSize: 10, fontWeight: 700, color: MUTED, letterSpacing: 0.5 }}>{(CLASSIF_LABEL[g] || g).toUpperCase()}</div>) : null;
+            return (
+              <React.Fragment key={o.id || "vazio"}>
+                {cab}
+                <div data-i={i} onMouseEnter={() => setHl(i)} onClick={() => escolher(o)}
+                  style={{ padding: "6px 10px", cursor: "pointer", background: i === hl ? "#E8EEF8" : String(o.id || "") === String(value || "") ? "#F4F6FA" : "#fff", color: o.vazio ? MUTED : TEXT, fontWeight: String(o.id || "") === String(value || "") ? 700 : 400 }}>
+                  {o.vazio ? "— sem conta —" : <><span style={{ fontFamily: FONT_MONO, color: NAVY }}>{o.codigo}</span> · {nomeCurto(o)}</>}
+                </div>
+              </React.Fragment>
+            );
+          })}
+          {!achadas.length && <div style={{ padding: "8px 10px", color: MUTED }}>Nenhuma conta com "{q}".</div>}
+        </div>
+      )}
+    </div>
   );
 }
 
