@@ -8280,21 +8280,27 @@ function BotaoFoto({ onArquivo, enviando, rotulo = "📷 Foto" }) {
 }
 
 // campo de equipe: nomes em "chips", com sugestões dos funcionários
+// na escala aparece só o primeiro nome, em maiúsculas (ALEX, FABIO…); a lista mostra o nome completo para escolher
+const primeiroNome = (n) => { const t = String(n || "").trim(); return t.toLowerCase() === "todos" ? "TODOS" : (t.split(/\s+/)[0] || "").toUpperCase(); };
+function OpcoesNomes({ nomes }) {
+  const vistos = new Set();
+  return nomes.map((n) => { const c = primeiroNome(n); if (!c || vistos.has(c)) return null; vistos.add(c); return <option key={n} value={c}>{n}</option>; });
+}
 function CampoEquipe({ label, valor, onChange, sugestoes, listaId }) {
   const [txt, setTxt] = useState("");
-  const add = () => { const t = txt.trim(); if (t && !valor.includes(t)) onChange([...valor, t]); setTxt(""); };
+  const add = () => { const t = primeiroNome(txt); if (t && !valor.map(primeiroNome).includes(t)) onChange([...valor, t]); setTxt(""); };
   return (
     <Field label={label}>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 6, background: "#fff", minHeight: 40 }}>
         {valor.map((n) => (
           <span key={n} style={{ background: "#EEF2F8", color: NAVY, borderRadius: 999, padding: "3px 10px", fontSize: 12, fontWeight: 600 }}>
-            {n} <button type="button" onClick={() => onChange(valor.filter((x) => x !== n))} style={{ border: "none", background: "none", cursor: "pointer", color: MUTED, padding: 0, marginLeft: 4 }}>×</button>
+            {primeiroNome(n)} <button type="button" onClick={() => onChange(valor.filter((x) => x !== n))} style={{ border: "none", background: "none", cursor: "pointer", color: MUTED, padding: 0, marginLeft: 4 }}>×</button>
           </span>
         ))}
         <input list={listaId} value={txt} onChange={(e) => setTxt(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); add(); } }} onBlur={add}
           placeholder="nome + Enter" style={{ border: "none", outline: "none", flex: 1, minWidth: 120, fontSize: 13, fontFamily: FONT_BODY }} />
       </div>
-      <datalist id={listaId}>{sugestoes.map((n) => <option key={n} value={n} />)}</datalist>
+      <datalist id={listaId}><OpcoesNomes nomes={sugestoes} /></datalist>
     </Field>
   );
 }
@@ -8461,7 +8467,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
           veiculo: (v.veiculo || "").trim(), terceiro: !!v.terceiro, modalidade: v.terceiro ? (v.modalidade || "aluguel") : null, etapa: v.etapa || "ambas",
           fornecedor: v.terceiro ? (v.fornecedor || "").trim() || null : null, fornecedor_id: v.terceiro ? v.fornecedor_id || null : null,
           valor: v.terceiro ? numCampo(v.valor) : null,
-          motorista_origem: origem, motorista: (v.motorista || "").trim() || null,
+          motorista_origem: origem, motorista: origem === "fornecedor" ? (v.motorista || "").trim() || null : primeiroNome(v.motorista) || null,
           motorista_pessoa_id: origem === "freela" ? v.motorista_pessoa_id || null : null,
           valor_motorista: origem === "freela" ? numCampo(v.valor_motorista) : null,
           km_ida: usaKm(v) ? numCampo(v.km_ida) : null, km_volta: usaKm(v) ? numCampo(v.km_volta) : null,
@@ -8669,7 +8675,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
       <datalist id="os-cat-itens">{catItens.itens.filter((i) => i.ativo !== false).map((i) => <option key={i.id} value={i.nome}>{i.agrupador ? "conjunto" : i.unidade || ""}</option>)}</datalist>
       {titulo(`Veículos da operação (${(os.veiculos || []).length})`)}
       <datalist id="os-veiculos">{veiculosConhecidos.map((v) => <option key={v} value={v} />)}</datalist>
-      <datalist id="os-motoristas">{nomesEquipe.map((n) => <option key={n} value={n} />)}</datalist>
+      <datalist id="os-motoristas"><OpcoesNomes nomes={nomesEquipe} /></datalist>
       <datalist id="os-fornecedores">{fornecedores.map((p) => <option key={p.id} value={p.nome}>{p.documento || ""}</option>)}</datalist>
       {(() => {
         const cartao = (v, i) => {
@@ -8684,7 +8690,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
               {opcoes.map(([val, lb]) => <button key={lb} type="button" onClick={() => onSel(val)} style={chip(atual === val, c)}>{lb}</button>)}
             </div>
           );
-          const pFreela = v.motorista_origem === "freela" && v.motorista ? pessoaPorNome(v.motorista) : null;
+          const pFreela = v.motorista_origem === "freela" && v.motorista ? (pessoas.find((p) => p.id === v.motorista_pessoa_id) || pessoaPorNome(v.motorista)) : null;
           const pForn = v.terceiro && v.fornecedor ? pessoaPorNome(v.fornecedor) : null;
           return (
             <div key={v._k} style={{ border: `1px solid ${BORDER}`, borderLeft: `4px solid ${cor}`, borderRadius: 8, padding: 12, background: v.terceiro ? "#FAF8FE" : "#FBFCFE" }}>
@@ -8718,7 +8724,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
                 <div style={grid}>
                   <Field label={frete ? "Nome do motorista (opcional)" : v.motorista_origem === "freela" ? "Freela (cadastro)" : "Funcionário"}>
                     <input list={frete ? undefined : v.motorista_origem === "freela" ? "os-fornecedores" : "os-motoristas"} value={v.motorista}
-                      onChange={(e) => { const p = v.motorista_origem === "freela" ? pessoaPorNome(e.target.value) : null; setVs({ motorista: e.target.value, motorista_pessoa_id: p?.id || null }); }}
+                      onChange={(e) => { const p = v.motorista_origem === "freela" ? pessoaPorNome(e.target.value) : null; setVs({ motorista: p ? primeiroNome(p.nome) : e.target.value, motorista_pessoa_id: p?.id || (v.motorista_origem === "freela" && primeiroNome(e.target.value) === primeiroNome(v.motorista) ? v.motorista_pessoa_id : null) }); }}
                       style={inputStyle} placeholder={v.motorista_origem === "freela" && !frete ? "digite para buscar no cadastro" : ""} />
                     {v.motorista_origem === "freela" && !frete && v.motorista && <div style={{ fontSize: 11, marginTop: 3, color: pFreela ? OK : "#8A5A00" }}>{pFreela ? "✓ no cadastro" : "não está no cadastro — cadastre em Financeiro para pagar"}</div>}
                   </Field>
@@ -9226,7 +9232,7 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
     if (!texto) { setErro("Escreva a anotação."); return; }
     setErro("");
     const corpo = {
-      data: anot.data, hora: anot.hora || null, hora_fim: anot.hora_fim || null, tipo: anot.tipo, pessoa: anot.pessoa.trim() || null, texto,
+      data: anot.data, hora: anot.hora || null, hora_fim: anot.hora_fim || null, tipo: anot.tipo, pessoa: ehForn ? anot.pessoa.trim() || null : primeiroNome(anot.pessoa) || null, texto,
       fornecedor_id: ehForn ? (fornPorNome(anot.pessoa)?.id || null) : null,
       servico: ehForn ? (anot.servico || "").trim() || null : null,
     };
@@ -9405,8 +9411,8 @@ function AgendaLogistica({ session, setErro, lista, nomesEquipe, onAbrirOS }) {
               ) : (
                 <>
                   <input list="ag-anot-pessoas" value={x.pessoa} onChange={(e) => setX("pessoa", e.target.value)} placeholder="Funcionário ou Todos" style={{ ...inputStyle, width: 170 }} />
-                  <button type="button" onClick={() => setX("pessoa", "Todos")} title="Anotação vale para a equipe inteira" style={{ ...btnGhostSmall, fontWeight: 700, background: x.pessoa === "Todos" ? NAVY : "#fff", color: x.pessoa === "Todos" ? "#fff" : TEXT }}>Todos</button>
-                  <datalist id="ag-anot-pessoas"><option value="Todos">equipe inteira</option>{nomesEquipe.map((n) => <option key={n} value={n} />)}</datalist>
+                  <button type="button" onClick={() => setX("pessoa", "TODOS")} title="Anotação vale para a equipe inteira" style={{ ...btnGhostSmall, fontWeight: 700, background: primeiroNome(x.pessoa) === "TODOS" ? NAVY : "#fff", color: primeiroNome(x.pessoa) === "TODOS" ? "#fff" : TEXT }}>Todos</button>
+                  <datalist id="ag-anot-pessoas"><option value="TODOS">equipe inteira</option><OpcoesNomes nomes={nomesEquipe} /></datalist>
                 </>
               )}
               <input value={x.texto} onChange={(e) => setX("texto", e.target.value)} onKeyDown={(e) => e.key === "Enter" && salvarAnotacao()} placeholder={x.tipo === "fornecedor" ? "Motivo (ex.: manutenção da impressora, levar palco)" : "Escreva o que aconteceu ou o que precisa ser feito…"} style={{ ...inputStyle, flex: 1, minWidth: 220 }} />
