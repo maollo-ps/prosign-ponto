@@ -5668,7 +5668,7 @@ function LancamentosFinView({ session, setErro, centros }) {
           <thead><tr style={{ background: BG }}>
             <th style={{ ...thS, width: 28 }}><input type="checkbox" title="Selecionar todos" checked={filtrados.length > 0 && filtrados.every((l) => marcados[l.id])} onChange={(e) => setMarcados(e.target.checked ? Object.fromEntries(filtrados.map((l) => [l.id, true])) : {})} /></th>
             <th style={thS}>Emp.</th><th style={thS}>Tipo</th><th style={thS}>Nº</th><th style={thS}>Venc.</th><th style={thS}>Pgto</th>
-            <th style={thS}>Fornecedor / Cliente</th><th style={thS}>Conta</th><th style={thS}>Evento</th><th style={{ ...thS, textAlign: "right" }}>Valor</th><th style={thS}>Sit.</th><th style={thS}></th>
+            <th style={thS}>Fornecedor / Cliente</th><th style={thS}>Conta</th><th style={thS}>Evento</th><th style={{ ...thS, textAlign: "right" }}>Valor</th><th style={thS}>Sit.</th><th style={{ ...thS, position: "sticky", right: 0, background: BG, boxShadow: "-6px 0 8px -6px rgba(0,0,0,.18)" }}>Ações</th>
           </tr></thead>
           <tbody>
             {carregando && <tr><td colSpan={12} style={{ ...tdS, color: MUTED }}>Carregando...</td></tr>}
@@ -5697,10 +5697,10 @@ function LancamentosFinView({ session, setErro, centros }) {
                     <td style={{ ...tdS, fontSize: 12 }}>{l.orcamentos ? `${l.orcamentos.numero_or ? `PR ${l.orcamentos.numero_or} · ` : ""}${l.orcamentos.evento}` : <span style={{ color: MUTED }}>—</span>}</td>
                     <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, color: l.tipo === "receber" ? "#2E7D5B" : TEXT, whiteSpace: "nowrap" }}>
                       {brl(l.valor)}
-                      {l.valor_pago != null && Math.abs(Number(l.valor_pago) - Number(l.valor)) > 0.009 && <div style={{ fontSize: 11, color: MUTED }}>{l.tipo === "receber" ? "recebido" : "pago"} {brl(l.valor_pago)}{Number(l.antecipacao) ? ` (antecip. ${brl(l.antecipacao)})` : ""}</div>}
+                      {l.valor_pago != null && Math.abs(Number(l.valor_pago) - Number(l.valor)) > 0.009 && <div style={{ fontSize: 11, color: MUTED }}>{l.tipo === "receber" ? "recebido" : "pago"} {brl(l.valor_pago)}{Number(l.antecipacao) ? <div>antecip. {brl(l.antecipacao)}</div> : null}</div>}
                     </td>
                     <td style={{ ...tdS, fontSize: 12, fontWeight: 700, color: SIT_COR[sit] }}>{SIT_LABEL[sit]}</td>
-                    <td style={{ ...tdS, whiteSpace: "nowrap" }}>
+                    <td style={{ ...tdS, whiteSpace: "nowrap", position: "sticky", right: 0, background: "#fff", boxShadow: "-6px 0 8px -6px rgba(0,0,0,.18)" }}>
                       {sit !== "quitada"
                         ? <button onClick={() => { setBaixaId(baixaId === l.id ? null : l.id); setEditId(null); }} style={{ ...btnGhostSmall, color: "#2E7D5B", fontWeight: 700 }}>{l.tipo === "receber" ? "Receber" : "Pagar"}</button>
                         : <><button onClick={() => { setBaixaId(baixaId === `aj-${l.id}` ? null : `aj-${l.id}`); setEditId(null); }} style={{ ...btnGhostSmall, color: NAVY, fontWeight: 700 }} title="Corrigir juros, desconto, antecipação ou valor recebido">Ajustar</button>{" "}<button onClick={() => estornar(l)} style={btnGhostSmall} title="Desfazer a baixa">Estornar</button></>}
@@ -5710,12 +5710,12 @@ function LancamentosFinView({ session, setErro, centros }) {
                   </tr>
                   {baixaId === `aj-${l.id}` && (
                     <tr style={{ background: "#F3F7FB" }}><td colSpan={12} style={{ padding: 16 }}>
-                      <BaixaLancamento ajuste l={l} salvando={salvando} onConfirmar={(b) => confirmarBaixa(l, b)} onCancelar={() => setBaixaId(null)} />
+                      <div style={{ position: "sticky", left: 16, maxWidth: "min(1150px, calc(100vw - 110px))" }}><BaixaLancamento ajuste l={l} salvando={salvando} onConfirmar={(b) => confirmarBaixa(l, b)} onCancelar={() => setBaixaId(null)} /></div>
                     </td></tr>
                   )}
                   {baixaId === l.id && (
                     <tr style={{ background: "#F2FAF5" }}><td colSpan={12} style={{ padding: 16 }}>
-                      <BaixaLancamento l={l} salvando={salvando} onConfirmar={(b) => confirmarBaixa(l, b)} onCancelar={() => setBaixaId(null)} />
+                      <div style={{ position: "sticky", left: 16, maxWidth: "min(1150px, calc(100vw - 110px))" }}><BaixaLancamento l={l} salvando={salvando} onConfirmar={(b) => confirmarBaixa(l, b)} onCancelar={() => setBaixaId(null)} /></div>
                     </td></tr>
                   )}
                   {editId === l.id && (
