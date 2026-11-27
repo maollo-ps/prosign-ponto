@@ -47,7 +47,7 @@ function decimalToHHMM(dec) {
 }
 // "olho" do cabeçalho: esconde os valores na tela (reunião, tela compartilhada).
 // Impressões, PDFs e Excel continuam com os valores reais (brlR).
-let _ocultarValores = (() => { try { return localStorage.getItem("ocultar_valores") === "1"; } catch { return false; } })();
+let _ocultarValores = true; // a tela sempre abre com os valores ocultos
 function brlR(v) {
   return (v || 0).toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
@@ -593,9 +593,10 @@ export default function App() {
   function alternarOcultar() {
     const novo = !ocultar;
     _ocultarValores = novo;
-    try { localStorage.setItem("ocultar_valores", novo ? "1" : "0"); } catch {}
     setOcultar(novo);
   }
+  // ao trocar de área (Comercial, Financeiro, RH…) os valores voltam a ficar ocultos
+  useEffect(() => { _ocultarValores = true; setOcultar(true); }, [tab]);
   const [prefCelular, setPrefCelular] = useState(() => { try { return localStorage.getItem("modo_celular") || "auto"; } catch { return "auto"; } });
   const [celAtivo, setCelAtivo] = useState(() => modoCelularAtivo(prefCelular));
   useEffect(() => {
@@ -10287,7 +10288,7 @@ function ResultadosAdminView({ session, setErro }) {
 // Comercial · Dashboard
 // =========================================================
 function DashboardComercialView({ session, setErro, clientes }) {
-  const [visao, setVisao] = useState("mes"); // "mes" | "ano"
+  const [visao, setVisao] = useState("ano"); // "mes" | "ano" — abre no anual
   const [mesRef, setMesRef] = useState(() => {
     const d = new Date();
     return `${d.getFullYear()}-${MESES[d.getMonth()]}`;
