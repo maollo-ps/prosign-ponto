@@ -8902,7 +8902,7 @@ function ProducaoView({ session, setErro }) {
   async function carregar() {
     setCarregando(true);
     try {
-      const rows = (await sbRequest("os_itens?select=*,os:ordens_servico!inner(id,numero,evento,cliente_nome,local,montagem_inicio,status,orcamentos(numero_or))&setor=not.is.null&os.status=not.in.(concluida,cancelada)&limit=2000", session)) || [];
+      const rows = (await sbRequest("os_itens?select=*,os:ordens_servico!inner(id,numero,evento,cliente_nome,local,montagem_inicio,status,orcamento_id,orcamentos(numero_or))&setor=not.is.null&os.status=not.in.(concluida,cancelada)&limit=2000", session)) || [];
       setItens(rows);
     } catch (e) {
       setErro(/os_itens|ordens_servico/.test(e.message) ? "A área de Produção ainda não foi ativada no banco (falta rodar o SQL migracao_producao_logistica.sql)." : msgSupabase(e));
@@ -9052,7 +9052,8 @@ function ProducaoView({ session, setErro }) {
                     <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 3 }}>
                       <span style={{ fontFamily: FONT_MONO, fontWeight: 700, color: NAVY, fontSize: 15 }}>{g.pr ? `PR ${g.pr}` : numOS(g.os?.numero)}</span>
                       {g.pr && <span style={{ fontSize: 11, color: MUTED }}>{numOS(g.os?.numero)}</span>}
-                      {!g.pr && <span style={{ fontSize: 10, fontWeight: 700, color: "#5B4B8A", background: "#EEEAF7", borderRadius: 999, padding: "1px 7px" }}>sem orçamento</span>}
+                      {!g.pr && !g.os?.orcamento_id && <span style={{ fontSize: 10, fontWeight: 700, color: "#5B4B8A", background: "#EEEAF7", borderRadius: 999, padding: "1px 7px" }}>sem orçamento</span>}
+                      {!g.pr && g.os?.orcamento_id && <span title="O orçamento existe, mas está sem número de PR" style={{ fontSize: 10, fontWeight: 700, color: "#8A5A00", background: "#FFF3D6", borderRadius: 999, padding: "1px 7px" }}>orçamento sem nº de PR</span>}
                       <BadgePrazo ts={g.os?.montagem_inicio} />
                     </div>
                     <div style={{ fontWeight: 700, color: TEXT }}>{g.os?.evento || "—"}</div>
