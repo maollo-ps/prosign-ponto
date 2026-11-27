@@ -5416,6 +5416,7 @@ function LancamentosFinView({ session, setErro, centros }) {
   const [contaLote, setContaLote] = useState(null);
   const [dataLote, setDataLote] = useState(hoje);
   const [bancoLote, setBancoLote] = useState("");
+  const [confirmaLote, setConfirmaLote] = useState(false);
   const [trocando, setTrocando] = useState(null);
   const [inicioInteg, setInicioInteg] = useState(null);
   const porId = useMemo(() => Object.fromEntries(centros.map((c) => [c.id, c])), [centros]);
@@ -5612,8 +5613,8 @@ function LancamentosFinView({ session, setErro, centros }) {
 
   async function baixarLote(ids) {
     const alvo = regs.filter((r) => ids.includes(String(r.id)) && r.situacao !== "quitada");
-    if (!alvo.length) return;
-    if (!window.confirm(`Dar baixa em ${alvo.length} lançamento(s) em ${fmtDataBR(dataLote)}, pelo valor original (${brl(soma(alvo))})?`)) return;
+    setConfirmaLote(false);
+    if (!alvo.length) { setErro("Os lançamentos selecionados já estão quitados."); return; }
     setTrocando("lote"); setErro("");
     try {
       for (const l of alvo) {
@@ -5729,7 +5730,13 @@ function LancamentosFinView({ session, setErro, centros }) {
                   <span style={{ fontSize: 13 }}>Data:</span>
                   <input type="date" value={dataLote} onChange={(e) => setDataLote(e.target.value)} style={{ ...inputStyle, width: 150 }} />
                   <select value={bancoLote} onChange={(e) => setBancoLote(e.target.value)} style={{ ...selStyle, width: "auto" }}><option value="">banco (opcional)</option>{BANCOS_FIN.map((x) => <option key={x} value={x}>{x}</option>)}</select>
-                  <button disabled={trocando || !dataLote} onClick={() => baixarLote(idsMarcados)} style={{ ...btnPrimary, background: "#2E7D5B" }}>{trocando === "lote" ? "Salvando..." : "Baixar selecionados"}</button>
+                  {!confirmaLote
+                    ? <button disabled={trocando || !dataLote} onClick={() => setConfirmaLote(true)} style={{ ...btnPrimary, background: "#2E7D5B" }}>{trocando === "lote" ? "Salvando..." : "Baixar selecionados"}</button>
+                    : <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                        <b style={{ fontSize: 13, color: "#2E7D5B" }}>Confirmar baixa de {idsMarcados.length} em {fmtDataBR(dataLote)}?</b>
+                        <button onClick={() => baixarLote(idsMarcados)} style={{ ...btnPrimary, background: "#2E7D5B" }}>Sim, dar baixa</button>
+                        <button onClick={() => setConfirmaLote(false)} style={btnGhostSmall}>Cancelar</button>
+                      </span>}
                 </div>
                 <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>Baixa pelo valor original. Com juros, desconto ou antecipação, use a baixa individual (botão Pagar/Receber da linha).</div>
               </div>
