@@ -9021,13 +9021,14 @@ function LogisticaView({ session, setErro }) {
   const t = busca.trim().toLowerCase();
   const aCompletar = (o) => o.status === "aberta" && !o.montagem_inicio;
   const pendentes = lista.filter(aCompletar);
-  const filtradas = lista.filter((o) => o.status !== "cancelada" && (!soPendentes || aCompletar(o)) && (origem === "todas" || (origem === "sem" ? !o.orcamento_id : !!o.orcamento_id)) && (!t || `${o.evento} ${o.cliente_nome || ""} ${o.local || ""} ${o.orcamentos?.numero_or || ""} ${numOS(o.numero)}`.toLowerCase().includes(t)));
+  const concluidas = lista.filter((o) => o.status === "concluida");
+  const filtradas = lista.filter((o) => o.status !== "cancelada" && (sub === "concluidas" ? o.status === "concluida" : o.status !== "concluida") && (sub === "concluidas" || !soPendentes || aCompletar(o)) && (origem === "todas" || (origem === "sem" ? !o.orcamento_id : !!o.orcamento_id)) && (!t || `${o.evento} ${o.cliente_nome || ""} ${o.local || ""} ${o.orcamentos?.numero_or || ""} ${numOS(o.numero)}`.toLowerCase().includes(t)));
 
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 16 }}>
         <div style={{ display: "flex", gap: 6 }}>
-          {[["agenda", "Agenda"], ["lista", "Ordens de serviço"]].map(([id, lb]) => (
+          {[["agenda", "Agenda"], ["lista", "Ordens de serviço"], ["concluidas", `OS concluídas (${concluidas.length})`]].map(([id, lb]) => (
             <button key={id} onClick={() => setSub(id)} style={{ ...btnGhostSmall, fontWeight: 700, background: sub === id ? NAVY : "#fff", color: sub === id ? "#fff" : TEXT, borderColor: sub === id ? NAVY : BORDER }}>{lb}</button>
           ))}
         </div>
@@ -9056,13 +9057,16 @@ function LogisticaView({ session, setErro }) {
       {!carregando && sub === "lista" && soPendentes && (
         <div style={{ fontSize: 13, marginBottom: 8 }}>Mostrando só as OS a completar · <button onClick={() => setSoPendentes(false)} style={{ ...btnGhostSmall, padding: "3px 8px" }}>ver todas</button></div>
       )}
-      {!carregando && sub === "lista" && (
+      {!carregando && sub === "concluidas" && (
+        <div style={{ fontSize: 13, color: MUTED, marginBottom: 8 }}>OS com status <b>Concluída</b>, da mais recente para a mais antiga. Para reabrir, abra a OS e mude o status.</div>
+      )}
+      {!carregando && (sub === "lista" || sub === "concluidas") && (
         <Card style={{ padding: 0, overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
             <thead><tr style={{ background: BG }}><th style={thS}>OS</th><th style={thS}>Evento</th><th style={thS}>Cliente</th><th style={thS}>Montagem</th><th style={thS}>Desmontagem</th><th style={thS}>Produção</th><th style={thS}>Separação</th><th style={thS}>Situação</th></tr></thead>
             <tbody>
               {filtradas.length === 0 && <tr><td colSpan={8} style={{ ...tdS, color: MUTED }}>Nenhuma OS.</td></tr>}
-              {filtradas.map((o) => { const r = resumo(o); return (
+              {(sub === "concluidas" ? [...filtradas].sort((a, b) => String(b.desmontagem_inicio || b.montagem_inicio || "").localeCompare(String(a.desmontagem_inicio || a.montagem_inicio || ""))) : filtradas).map((o) => { const r = resumo(o); return (
                 <tr key={o.id} onClick={() => setAberta({ id: o.id })} style={{ borderTop: `1px solid ${BORDER}`, cursor: "pointer" }}>
                   <td style={{ ...tdS, fontFamily: FONT_MONO }}>{numOS(o.numero)}{o.orcamento_id
                     ? (o.orcamentos?.numero_or && <div style={{ fontSize: 11, color: MUTED }}>PR {o.orcamentos.numero_or}</div>)
