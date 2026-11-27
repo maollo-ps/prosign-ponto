@@ -5667,8 +5667,9 @@ function LancamentosFinView({ session, setErro, centros }) {
         <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 1050 }}>
           <thead><tr style={{ background: BG }}>
             <th style={{ ...thS, width: 28 }}><input type="checkbox" title="Selecionar todos" checked={filtrados.length > 0 && filtrados.every((l) => marcados[l.id])} onChange={(e) => setMarcados(e.target.checked ? Object.fromEntries(filtrados.map((l) => [l.id, true])) : {})} /></th>
+            <th style={thS}>Ações</th>
             <th style={thS}>Emp.</th><th style={thS}>Tipo</th><th style={thS}>Nº</th><th style={thS}>Venc.</th><th style={thS}>Pgto</th>
-            <th style={thS}>Fornecedor / Cliente</th><th style={thS}>Conta</th><th style={thS}>Evento</th><th style={{ ...thS, textAlign: "right" }}>Valor</th><th style={thS}>Sit.</th><th style={{ ...thS, position: "sticky", right: 0, background: BG, boxShadow: "-6px 0 8px -6px rgba(0,0,0,.18)" }}>Ações</th>
+            <th style={thS}>Fornecedor / Cliente</th><th style={thS}>Conta</th><th style={thS}>Evento</th><th style={{ ...thS, textAlign: "right" }}>Valor</th><th style={thS}>Sit.</th>
           </tr></thead>
           <tbody>
             {carregando && <tr><td colSpan={12} style={{ ...tdS, color: MUTED }}>Carregando...</td></tr>}
@@ -5680,6 +5681,13 @@ function LancamentosFinView({ session, setErro, centros }) {
                 <React.Fragment key={l.id}>
                   <tr style={{ borderTop: `1px solid ${BORDER}`, background: marcados[l.id] ? "#FFFBEF" : undefined }}>
                     <td style={tdS}><input type="checkbox" checked={!!marcados[l.id]} onChange={(e) => setMarcados((m) => ({ ...m, [l.id]: e.target.checked }))} /></td>
+                    <td style={{ ...tdS, whiteSpace: "nowrap" }}>
+                      {sit !== "quitada"
+                        ? <button onClick={() => { setBaixaId(baixaId === l.id ? null : l.id); setEditId(null); }} style={{ ...btnGhostSmall, color: "#2E7D5B", fontWeight: 700 }}>{l.tipo === "receber" ? "Receber" : "Pagar"}</button>
+                        : <><button onClick={() => { setBaixaId(baixaId === `aj-${l.id}` ? null : `aj-${l.id}`); setEditId(null); }} style={{ ...btnGhostSmall, color: NAVY, fontWeight: 700 }} title="Corrigir juros, desconto, antecipação ou valor recebido">Ajustar</button>{" "}<button onClick={() => estornar(l)} style={btnGhostSmall} title="Desfazer a baixa">Estornar</button></>}
+                      {" "}<button onClick={() => { setEditId(editId === l.id ? null : l.id); setBaixaId(null); }} style={btnGhostSmall}>{editId === l.id ? "Fechar" : "Editar"}</button>
+                      {" "}<button onClick={() => excluir(l)} style={btnDangerSmall} title="Excluir"><Trash2 size={13} /></button>
+                    </td>
                     <td style={tdS}><ChipEmpresa id={l.empresa} /></td>
                     <td style={tdS}>{l.tipo === "pagar" ? "Pagar" : "Receber"}</td>
                     <td style={{ ...tdS, fontFamily: FONT_MONO, fontSize: 12 }}>{l.numero_conta}{l.parcela_total ? <div style={{ fontSize: 11, color: MUTED }}>{l.parcela_num}/{l.parcela_total}</div> : null}</td>
@@ -5700,13 +5708,6 @@ function LancamentosFinView({ session, setErro, centros }) {
                       {l.valor_pago != null && Math.abs(Number(l.valor_pago) - Number(l.valor)) > 0.009 && <div style={{ fontSize: 11, color: MUTED }}>{l.tipo === "receber" ? "recebido" : "pago"} {brl(l.valor_pago)}{Number(l.antecipacao) ? <div>antecip. {brl(l.antecipacao)}</div> : null}</div>}
                     </td>
                     <td style={{ ...tdS, fontSize: 12, fontWeight: 700, color: SIT_COR[sit] }}>{SIT_LABEL[sit]}</td>
-                    <td style={{ ...tdS, whiteSpace: "nowrap", position: "sticky", right: 0, background: "#fff", boxShadow: "-6px 0 8px -6px rgba(0,0,0,.18)" }}>
-                      {sit !== "quitada"
-                        ? <button onClick={() => { setBaixaId(baixaId === l.id ? null : l.id); setEditId(null); }} style={{ ...btnGhostSmall, color: "#2E7D5B", fontWeight: 700 }}>{l.tipo === "receber" ? "Receber" : "Pagar"}</button>
-                        : <><button onClick={() => { setBaixaId(baixaId === `aj-${l.id}` ? null : `aj-${l.id}`); setEditId(null); }} style={{ ...btnGhostSmall, color: NAVY, fontWeight: 700 }} title="Corrigir juros, desconto, antecipação ou valor recebido">Ajustar</button>{" "}<button onClick={() => estornar(l)} style={btnGhostSmall} title="Desfazer a baixa">Estornar</button></>}
-                      {" "}<button onClick={() => { setEditId(editId === l.id ? null : l.id); setBaixaId(null); }} style={btnGhostSmall}>{editId === l.id ? "Fechar" : "Editar"}</button>
-                      {" "}<button onClick={() => excluir(l)} style={btnDangerSmall} title="Excluir"><Trash2 size={13} /></button>
-                    </td>
                   </tr>
                   {baixaId === `aj-${l.id}` && (
                     <tr style={{ background: "#F3F7FB" }}><td colSpan={12} style={{ padding: 16 }}>
