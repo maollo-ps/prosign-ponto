@@ -8331,6 +8331,13 @@ function imprimirOS(os, itens, pr, catItens = null) {
   const veics = os.veiculos || veiculosDaOS(os);
   const eq = (l) => (l || []).map((n) => e(n)).join(", ") || "&nbsp;";
   const dh = (ts) => (ts ? e(fmtDH(ts)) : "—");
+  // "01/12 08:30 – 17:00" (mesmo dia) ou "01/12 23:30 – 02/12 02:00"
+  const faixa = (ini, fim) => {
+    if (!ini) return "—";
+    if (!fim) return dh(ini);
+    const hf = new Date(fim).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+    return diaISO(ini) === diaISO(fim) ? `${dh(ini)} – ${e(hf)}` : `${dh(ini)} – ${dh(fim)}`;
+  };
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${e(numOS(os.numero))} · ${e(os.evento)}</title><style>
   @page { size: A4; margin: 8mm; }
   * { box-sizing: border-box; }
@@ -8342,7 +8349,7 @@ function imprimirOS(os, itens, pr, catItens = null) {
   .topo h1 { font-size: 17px; margin: 0; text-align: right; }
   /* bloco principal: letras maiores */
   .big td { padding: 5px 7px; } .big .l { font-size: 10px; } .big .v { font-size: 15px; } .big .v b { font-size: 16px; }
-  .datas td { width: 33.33%; } .datas .v { font-size: 17px; font-weight: 700; } .datas .ate { font-size: 12px; font-weight: 400; }
+  .datas td { width: 33.33%; } .datas .v { font-size: 15px; font-weight: 700; white-space: nowrap; }
   .eqs td { width: 25%; } .eqs .v { font-size: 15px; font-weight: 700; line-height: 1.35; min-height: 22px; }
   .ass { height: 26px; }
   #pg { width: 194mm; }
@@ -8358,9 +8365,9 @@ function imprimirOS(os, itens, pr, catItens = null) {
   </table>
   <table class="big datas">
     <tr><td class="l">MONTAGEM</td><td class="l">EVENTO</td><td class="l">DESMONTAGEM</td></tr>
-    <tr><td class="v">${dh(os.montagem_inicio)}${os.montagem_fim ? `<div class="ate">até ${dh(os.montagem_fim)}</div>` : ""}</td>
-        <td class="v">${dh(os.evento_inicio)}${os.evento_fim ? `<div class="ate">até ${dh(os.evento_fim)}</div>` : ""}</td>
-        <td class="v">${dh(os.desmontagem_inicio)}${os.desmontagem_fim ? `<div class="ate">até ${dh(os.desmontagem_fim)}</div>` : ""}</td></tr>
+    <tr><td class="v">${faixa(os.montagem_inicio, os.montagem_fim)}</td>
+        <td class="v">${faixa(os.evento_inicio, os.evento_fim)}</td>
+        <td class="v">${faixa(os.desmontagem_inicio, os.desmontagem_fim)}</td></tr>
   </table>
   <table class="big eqs">
     <tr><td class="h" colspan="4">EQUIPES</td></tr>
