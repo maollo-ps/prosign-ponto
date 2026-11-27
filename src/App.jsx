@@ -5413,6 +5413,11 @@ function LancamentosFinView({ session, setErro, centros }) {
     if (qual === "vencidas") setModo("vencidas");
   }
 
+  const semClassifValida = (l) => {
+    const c = porId[l.centro_custo_id]?.classificacao;
+    if (!l.centro_custo_id || !c || c === "a_classificar") return true;
+    return l.tipo === "pagar" && !["variavel", "fixo", "nao_operacional"].includes(c);
+  };
   const filtrados = regs.filter((l) => {
     if (empresa !== "todas" && l.empresa !== empresa) return false;
     if (tipo !== "todos" && l.tipo !== tipo) return false;
@@ -5420,7 +5425,8 @@ function LancamentosFinView({ session, setErro, centros }) {
     if (situacao === "abertas" ? sit === "quitada" : situacao !== "todas" && sit !== situacao) return false;
     const cl = porId[l.centro_custo_id]?.classificacao;
     if (classif !== "todas" && (cl || "a_classificar") !== classif) return false;
-    if (pendencia === "sem_conta" && cl && cl !== "a_classificar") return false;
+    // (semClassifValida: despesa sem conta, "a classificar" ou numa conta que não é fixa/variável/não operacional — fica fora do resultado)
+    if (pendencia === "sem_conta" && !semClassifValida(l)) return false;
     if (pendencia === "sem_evento" && !(l.tipo === "pagar" && cl === "variavel" && !l.orcamento_id)) return false;
     if (busca.trim()) {
       const t = busca.trim().toLowerCase();
@@ -5435,7 +5441,7 @@ function LancamentosFinView({ session, setErro, centros }) {
   const totAberto = soma(filtrados.filter((l) => situacaoReal(l) !== "quitada"));
   const totVencido = soma(filtrados.filter((l) => situacaoReal(l) === "vencida"));
   const semEvento = regs.filter((l) => l.tipo === "pagar" && porId[l.centro_custo_id]?.classificacao === "variavel" && !l.orcamento_id).length;
-  const semConta = regs.filter((l) => !l.centro_custo_id || porId[l.centro_custo_id]?.classificacao === "a_classificar").length;
+  const semConta = regs.filter(semClassifValida).length;
 
   function valorInicialDe(l) {
     return {
@@ -5589,6 +5595,14 @@ function LancamentosFinView({ session, setErro, centros }) {
         <span style={{ fontSize: 13, color: MUTED }}>Atalhos:</span>
         {[["hoje", "Vence hoje"], ["7dias", "Próximos 7 dias"], ["mes", "Vence este mês"]].map(([id, lb]) => <button key={id} onClick={() => atalho(id)} style={{ ...btnGhostSmall, fontSize: 12 }}>{lb}</button>)}
       </div>
+      {(semEvento > 0 || semConta > 0) && (
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", background: "#FFF8E6", border: "1px solid #E8D49A", borderRadius: 10, padding: "8px 12px", marginBottom: 12, fontSize: 13 }}>
+          <b>⚠ Pendências no período:</b>
+          {semEvento > 0 && <button onClick={() => setPendencia("sem_evento")} style={{ ...btnGhostSmall, fontWeight: 700, background: pendencia === "sem_evento" ? NAVY : "#fff", color: pendencia === "sem_evento" ? "#fff" : TEXT }}>{semEvento} custo{semEvento > 1 ? "s" : ""} variáve{semEvento > 1 ? "is" : "l"} sem evento</button>}
+          {semConta > 0 && <button onClick={() => setPendencia("sem_conta")} style={{ ...btnGhostSmall, fontWeight: 700, background: pendencia === "sem_conta" ? NAVY : "#fff", color: pendencia === "sem_conta" ? "#fff" : TEXT }}>{semConta} sem conta / a classificar (fora do resultado)</button>}
+          {pendencia !== "todas" && <button onClick={() => setPendencia("todas")} style={{ ...btnGhostSmall, fontSize: 12 }}>mostrar todos</button>}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}>
         {modo === "competencia" && <Field label="Competência"><input type="month" value={mes} onChange={(e) => e.target.value && setMes(e.target.value)} style={inputStyle} /></Field>}
         {(modo === "vencimento" || modo === "pagamento") && (
@@ -5756,6 +5770,48 @@ function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
 
   const r = useMemo(() => calcularResultado({ lancs, orcs, centrosPorId: porId, empresaFiltro: empresa }), [lancs, orcs, porId, empresa]);
   const t = r.tot;
+  // pendências do mês, para corrigir aqui mesmo
+  const [verLista, setVerLista] = useState(null); // "sem_evento" | "a_classificar"
+  const [vinculando, setVinculando] = useState(null);
+  const classeL = (l) => porId[l.centro_custo_id]?.classificacao || "a_classificar";
+  const daEmpresa = (l) => empresa === "todas" || l.empresa === empresa;
+  const pendSemEvento = lancs.filter((l) => daEmpresa(l) && l.tipo === "pagar" && classeL(l) === "variavel" && !l.orcamento_id);
+  const pendAClass = lancs.filter((l) => daEmpresa(l) && l.tipo === "pagar" && !["variavel", "fixo", "nao_operacional"].includes(classeL(l)));
+  async function corrigirLanc(l, campos, extra = {}) {
+    try {
+      await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: campos });
+      setLancs((xs) => xs.map((x) => (x.id === l.id ? { ...x, ...campos, ...extra } : x)));
+    } catch (e) { setErro(msgSupabase(e)); }
+  }
+  const tabelaPend = (lista, modo) => (
+    <div style={{ margin: "8px 0 12px", border: `1px solid #E8D49A`, borderRadius: 8, background: "#fff", overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead><tr style={{ background: "#FBF3DC" }}>{["Venc.", "Fornecedor", "Histórico", "Valor", "Conta (classificação)", modo === "sem_evento" ? "Vincular ao evento" : ""].map((h, i) => <th key={i} style={{ textAlign: "left", padding: "6px 8px", fontSize: 11 }}>{h}</th>)}</tr></thead>
+        <tbody>
+          {lista.length === 0 && <tr><td colSpan={6} style={{ padding: 10, color: OK }}>Tudo resolvido neste mês. ✔</td></tr>}
+          {lista.map((l) => (
+            <tr key={l.id} style={{ borderTop: `1px solid ${BORDER}`, verticalAlign: "top" }}>
+              <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>{fmtDataBR(l.vencimento)}</td>
+              <td style={{ padding: "6px 8px", fontWeight: 600 }}>{l.fornecedor_cliente || "—"}<div style={{ fontSize: 10, color: MUTED }}>{nomeEmpresa(l.empresa)} · nº {l.numero_conta || "—"}</div></td>
+              <td style={{ padding: "6px 8px", color: MUTED }}>{l.historico || "—"}</td>
+              <td style={{ padding: "6px 8px", fontFamily: FONT_MONO, whiteSpace: "nowrap" }}>{brl(Number(l.valor))}</td>
+              <td style={{ padding: "6px 8px", minWidth: 230 }}>
+                <SelectConta centros={centros} value={l.centro_custo_id || ""} natureza="despesa" onChange={(id) => corrigirLanc(l, { centro_custo_id: id || null })} style={{ fontSize: 12 }} />
+                <div style={{ fontSize: 10, color: MUTED, marginTop: 2 }}>Atual: {porId[l.centro_custo_id] ? `${porId[l.centro_custo_id].codigo} ${porId[l.centro_custo_id].nome}` : "sem conta"} · {CLASSIF_LABEL[classeL(l)] || "A classificar"}</div>
+              </td>
+              {modo === "sem_evento" && (
+                <td style={{ padding: "6px 8px", minWidth: 260 }}>
+                  {vinculando === l.id
+                    ? <BuscaOrcamento session={session} setErro={setErro} onEscolher={(o) => { corrigirLanc(l, { orcamento_id: o.id }, { orcamentos: { evento: o.evento, numero_or: o.numero_or, empresa: o.empresa, clientes: o.clientes } }); setVinculando(null); }} />
+                    : <button onClick={() => setVinculando(l.id)} style={btnGhostSmall}>Escolher evento…</button>}
+                </td>
+              )}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
   const eventosVis = r.eventos.filter((e) => tipoServ === "todos" || (tipoServ === "contrato") === !!e.contrato);
   const subt = eventosVis.reduce((a, e) => ({ receita: a.receita + e.receita, direto: a.direto + e.direto, fixo: a.fixo + e.fixo, resultado: a.resultado + e.resultado }), { receita: 0, direto: 0, fixo: 0, resultado: 0 });
   const grupos = Object.entries(r.porGrupo).sort((a, b) => a[0].localeCompare(b[0]));
@@ -5787,9 +5843,13 @@ function ResultadoFinView({ session, setErro, centros, onAbrirEvento }) {
         <Card style={{ marginBottom: 18, background: "#FFF8E6", borderColor: "#E8D49A" }}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>Atenção</div>
           <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
-            {t.variaveisSemEvento > 0 && <li>{brl(t.variaveisSemEvento)} de custos variáveis sem evento vinculado: entram no resultado do mês, mas não aparecem em nenhum evento. Vincule em <b>Lançamentos → Pendências</b>.</li>}
+            {t.variaveisSemEvento > 0 && <li>{brl(t.variaveisSemEvento)} de custos variáveis sem evento vinculado ({pendSemEvento.length} lançamento{pendSemEvento.length !== 1 ? "s" : ""}): entram no resultado do mês, mas não aparecem em nenhum evento.{" "}
+              <button onClick={() => setVerLista(verLista === "sem_evento" ? null : "sem_evento")} style={{ ...btnGhostSmall, fontSize: 12, padding: "2px 10px", fontWeight: 700, color: NAVY }}>{verLista === "sem_evento" ? "Fechar" : "Ver e corrigir"}</button>
+              {verLista === "sem_evento" && tabelaPend(pendSemEvento, "sem_evento")}</li>}
             {t.fixosNaoRateados > 0 && <li>{brl(t.fixosNaoRateados)} de custos fixos não foram rateados porque a empresa não tem receita no mês.</li>}
-            {t.aClassificar > 0 && <li>{brl(t.aClassificar)} em contas "a classificar" ficaram fora do resultado até você definir a conta.</li>}
+            {t.aClassificar > 0 && <li>{brl(t.aClassificar)} em contas "a classificar" ({pendAClass.length} lançamento{pendAClass.length !== 1 ? "s" : ""}) ficaram fora do resultado até você definir a conta.{" "}
+              <button onClick={() => setVerLista(verLista === "a_classificar" ? null : "a_classificar")} style={{ ...btnGhostSmall, fontSize: 12, padding: "2px 10px", fontWeight: 700, color: NAVY }}>{verLista === "a_classificar" ? "Fechar" : "Ver e corrigir"}</button>
+              {verLista === "a_classificar" && tabelaPend(pendAClass, "a_classificar")}</li>}
           </ul>
         </Card>
       )}
