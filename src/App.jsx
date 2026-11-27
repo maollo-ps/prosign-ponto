@@ -539,6 +539,7 @@ const AREA_DAS_ABAS = {
   financeiro: "financeiro",
   producao: "producao",
   logistica: "logistica",
+  resultados: "resultados",
 };
 
 // Layout para celular: ativado automaticamente em telas estreitas, ou à mão pelo botão do cabeçalho.
@@ -624,7 +625,7 @@ export default function App() {
 
   const isAdmin = !!perfil?.is_admin;
   const temAcessoArea = (area) => isAdmin || areasPermitidas.includes(area);
-  const podeVerAba = (abaId) => (abaId === "usuarios" || abaId === "resultados" || abaId === "historico" ? isAdmin : abaId === "cadastros" ? (isAdmin || temAcessoArea("comercial") || temAcessoArea("financeiro")) : temAcessoArea(AREA_DAS_ABAS[abaId]));
+  const podeVerAba = (abaId) => (abaId === "resultados" ? (isAdmin || temAcessoArea("resultados")) : abaId === "usuarios" || abaId === "historico" ? isAdmin : abaId === "cadastros" ? (isAdmin || temAcessoArea("comercial") || temAcessoArea("financeiro")) : temAcessoArea(AREA_DAS_ABAS[abaId]));
 
   // Carrega o perfil (nome, admin?) e as áreas liberadas pro usuário logado.
   useEffect(() => {
@@ -718,7 +719,7 @@ export default function App() {
             {tab === "cadastros" && podeVerAba("cadastros") && (
               <CadastrosView session={session} setErro={setErro} />
             )}
-            {tab === "resultados" && isAdmin && (
+            {tab === "resultados" && podeVerAba("resultados") && (
               <ResultadosAdminView session={session} setErro={setErro} />
             )}
             {tab === "historico" && isAdmin && (
@@ -2146,6 +2147,7 @@ const AREAS_DISPONIVEIS = [
   { id: "financeiro", label: "Financeiro" },
   { id: "producao", label: "Produção" },
   { id: "logistica", label: "Logística" },
+  { id: "resultados", label: "Resultados" },
 ];
 
 // chama uma Edge Function do Supabase com a sessão de quem está logado
