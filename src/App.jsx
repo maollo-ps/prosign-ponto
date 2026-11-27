@@ -5364,6 +5364,7 @@ function LancamentosFinView({ session, setErro, centros }) {
   const [marcados, setMarcados] = useState({});
   const [contaLote, setContaLote] = useState(null);
   const [dataLote, setDataLote] = useState(hoje);
+  const [bancoLote, setBancoLote] = useState("");
   const [trocando, setTrocando] = useState(null);
   const [inicioInteg, setInicioInteg] = useState(null);
   const porId = useMemo(() => Object.fromEntries(centros.map((c) => [c.id, c])), [centros]);
@@ -5558,7 +5559,7 @@ function LancamentosFinView({ session, setErro, centros }) {
     setTrocando("lote"); setErro("");
     try {
       for (const l of alvo) {
-        await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: { situacao: "quitada", pagamento: dataLote, valor_pago: Number(l.valor) } });
+        await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: { situacao: "quitada", pagamento: dataLote, valor_pago: Number(l.valor), ...(bancoLote ? { banco: bancoLote } : {}) } });
       }
       setMarcados({});
       carregar();
@@ -5649,16 +5650,33 @@ function LancamentosFinView({ session, setErro, centros }) {
       {idsMarcados.length > 0 && (() => {
         const tipos = new Set(regs.filter((r) => idsMarcados.includes(String(r.id))).map((r) => r.tipo));
         return (
-          <Card style={{ marginBottom: 12, background: "#FFF8E6", borderColor: GOLD, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <b style={{ color: NAVY }}>{idsMarcados.length} selecionado(s)</b>
-            <span style={{ fontSize: 13 }}>Trocar a conta para:</span>
-            <SelectConta centros={centros} value={contaLote} onChange={setContaLote} natureza={tipos.size === 1 ? (tipos.has("receber") ? "receita" : "despesa") : undefined} style={{ minWidth: 260 }} />
-            <button disabled={!contaLote || trocando} onClick={() => trocarConta(idsMarcados, contaLote)} style={btnPrimary}><Save size={15} /> Aplicar</button>
-            <span style={{ width: 1, height: 26, background: BORDER }} />
-            <span style={{ fontSize: 13 }}>Dar baixa em</span>
-            <input type="date" value={dataLote} onChange={(e) => setDataLote(e.target.value)} style={{ ...inputStyle, width: 150 }} />
-            <button disabled={trocando || !dataLote} onClick={() => baixarLote(idsMarcados)} style={btnPrimary}>{trocando === "lote" ? "Salvando..." : "Baixar selecionados"}</button>
-            <button onClick={() => { setMarcados({}); setContaLote(null); }} style={btnGhostSmall}>Limpar seleção</button>
+          <Card style={{ marginBottom: 12, background: "#FFF8E6", borderColor: GOLD, padding: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <b style={{ color: NAVY }}>{idsMarcados.length} selecionado(s) · {brl(soma(regs.filter((r) => idsMarcados.includes(String(r.id)))))}</b>
+              <span style={{ fontSize: 12, color: MUTED }}>Escolha <b>uma</b> das ações abaixo — elas são independentes.</span>
+              <span style={{ flex: 1 }} />
+              <button onClick={() => { setMarcados({}); setContaLote(null); }} style={btnGhostSmall}>Limpar seleção</button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(330px, 1fr))", gap: 10 }}>
+              <div style={{ background: "#fff", border: "1px solid #CFE6D8", borderRadius: 8, padding: 10 }}>
+                <div style={{ fontWeight: 700, color: "#2E7D5B", marginBottom: 6 }}>① Dar baixa (pagar / receber todos)</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 13 }}>Data:</span>
+                  <input type="date" value={dataLote} onChange={(e) => setDataLote(e.target.value)} style={{ ...inputStyle, width: 150 }} />
+                  <select value={bancoLote} onChange={(e) => setBancoLote(e.target.value)} style={{ ...selStyle, width: "auto" }}><option value="">banco (opcional)</option>{BANCOS_FIN.map((x) => <option key={x} value={x}>{x}</option>)}</select>
+                  <button disabled={trocando || !dataLote} onClick={() => baixarLote(idsMarcados)} style={{ ...btnPrimary, background: "#2E7D5B" }}>{trocando === "lote" ? "Salvando..." : "Baixar selecionados"}</button>
+                </div>
+                <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>Baixa pelo valor original. Com juros, desconto ou antecipação, use a baixa individual (botão Pagar/Receber da linha).</div>
+              </div>
+              <div style={{ background: "#fff", border: `1px solid ${BORDER}`, borderRadius: 8, padding: 10 }}>
+                <div style={{ fontWeight: 700, color: NAVY, marginBottom: 6 }}>② Trocar a conta (classificação)</div>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <SelectConta centros={centros} value={contaLote} onChange={setContaLote} natureza={tipos.size === 1 ? (tipos.has("receber") ? "receita" : "despesa") : undefined} style={{ minWidth: 240 }} />
+                  <button disabled={!contaLote || trocando} onClick={() => trocarConta(idsMarcados, contaLote)} style={btnPrimary}><Save size={15} /> Aplicar conta</button>
+                </div>
+                <div style={{ fontSize: 11, color: MUTED, marginTop: 4 }}>Não é preciso trocar a conta para dar baixa.</div>
+              </div>
+            </div>
           </Card>
         );
       })()}
