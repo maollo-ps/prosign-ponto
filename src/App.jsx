@@ -8322,55 +8322,60 @@ function imprimirOS(os, itens, pr, catItens = null) {
   const e = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const caixa = (ok) => `<span class="cx">${ok ? "✔" : ""}</span>`;
   const linhasItens = itens.map((it) => `<tr><td class="c">${caixa(it.ida)}</td><td class="c">${caixa(it.volta)}</td><td class="c">${e(String(it.qtd).padStart(2, "0"))}</td><td>${e(it.descricao)}${Number(it.largura) && Number(it.altura) ? ` <b>${e(String(it.largura).replace(".", ","))} x ${e(String(it.altura).replace(".", ","))} m</b>` : ""}${it.setor ? ` <span class="s">[${e(nomeSetor(it.setor))}]</span>` : ""}${it.obs ? `<div class="s">${e(it.obs)}</div>` : ""}${(() => { const comp = catItens && it.item_id ? composicaoDoItem(catItens, it.item_id, Number(String(it.qtd).replace(",", ".")) || 1) : []; return comp.length ? `<div class="s" style="margin-top:2px"><b>Composto de:</b> ${comp.map((c) => `${e(fmtQtd(c.qtd))} × ${e(c.nome)}`).join(" · ")}</div>` : ""; })()}</td></tr>`).join("");
-  const vazias = Math.max(0, 4 - itens.length);
+  const vazias = Math.max(0, 3 - itens.length);
   const pad = (os.padrao || []);
   const metade = Math.ceil(pad.length / 2);
   const linhaPad = (p) => (p ? `<td class="c">${caixa(p.ida)}</td><td class="c">${caixa(p.volta)}</td><td class="c">${e(p.qtd || "")}</td><td>${e(String(p.descricao || "").toUpperCase())}</td>` : `<td></td><td></td><td></td><td></td>`);
-  const linhasPad = Array.from({ length: Math.max(metade, 3) }, (_, i) => `<tr>${linhaPad(pad[i])}${linhaPad(pad[i + metade])}</tr>`).join("");
+  const linhasPad = Array.from({ length: Math.max(metade, 2) }, (_, i) => `<tr>${linhaPad(pad[i])}${linhaPad(pad[i + metade])}</tr>`).join("");
   const comb = (v) => (v === null || v === undefined || v === "" ? "______" : COMBUSTIVEL[v]);
   const veics = os.veiculos || veiculosDaOS(os);
+  const eq = (l) => (l || []).map((n) => e(n)).join(", ") || "&nbsp;";
+  const dh = (ts) => (ts ? e(fmtDH(ts)) : "—");
   const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${e(numOS(os.numero))} · ${e(os.evento)}</title><style>
-  @page { size: A4; margin: 10mm; } body { font-family: Arial, sans-serif; font-size: 11px; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 8px; } td, th { border: 1px solid #333; padding: 4px 6px; vertical-align: top; }
-  .h { background: #E6E6E6; font-weight: 700; text-align: center; } .l { font-weight: 700; font-size: 10px; } .c { text-align: center; width: 34px; }
-  .cx { display: inline-block; width: 12px; height: 12px; border: 1px solid #333; line-height: 12px; font-size: 10px; } .s { color: #555; font-size: 10px; }
-  .topo { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; } .topo img { height: 54px; } .topo h1 { font-size: 16px; margin: 0; text-align: right; }
-  .ass { height: 34px; }
-  </style></head><body>
+  @page { size: A4; margin: 8mm; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Arial, sans-serif; font-size: 10.5px; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 6px; } td, th { border: 1px solid #333; padding: 3px 5px; vertical-align: top; }
+  .h { background: #E6E6E6; font-weight: 700; text-align: center; font-size: 11px; } .l { font-weight: 700; font-size: 9.5px; color: #333; } .c { text-align: center; width: 32px; }
+  .cx { display: inline-block; width: 11px; height: 11px; border: 1px solid #333; line-height: 11px; font-size: 9px; } .s { color: #555; font-size: 9.5px; }
+  .topo { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; } .topo img { height: 42px; }
+  .topo h1 { font-size: 17px; margin: 0; text-align: right; }
+  /* bloco principal: letras maiores */
+  .big td { padding: 5px 7px; } .big .l { font-size: 10px; } .big .v { font-size: 15px; } .big .v b { font-size: 16px; }
+  .datas td { width: 33.33%; } .datas .v { font-size: 17px; font-weight: 700; } .datas .ate { font-size: 12px; font-weight: 400; }
+  .eqs td { width: 25%; } .eqs .v { font-size: 15px; font-weight: 700; line-height: 1.35; min-height: 22px; }
+  .ass { height: 26px; }
+  #pg { width: 194mm; }
+  </style></head><body><div id="pg">
   <div class="topo"><img src="${LOGO_PROSIGN}" alt="Prosign"><div><h1>ORDEM DE SERVIÇO · ${e(numOS(os.numero))}</h1><div style="text-align:right">${pr ? `PR ${e(pr)} · ` : ""}emitida em ${e(new Date().toLocaleDateString("pt-BR"))}</div></div></div>
-  <table>
-    <tr><td class="l" style="width:16%">DATA</td><td class="l">EMPRESA CONTRATANTE</td><td class="l">CONTATO</td></tr>
-    <tr><td>${e(os.evento_inicio ? new Date(os.evento_inicio).toLocaleDateString("pt-BR") : "")}</td><td>${e(os.cliente_nome)}</td><td>${e(os.contato)} ${e(os.telefone)}</td></tr>
-    <tr><td class="l" colspan="2">EVENTO</td><td class="l">LOCAL / SALÃO</td></tr>
-    <tr><td colspan="2"><b>${e(os.evento)}</b></td><td>${e(os.local)}</td></tr>
-    <tr><td class="l" colspan="2">ENDEREÇO DE MONTAGEM</td><td class="l">PONTO DE REFERÊNCIA</td></tr>
-    <tr><td colspan="2">${e(os.endereco)}</td><td>${e(os.ponto_referencia)}</td></tr>
-    <tr><td class="l" colspan="2">DATA E HORÁRIO DE MONTAGEM</td><td class="l">DATA E HORÁRIO DE DESMONTAGEM</td></tr>
-    <tr><td colspan="2"><b>${e(fmtDH(os.montagem_inicio))}</b>${os.montagem_fim ? ` até ${e(fmtDH(os.montagem_fim))}` : ""}</td><td><b>${e(fmtDH(os.desmontagem_inicio))}</b></td></tr>
+  <table class="big">
+    <tr><td class="l" style="width:50%">EMPRESA CONTRATANTE</td><td class="l">CONTATO</td></tr>
+    <tr><td class="v"><b>${e(os.cliente_nome)}</b></td><td class="v">${e(os.contato)}${os.telefone ? ` · ${e(os.telefone)}` : ""}</td></tr>
+    <tr><td class="l">EVENTO</td><td class="l">LOCAL / SALÃO</td></tr>
+    <tr><td class="v"><b>${e(os.evento)}</b></td><td class="v">${e(os.local)}</td></tr>
+    <tr><td class="l">ENDEREÇO DE MONTAGEM</td><td class="l">PONTO DE REFERÊNCIA</td></tr>
+    <tr><td class="v">${e(os.endereco)}</td><td class="v">${e(os.ponto_referencia)}</td></tr>
   </table>
-  <table>
-    <tr><td class="h" colspan="2">EQUIPES</td></tr>
-    <tr><td class="l" style="width:16%">SEPARAÇÃO:</td><td>${e((os.equipe_separacao || []).join(", "))}</td></tr>
-    <tr><td class="l">MONTAGEM:</td><td>${e((os.equipe_montagem || []).join(", "))}</td></tr>
-    <tr><td class="l">OPERAÇÃO:</td><td>${e((os.equipe_operacao || []).join(", "))}</td></tr>
-    <tr><td class="l">DESMONTAGEM:</td><td>${e((os.equipe_desmontagem || []).join(", "))}</td></tr>
+  <table class="big datas">
+    <tr><td class="l">MONTAGEM</td><td class="l">EVENTO</td><td class="l">DESMONTAGEM</td></tr>
+    <tr><td class="v">${dh(os.montagem_inicio)}${os.montagem_fim ? `<div class="ate">até ${dh(os.montagem_fim)}</div>` : ""}</td>
+        <td class="v">${dh(os.evento_inicio)}${os.evento_fim ? `<div class="ate">até ${dh(os.evento_fim)}</div>` : ""}</td>
+        <td class="v">${dh(os.desmontagem_inicio)}${os.desmontagem_fim ? `<div class="ate">até ${dh(os.desmontagem_fim)}</div>` : ""}</td></tr>
+  </table>
+  <table class="big eqs">
+    <tr><td class="h" colspan="4">EQUIPES</td></tr>
+    <tr><td class="l">SEPARAÇÃO</td><td class="l">MONTAGEM</td><td class="l">OPERAÇÃO</td><td class="l">DESMONTAGEM</td></tr>
+    <tr><td class="v">${eq(os.equipe_separacao)}</td><td class="v">${eq(os.equipe_montagem)}</td><td class="v">${eq(os.equipe_operacao)}</td><td class="v">${eq(os.equipe_desmontagem)}</td></tr>
   </table>
   <table>
     <tr><td class="h" colspan="4">EQUIPAMENTOS / COMUNICAÇÃO</td></tr>
     <tr><td class="l c">IDA</td><td class="l c">VOLTA</td><td class="l c">QUANT.</td><td class="l">EQUIPAMENTOS</td></tr>
-    ${linhasItens}${"<tr><td class='c'>" + caixa(false) + "</td><td class='c'>" + caixa(false) + "</td><td></td><td>&nbsp;</td></tr>".repeat(1)}${Array.from({ length: vazias }, () => `<tr><td class="c">${caixa(false)}</td><td class="c">${caixa(false)}</td><td></td><td>&nbsp;</td></tr>`).join("")}
+    ${linhasItens}${Array.from({ length: Math.max(1, vazias) }, () => `<tr><td class="c">${caixa(false)}</td><td class="c">${caixa(false)}</td><td></td><td>&nbsp;</td></tr>`).join("")}
   </table>
   <table>
     <tr><td class="h" colspan="8">PADRÃO (MATERIAIS E ACABAMENTOS)</td></tr>
     <tr><td class="l c">IDA</td><td class="l c">VOLTA</td><td class="l c">QUANT</td><td class="l">DESCRIÇÃO</td><td class="l c">IDA</td><td class="l c">VOLTA</td><td class="l c">QUANT</td><td class="l">DESCRIÇÃO</td></tr>
     ${linhasPad}
-  </table>
-  <table>
-    <tr><td class="l" style="width:16%">OBSERVAÇÃO</td><td>${e(os.observacao)}</td></tr>
-  </table>
-  <table>
-    <tr><td class="l" style="width:50%">RESP. SEPARAÇÃO E TESTAGEM DE EQUIPAMENTOS: ${e(os.resp_separacao)}</td><td class="l">RESP. DESMONTAGEM E TESTAGEM DE EQUIPAMENTOS: ${e(os.resp_desmontagem)}</td></tr>
-    <tr><td class="ass">Assinatura:</td><td class="ass">Assinatura:</td></tr>
   </table>
   <table>
     <tr><td class="h" colspan="4">VEÍCULOS E ABASTECIMENTO</td></tr>
@@ -8383,7 +8388,24 @@ function imprimirOS(os, itens, pr, catItens = null) {
       return l1 + `<tr><td><b>KM ida:</b> ${e(v.km_ida === "" || v.km_ida == null ? "______" : v.km_ida)}</td><td><b>KM volta:</b> ${e(v.km_volta === "" || v.km_volta == null ? "______" : v.km_volta)}</td><td><b>Combustível saída / volta:</b> ${e(comb(v.combustivel_saida))} / ${e(comb(v.combustivel_volta))}</td><td><b>Abastec.:</b> ${e(v.data_abastecimento ? fmtDataBR(v.data_abastecimento) : "___/___/____")}</td></tr>`;
     }).join("")}
   </table>
-  <script>window.onload = function () { setTimeout(function () { window.print(); }, 300); };<\/script></body></html>`;
+  <table>
+    <tr><td class="l" style="width:16%">OBSERVAÇÃO</td><td>${e(os.observacao) || "&nbsp;"}</td></tr>
+  </table>
+  <table style="margin-bottom:0">
+    <tr><td class="l" style="width:50%">RESP. SEPARAÇÃO E TESTAGEM: ${e(os.resp_separacao)}</td><td class="l">RESP. DESMONTAGEM E TESTAGEM: ${e(os.resp_desmontagem)}</td></tr>
+    <tr><td class="ass">Assinatura:</td><td class="ass">Assinatura:</td></tr>
+  </table>
+  </div>
+  <script>
+    // cabe numa folha: se passar da altura útil do A4, reduz tudo na mesma proporção
+    window.onload = function () {
+      var pg = document.getElementById("pg");
+      var util = (297 - 16) * 96 / 25.4 - 4; // altura útil em px (A4 com margem de 8 mm)
+      var h = pg.scrollHeight;
+      if (h > util) pg.style.zoom = (util / h).toFixed(3);
+      setTimeout(function () { window.print(); }, 300);
+    };
+  <\/script></body></html>`;
   const w = window.open("", "_blank");
   if (!w) { alert("O navegador bloqueou a janela de impressão. Libere pop-ups para este site."); return; }
   w.document.open(); w.document.write(html); w.document.close();
