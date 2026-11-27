@@ -913,8 +913,8 @@ function RecursosHumanosView({
   );
 }
 
-function Card({ children, style, onClick }) {
-  return <div onClick={onClick} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 22, ...style }}>{children}</div>;
+function Card({ children, style, onClick, className }) {
+  return <div onClick={onClick} className={className} style={{ background: CARD, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 22, ...style }}>{children}</div>;
 }
 
 function MesPicker({ mesRef, setMesRef }) {
@@ -8898,9 +8898,27 @@ function ProducaoView({ session, setErro }) {
   const [agrupar, setAgrupar] = useState(true);
   const [abertos, setAbertos] = useState({}); // { os_id: true }
   const meuNome = useMeuNome(session);
+  // itens novos (chegaram há menos de 3 dias e ninguém abriu neste computador) piscam até serem vistos
+  const [vistos, setVistos] = useState(() => { try { return new Set(JSON.parse(localStorage.getItem("prod_vistos") || "[]")); } catch { return new Set(); } });
+  function marcarVistos(ids) {
+    if (!ids.length) return;
+    setVistos((v) => {
+      const n = new Set(v); ids.forEach((id) => n.add(id));
+      try { localStorage.setItem("prod_vistos", JSON.stringify([...n].slice(-1500))); } catch {}
+      return n;
+    });
+  }
+  const TRES_DIAS = 3 * 24 * 3600 * 1000;
+  const ehNovo = (x) => !!x.criado_em && Date.now() - new Date(x.criado_em).getTime() < TRES_DIAS && !vistos.has(x.id) && !itemResolvido(x);
+  // primeira vez neste computador: tudo o que já existe conta como visto
+  useEffect(() => {
+    try { if (localStorage.getItem("prod_vistos") === null && itens.length) marcarVistos(itens.map((x) => x.id)); } catch {}
+  }, [itens]); // eslint-disable-line
+  // atualiza sozinho a cada 1 minuto para os itens novos aparecerem
+  useEffect(() => { const t = setInterval(() => { if (!document.hidden) carregar(true); }, 60000); return () => clearInterval(t); }, []); // eslint-disable-line
 
-  async function carregar() {
-    setCarregando(true);
+  async function carregar(silencioso = false) {
+    if (!silencioso) setCarregando(true);
     try {
       const rows = (await sbRequest("os_itens?select=*,os:ordens_servico!inner(id,numero,evento,cliente_nome,local,montagem_inicio,status,orcamento_id,orcamentos(numero_or))&setor=not.is.null&os.status=not.in.(concluida,cancelada)&limit=2000", session)) || [];
       setItens(rows);
@@ -8944,7 +8962,8 @@ function ProducaoView({ session, setErro }) {
   function renderItem(x, dentroDoGrupo) {
     const m2 = m2Item(x);
     return (
-            <Card key={x.id} style={{ padding: 14, ...(dentroDoGrupo ? { boxShadow: "none" } : {}), borderLeft: `5px solid ${statusProd(x.status_producao).cor}` }}>
+            <Card key={x.id} className={ehNovo(x) ? "prod-novo" : undefined} style={{ padding: 14, ...(dentroDoGrupo ? { boxShadow: "none" } : {}), borderLeft: `5px solid ${statusProd(x.status_producao).cor}` }}>
+              {ehNovo(x) && <div style={{ marginBottom: 6 }}><span className="prod-selo-novo">🆕 NOVO</span>{!dentroDoGrupo && <button onClick={() => marcarVistos([x.id])} style={{ ...btnGhostSmall, fontSize: 11, padding: "2px 8px", marginLeft: 8 }}>ok, vi</button>}</div>}
               <div style={{ display: "flex", gap: 14, flexWrap: "wrap", alignItems: "flex-start" }}>
                 {x.foto_path && <a href={fotoProdUrl(x.foto_path)} target="_blank" rel="noreferrer"><img src={fotoProdUrl(x.foto_path)} alt="Peça pronta" style={{ width: 88, height: 88, objectFit: "cover", borderRadius: 8 }} /></a>}
                 <div style={{ flex: 1, minWidth: 220 }}>
@@ -9003,6 +9022,7 @@ function ProducaoView({ session, setErro }) {
       m2: g.todos.reduce((a, x) => a + m2Item(x), 0),
       setores: [...new Set(g.todos.map((x) => x.setor))],
       fotos: g.todos.filter((x) => x.foto_path),
+      novos: g.todos.filter(ehNovo).length,
     }))
     .sort((a, b) => new Date(a.os?.montagem_inicio || "2999-01-01") - new Date(b.os?.montagem_inicio || "2999-01-01"));
 
@@ -9034,8 +9054,28 @@ function ProducaoView({ session, setErro }) {
             ? <button onClick={() => setAbertos({})} style={btnGhostSmall}>Recolher todos</button>
             : <button onClick={() => setAbertos(Object.fromEntries(grupos.map((g) => [g.id, true])))} style={btnGhostSmall}>Abrir todos</button>
         )}
-        <button onClick={carregar} style={btnGhostSmall}>Atualizar</button>
+        <button onClick={() => carregar()} style={btnGhostSmall}>Atualizar</button>
       </div>
+      <style>{`
+        @keyframes prodPisca { 0%, 100% { box-shadow: 0 0 0 0 rgba(217,180,90,0); } 50% { box-shadow: 0 0 0 4px rgba(217,180,90,.9); } }
+        @keyframes prodSelo { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+        .prod-novo { animation: prodPisca 1.4s ease-in-out infinite; }
+        .prod-selo-novo { display: inline-block; font-size: 11px; font-weight: 800; color: #152A4A; background: #D9B45A; border-radius: 999px; padding: 2px 9px; animation: prodSelo 1.4s ease-in-out infinite; }
+      `}</style>
+      {(() => {
+        const novos = itens.filter(ehNovo);
+        if (!novos.length) return null;
+        const prs = new Set(novos.map((x) => x.os_id)).size;
+        return (
+          <div className="prod-novo" style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", background: "#FFF8E6", border: `1px solid ${BORDER}`, borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+            <span className="prod-selo-novo">🆕 NOVO</span>
+            <b style={{ color: NAVY }}>{novos.length} {novos.length > 1 ? "itens novos chegaram" : "item novo chegou"} na produção{prs > 1 ? ` (${prs} OS)` : ""}</b>
+            <span style={{ fontSize: 12, color: MUTED }}>Abra o PR para ver; ao fechar, ele para de piscar.</span>
+            <span style={{ flex: 1 }} />
+            <button onClick={() => marcarVistos(novos.map((x) => x.id))} style={btnGhostSmall}>Marcar todos como vistos</button>
+          </div>
+        );
+      })()}
       {carregando && <div style={{ color: MUTED }}>Carregando...</div>}
       {!carregando && lista.length === 0 && <Card><span style={{ color: MUTED }}>Nada na fila com esses filtros. Os itens chegam aqui quando a Logística escolhe um setor na OS.</span></Card>}
       {agrupar ? (
@@ -9044,8 +9084,8 @@ function ProducaoView({ session, setErro }) {
             const aberto = !!abertos[g.id];
             const pct = g.total ? Math.round((g.prontos / g.total) * 100) : 0;
             return (
-              <Card key={g.id} style={{ padding: 0, overflow: "hidden", borderLeft: `5px solid ${g.prontos === g.total ? OK : g.aguardando ? "#B8902E" : NAVY}` }}>
-                <button type="button" onClick={() => setAbertos((a) => ({ ...a, [g.id]: !a[g.id] }))}
+              <Card key={g.id} className={g.novos > 0 && !aberto ? "prod-novo" : undefined} style={{ padding: 0, overflow: "hidden", borderLeft: `5px solid ${g.prontos === g.total ? OK : g.aguardando ? "#B8902E" : NAVY}` }}>
+                <button type="button" onClick={() => { if (aberto) marcarVistos(g.todos.map((x) => x.id)); setAbertos((a) => ({ ...a, [g.id]: !a[g.id] })); }}
                   style={{ width: "100%", textAlign: "left", background: aberto ? "#F4F6FA" : "#fff", border: "none", padding: 14, cursor: "pointer", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", fontFamily: "inherit" }}>
                   <span style={{ fontSize: 16, color: MUTED, width: 14 }}>{aberto ? "▾" : "▸"}</span>
                   <div style={{ flex: 1, minWidth: 240 }}>
@@ -9055,6 +9095,7 @@ function ProducaoView({ session, setErro }) {
                       {!g.pr && !g.os?.orcamento_id && <span style={{ fontSize: 10, fontWeight: 700, color: "#5B4B8A", background: "#EEEAF7", borderRadius: 999, padding: "1px 7px" }}>sem orçamento</span>}
                       {!g.pr && g.os?.orcamento_id && <span title="O orçamento existe, mas está sem número de PR" style={{ fontSize: 10, fontWeight: 700, color: "#8A5A00", background: "#FFF3D6", borderRadius: 999, padding: "1px 7px" }}>orçamento sem nº de PR</span>}
                       <BadgePrazo ts={g.os?.montagem_inicio} />
+                      {g.novos > 0 && <span className="prod-selo-novo">🆕 {g.novos} novo{g.novos > 1 ? "s" : ""}</span>}
                     </div>
                     <div style={{ fontWeight: 700, color: TEXT }}>{g.os?.evento || "—"}</div>
                     <div style={{ fontSize: 12, color: MUTED }}>{g.os?.cliente_nome || "—"}{g.os?.montagem_inicio ? ` · montagem ${fmtDH(g.os.montagem_inicio)}` : ""}</div>
