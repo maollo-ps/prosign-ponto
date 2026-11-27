@@ -5354,6 +5354,7 @@ function LancamentosFinView({ session, setErro, centros }) {
   const [situacao, setSituacao] = useState("todas");
   const [pendencia, setPendencia] = useState("todas");
   const [busca, setBusca] = useState("");
+  const [fConta, setFConta] = useState("");
   const [regs, setRegs] = useState([]);
   const [carregando, setCarregando] = useState(false);
   const [editId, setEditId] = useState(null);
@@ -5429,6 +5430,13 @@ function LancamentosFinView({ session, setErro, centros }) {
     // (semClassifValida: despesa sem conta, "a classificar" ou numa conta que não é fixa/variável/não operacional — fica fora do resultado)
     if (pendencia === "sem_conta" && !semClassifValida(l)) return false;
     if (pendencia === "sem_evento" && !(l.tipo === "pagar" && cl === "variavel" && !l.orcamento_id)) return false;
+    if (fConta.trim()) {
+      // localizador de centro de custo: pelo código (02.04 pega todas as subcontas) ou pelo nome
+      const q = fConta.split(" · ")[0].trim().toLowerCase();
+      const c = porId[l.centro_custo_id];
+      if (!c) return false;
+      if (/^[0-9.]+$/.test(q) ? !String(c.codigo || "").startsWith(q) : !`${c.codigo} ${c.nome}`.toLowerCase().includes(q)) return false;
+    }
     if (busca.trim()) {
       const t = busca.trim().toLowerCase();
       const alvo = `${l.fornecedor_cliente || ""} ${l.historico || ""} ${l.numero_conta} ${l.nota_fiscal || ""} ${l.orcamentos?.evento || ""} ${l.orcamentos?.numero_or || ""}`.toLowerCase();
@@ -5628,6 +5636,13 @@ function LancamentosFinView({ session, setErro, centros }) {
         </Field>
         <Field label="Classificação">
           <select value={classif} onChange={(e) => setClassif(e.target.value)} style={selStyle}><option value="todas">Todas</option>{Object.entries(CLASSIF_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</select>
+        </Field>
+        <Field label="Centro de custo">
+          <div style={{ display: "flex", gap: 4 }}>
+            <input list="lf-contas" value={fConta} onChange={(e) => setFConta(e.target.value)} placeholder="código ou nome da conta" style={{ ...inputStyle, minWidth: 230 }} />
+            {fConta && <button type="button" onClick={() => setFConta("")} style={btnGhostSmall} title="Limpar">✕</button>}
+          </div>
+          <datalist id="lf-contas">{[...centros].sort((a, b) => String(a.codigo).localeCompare(String(b.codigo), undefined, { numeric: true })).map((c) => <option key={c.id} value={`${c.codigo} · ${c.nome}`} />)}</datalist>
         </Field>
         <Field label="Buscar"><input value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="fornecedor, histórico, nº, NF, PR" style={inputStyle} /></Field>
         <div style={{ flex: 1 }} />
