@@ -8306,10 +8306,10 @@ const itemVazio = () => ({ _k: Math.random().toString(36).slice(2), id: null, qt
 // ---------------------------------------------------------
 // Impressão da OS — mesmo formato da ficha em papel
 // ---------------------------------------------------------
-function imprimirOS(os, itens, pr) {
+function imprimirOS(os, itens, pr, catItens = null) {
   const e = (v) => String(v ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const caixa = (ok) => `<span class="cx">${ok ? "✔" : ""}</span>`;
-  const linhasItens = itens.map((it) => `<tr><td class="c">${caixa(it.ida)}</td><td class="c">${caixa(it.volta)}</td><td class="c">${e(String(it.qtd).padStart(2, "0"))}</td><td>${e(it.descricao)}${Number(it.largura) && Number(it.altura) ? ` <b>${e(String(it.largura).replace(".", ","))} x ${e(String(it.altura).replace(".", ","))} m</b>` : ""}${it.setor ? ` <span class="s">[${e(nomeSetor(it.setor))}]</span>` : ""}${it.obs ? `<div class="s">${e(it.obs)}</div>` : ""}</td></tr>`).join("");
+  const linhasItens = itens.map((it) => `<tr><td class="c">${caixa(it.ida)}</td><td class="c">${caixa(it.volta)}</td><td class="c">${e(String(it.qtd).padStart(2, "0"))}</td><td>${e(it.descricao)}${Number(it.largura) && Number(it.altura) ? ` <b>${e(String(it.largura).replace(".", ","))} x ${e(String(it.altura).replace(".", ","))} m</b>` : ""}${it.setor ? ` <span class="s">[${e(nomeSetor(it.setor))}]</span>` : ""}${it.obs ? `<div class="s">${e(it.obs)}</div>` : ""}${(() => { const comp = catItens && it.item_id ? composicaoDoItem(catItens, it.item_id, Number(String(it.qtd).replace(",", ".")) || 1) : []; return comp.length ? `<div class="s" style="margin-top:2px"><b>Composto de:</b> ${comp.map((c) => `${e(fmtQtd(c.qtd))} × ${e(c.nome)}`).join(" · ")}</div>` : ""; })()}</td></tr>`).join("");
   const vazias = Math.max(0, 4 - itens.length);
   const pad = (os.padrao || []);
   const metade = Math.ceil(pad.length / 2);
@@ -8389,6 +8389,8 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
   const [pr, setPr] = useState("");
   const [nomesEquipe, setNomesEquipe] = useState([]);
   const [veiculosConhecidos, setVeiculosConhecidos] = useState([]);
+  const catItens = useCatalogoItens(session);
+  const itemPorNome = (n) => { const t = String(n || "").trim().toLowerCase(); return t ? catItens.itens.find((i) => i.nome.trim().toLowerCase() === t) || null : null; };
   const pessoas = usePessoasFin(session);
   const podeValor = podeArea("comercial") || podeArea("financeiro"); // Logística não define valor de contratação
   const fornecedores = useMemo(() => { const f = pessoas.filter((p) => p.fornecedor); return f.length ? f : pessoas; }, [pessoas]);
@@ -8436,8 +8438,8 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
       evento: c.evento || "", local: c.local || "", evento_inicio: x.evento_inicio || ev,
     }));
     setPr(c.numero_or || "");
-    const ci = (await sbRequest(`orcamento_cliente_itens?select=titulo,descricao,qtd&orcamento_id=eq.${c.id}&order=ordem.asc`, session)) || [];
-    const novos = ci.filter((x) => (x.titulo || x.descricao)).map((x) => ({ ...itemVazio(), qtd: Number(x.qtd) || 1, descricao: [x.titulo, x.descricao].filter(Boolean).join(" — ") }));
+    const ci = (await sbRequest(`orcamento_cliente_itens?select=titulo,descricao,qtd,item_id&orcamento_id=eq.${c.id}&order=ordem.asc`, session)) || [];
+    const novos = ci.filter((x) => (x.titulo || x.descricao)).map((x) => ({ ...itemVazio(), qtd: Number(x.qtd) || 1, item_id: x.item_id || null, descricao: [x.titulo, x.descricao].filter(Boolean).join(" — ") }));
     setItens((xs) => [...xs.filter((x) => x.descricao.trim()), ...(novos.length ? novos : [itemVazio()])]);
   }
 
@@ -8489,6 +8491,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
       const linha = (x, i) => ({
         os_id: id, ordem: i, qtd: numCampo(x.qtd) || 1, descricao: x.descricao.trim(), largura: numCampo(x.largura), altura: numCampo(x.altura),
         setor: x.setor || null, status_producao: statusAjustado(x.setor, x.status_producao), ida: !!x.ida, volta: !!x.volta, volta_obs: x.volta_obs || null, obs: x.obs || null,
+        item_id: x.item_id || null,
       });
       for (let i = 0; i < validos.length; i++) {
         const x = validos[i];
@@ -8534,7 +8537,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <select value={os.status} onChange={(e) => set("status", e.target.value)} style={selStyle}>{STATUS_OS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}</select>
           <button onClick={salvar} disabled={salvando} style={btnPrimary}><Save size={15} /> {salvando ? "Salvando..." : "Salvar"}</button>
-          <button onClick={async () => { const id = os.id || (await salvar()); if (id) imprimirOS({ ...os, id }, itens.filter((x) => x.descricao.trim()), pr); }} style={btnGhostSmall}>🖨️ Imprimir OS</button>
+          <button onClick={async () => { const id = os.id || (await salvar()); if (id) imprimirOS({ ...os, id }, itens.filter((x) => x.descricao.trim()), pr, catItens); }} style={btnGhostSmall}>🖨️ Imprimir OS</button>
           <button onClick={onFechar} style={btnGhostSmall}>Fechar</button>
         </div>
       </div>
@@ -8607,6 +8610,24 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
                 <td style={tdS}>
                   <textarea value={x.descricao} onChange={(e) => setIt(x._k, "descricao", e.target.value)} rows={2} style={{ ...inputStyle, width: "100%", minWidth: 260, resize: "vertical" }} placeholder="Ex.: PS adesivado 0,60 de diâmetro — patrocinadores" />
                   <input value={x.obs || ""} onChange={(e) => setIt(x._k, "obs", e.target.value)} placeholder="observação (acabamento, instalação...)" style={{ ...inputStyle, width: "100%", marginTop: 4, fontSize: 12 }} />
+                  {(() => {
+                    const it = catItens.itens.find((i) => i.id === x.item_id);
+                    const comp = it?.agrupador ? composicaoDoItem(catItens, it.id, numCampo(x.qtd) || 1) : [];
+                    return (
+                      <div style={{ marginTop: 4 }}>
+                        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                          <span style={{ fontSize: 11, color: MUTED, whiteSpace: "nowrap" }}>Item do cadastro:</span>
+                          <input list="os-cat-itens" defaultValue={it?.nome || ""} key={`${x.item_id || "sem"}-${it?.nome || ""}`} onBlur={(e) => { const achou = itemPorNome(e.target.value); setIt(x._k, "item_id", achou?.id || null); if (!achou) e.target.value = ""; }} placeholder="opcional — ex.: Palco 4x3" style={{ ...inputStyle, fontSize: 12, padding: "4px 8px", flex: 1 }} />
+                        </div>
+                        {comp.length > 0 && (
+                          <div style={{ marginTop: 4, background: "#F3F6FB", borderLeft: `3px solid ${NAVY}`, borderRadius: 4, padding: "5px 8px", fontSize: 12 }}>
+                            <b style={{ color: NAVY }}>▦ {it.nome}{(numCampo(x.qtd) || 1) > 1 ? ` × ${fmtQtd(numCampo(x.qtd) || 1)}` : ""} — composto de:</b>
+                            {comp.map((c, k) => <div key={k}>• {fmtQtd(c.qtd)} × {c.nome}{c.unidade ? <span style={{ color: MUTED }}> ({c.unidade})</span> : null}</div>)}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </td>
                 <td style={tdS}><input value={x.largura} onChange={(e) => setIt(x._k, "largura", e.target.value)} style={{ ...inputStyle, width: 70 }} placeholder="0,00" /></td>
                 <td style={tdS}><input value={x.altura} onChange={(e) => setIt(x._k, "altura", e.target.value)} style={{ ...inputStyle, width: 70 }} placeholder="0,00" />{m2Item({ ...x, largura: numCampo(x.largura), altura: numCampo(x.altura) }) > 0 && <div style={{ fontSize: 11, color: MUTED }}>{fmtM2(m2Item({ ...x, largura: numCampo(x.largura), altura: numCampo(x.altura) }))}</div>}</td>
@@ -8639,6 +8660,7 @@ function FormOS({ session, setErro, osId, orcamentoInicial, onFechar, onSalvo, d
       </div>
       <button onClick={() => set("padrao", [...(os.padrao || []), { descricao: "", qtd: 1, ida: false, volta: false }])} style={{ ...btnGhostSmall, marginTop: 8 }}><Plus size={13} /> Adicionar material</button>
 
+      <datalist id="os-cat-itens">{catItens.itens.filter((i) => i.ativo !== false).map((i) => <option key={i.id} value={i.nome}>{i.agrupador ? "conjunto" : i.unidade || ""}</option>)}</datalist>
       {titulo(`Veículos da operação (${(os.veiculos || []).length})`)}
       <datalist id="os-veiculos">{veiculosConhecidos.map((v) => <option key={v} value={v} />)}</datalist>
       <datalist id="os-motoristas">{nomesEquipe.map((n) => <option key={n} value={n} />)}</datalist>
@@ -8973,6 +8995,7 @@ function ProducaoView({ session, setErro }) {
       comprados: g.todos.filter((x) => x.status_producao === "comprado").length,
       m2: g.todos.reduce((a, x) => a + m2Item(x), 0),
       setores: [...new Set(g.todos.map((x) => x.setor))],
+      fotos: g.todos.filter((x) => x.foto_path),
     }))
     .sort((a, b) => new Date(a.os?.montagem_inicio || "2999-01-01") - new Date(b.os?.montagem_inicio || "2999-01-01"));
 
@@ -9027,6 +9050,16 @@ function ProducaoView({ session, setErro }) {
                     </div>
                     <div style={{ fontWeight: 700, color: TEXT }}>{g.os?.evento || "—"}</div>
                     <div style={{ fontSize: 12, color: MUTED }}>{g.os?.cliente_nome || "—"}{g.os?.montagem_inicio ? ` · montagem ${fmtDH(g.os.montagem_inicio)}` : ""}</div>
+                    {g.fotos.length > 0 && (
+                      <div style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "center" }} onClick={(e) => e.stopPropagation()}>
+                        {g.fotos.slice(0, 5).map((x) => (
+                          <a key={x.id} href={fotoProdUrl(x.foto_path)} target="_blank" rel="noreferrer" title={x.descricao}>
+                            <img src={fotoProdUrl(x.foto_path)} alt={x.descricao} style={{ width: 52, height: 52, objectFit: "cover", borderRadius: 6, border: `2px solid ${OK}`, display: "block" }} />
+                          </a>
+                        ))}
+                        {g.fotos.length > 5 && <span style={{ fontSize: 12, color: MUTED }}>+{g.fotos.length - 5}</span>}
+                      </div>
+                    )}
                     <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 6 }}>
                       {g.setores.map((st) => <span key={st} style={{ fontSize: 10, fontWeight: 700, color: NAVY, background: "#E9EEF6", borderRadius: 999, padding: "2px 8px" }}>{nomeSetor(st)}</span>)}
                     </div>
@@ -9799,6 +9832,31 @@ function PessoasCadView({ session, setErro }) {
   );
 }
 
+// Conjuntos (itens agrupadores): ex. "Palco 4x3" = 3× praticável 2x1 + 1× praticável 1x1
+function useCatalogoItens(session) {
+  const [cat, setCat] = useState({ itens: [], comps: {} });
+  useEffect(() => {
+    Promise.all([
+      sbRequest("itens?select=id,nome,unidade,agrupador,ativo&order=nome.asc&limit=2000", session).catch(() => []),
+      sbRequest("item_componentes?select=kit_id,componente_id,qtd,ordem&order=ordem.asc&limit=5000", session).catch(() => []),
+    ]).then(([its, cs]) => {
+      const comps = {};
+      (cs || []).forEach((c) => { (comps[c.kit_id] ||= []).push(c); });
+      setCat({ itens: its || [], comps });
+    });
+  }, []); // eslint-disable-line
+  return cat;
+}
+// composição de um conjunto multiplicada pela quantidade da linha: [{ qtd, nome, unidade }]
+function composicaoDoItem(cat, itemId, qtdLinha = 1) {
+  const lista = cat?.comps?.[itemId] || [];
+  return lista.map((c) => {
+    const it = cat.itens.find((i) => i.id === c.componente_id);
+    return { qtd: Number(c.qtd) * (Number(qtdLinha) || 1), nome: it?.nome || "item removido", unidade: it?.unidade || "" };
+  });
+}
+const fmtQtd = (n) => (Number.isInteger(n) ? String(n) : String(n).replace(".", ","));
+
 function ItensCadView({ session, setErro }) {
   const [rows, setRows] = useState([]);
   const [carregando, setCarregando] = useState(true);
@@ -9808,12 +9866,16 @@ function ItensCadView({ session, setErro }) {
   const [salvando, setSalvando] = useState(false);
   const [centrosRes, setCentrosRes] = useState([]);
   const [filtroCR, setFiltroCR] = useState("todos");
+  const [comps, setComps] = useState({}); // kit_id -> [{componente_id, qtd}]
   useEffect(() => {
     sbRequest("centros_resultado?select=*&order=nome.asc", session).then((r) => setCentrosRes(r || [])).catch(() => {});
   }, []); // eslint-disable-line
 
   function carregar() {
     setCarregando(true);
+    sbRequest("item_componentes?select=*&order=ordem.asc&limit=5000", session)
+      .then((cs) => { const m = {}; (cs || []).forEach((c) => { (m[c.kit_id] ||= []).push(c); }); setComps(m); })
+      .catch(() => setComps({}));
     sbRequest("itens?select=*&order=nome.asc&limit=1000", session)
       .then((r) => setRows(r || []))
       .catch((e) => setErro(msgSupabase(e)))
@@ -9826,7 +9888,9 @@ function ItensCadView({ session, setErro }) {
     if (!e.nome.trim()) { setErro("Informe o nome do item."); return; }
     setSalvando(true); setErro("");
     const id = e.id || crypto.randomUUID();
-    const body = { nome: limparTextoCad(e.nome), categoria: e.categoria, unidade: nulCad(e.unidade), custo_padrao: numDigitado(e.custo_padrao) || 0, ativo: !!e.ativo, centro_resultado_id: e.centro_resultado_id || null };
+    const body = { nome: limparTextoCad(e.nome), categoria: e.categoria, unidade: nulCad(e.unidade), custo_padrao: numDigitado(e.custo_padrao) || 0, ativo: !!e.ativo, centro_resultado_id: e.centro_resultado_id || null, agrupador: !!e.agrupador };
+    const compsValidos = (e.componentes || []).filter((c) => c.componente_id && numDigitado(String(c.qtd)) > 0);
+    if (e.agrupador && !compsValidos.length) { setErro("Um item agrupador precisa ter pelo menos um item na composição."); return; }
     if (e.item_orcamento || "item_orcamento" in e) {
       const vv = numDigitado(e.valor_venda);
       if (e.item_orcamento && !(vv > 0)) { setErro("Informe o valor de venda do item que compõe o orçamento."); setSalvando(false); return; }
@@ -9840,9 +9904,14 @@ function ItensCadView({ session, setErro }) {
       else if (e.removerImg) body.imagem_path = null;
       if (e.id) await sbRequest(`itens?id=eq.${e.id}`, session, { method: "PATCH", body });
       else await sbRequest("itens", session, { method: "POST", body: { id, ...body } });
+      // composição do conjunto: regrava a lista inteira
+      await sbRequest(`item_componentes?kit_id=eq.${id}`, session, { method: "DELETE" });
+      if (e.agrupador && compsValidos.length) {
+        await sbRequest("item_componentes", session, { method: "POST", body: compsValidos.map((c, i) => ({ kit_id: id, componente_id: c.componente_id, qtd: numDigitado(String(c.qtd)), ordem: i })) });
+      }
       if ((e.arquivoImg || e.removerImg) && antiga) apagarImagemItem(antiga, session);
       setEditando(null); carregar();
-    } catch (er) { setErro(/item_orcamento|valor_venda|descricao_venda/.test(er.message) ? "Para usar o valor de venda, rode antes o SQL migracao_orcamento_venda.sql no Supabase." : msgSupabase(er)); }
+    } catch (er) { setErro(/agrupador|item_componentes/.test(er.message) ? "Para usar itens agrupadores, rode antes o SQL migracao_itens_agrupador.sql no Supabase." : /item_orcamento|valor_venda|descricao_venda/.test(er.message) ? "Para usar o valor de venda, rode antes o SQL migracao_orcamento_venda.sql no Supabase." : msgSupabase(er)); }
     finally { setSalvando(false); }
   }
   async function excluir(id) {
@@ -9857,8 +9926,10 @@ function ItensCadView({ session, setErro }) {
   }
 
   const q = busca.trim().toUpperCase();
-  const lista = rows.filter((r) => (cat === "todas" || (cat === "venda" ? r.item_orcamento : r.categoria === cat)) && (filtroCR === "todos" || (filtroCR === "sem" ? !r.centro_resultado_id : r.centro_resultado_id === filtroCR)) && (!q || r.nome.toUpperCase().includes(q)));
+  const lista = rows.filter((r) => (cat === "todas" || (cat === "venda" ? r.item_orcamento : cat === "conjuntos" ? r.agrupador : r.categoria === cat)) && (filtroCR === "todos" || (filtroCR === "sem" ? !r.centro_resultado_id : r.centro_resultado_id === filtroCR)) && (!q || r.nome.toUpperCase().includes(q)));
   const nomeCR = (id) => centrosRes.find((c) => c.id === id)?.nome || "—";
+  const nomeItem = (id) => rows.find((r) => r.id === id)?.nome || "item removido";
+  const resumoConjunto = (id) => (comps[id] || []).map((c) => `${fmtQtd(Number(c.qtd))}× ${nomeItem(c.componente_id)}`).join(" + ");
   const novo = () => setEditando({ nome: "", categoria: "outros_gera_lucro", unidade: "diária", custo_padrao: "", ativo: true, centro_resultado_id: "" });
 
   return (
@@ -9869,6 +9940,7 @@ function ItensCadView({ session, setErro }) {
           <select style={inputStyle} value={cat} onChange={(e) => setCat(e.target.value)}>
             <option value="todas">Todas</option>
             <option value="venda">★ Itens de venda (compõem o orçamento)</option>
+            <option value="conjuntos">▦ Conjuntos (itens agrupadores)</option>
             {CAT_ITEM.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
         </Field>
@@ -9932,6 +10004,29 @@ function ItensCadView({ session, setErro }) {
               </div>
             )}
           </div>
+          <div style={{ border: `1px solid ${editando.agrupador ? NAVY : BORDER}`, background: editando.agrupador ? "#F3F6FB" : "transparent", borderRadius: 8, padding: 12, marginBottom: 12 }}>
+            <label style={{ fontSize: 13, display: "inline-flex", gap: 6, alignItems: "center", fontWeight: 600, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!editando.agrupador} onChange={(e) => setEditando({ ...editando, agrupador: e.target.checked, componentes: editando.componentes?.length ? editando.componentes : [{ componente_id: "", qtd: "1" }] })} /> ▦ Item agrupador (conjunto) — é formado por outros itens do cadastro
+            </label>
+            {editando.agrupador && (
+              <div style={{ marginTop: 10 }}>
+                <div style={{ fontSize: 12, color: MUTED, marginBottom: 6 }}>Composição de 1 unidade do conjunto (ex.: Palco 4x3 = 3 × Praticável 2x1 + 1 × Praticável 1x1). Na OS, a quantidade é multiplicada.</div>
+                {(editando.componentes || []).map((c, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                    <input inputMode="decimal" value={c.qtd} onChange={(e) => setEditando({ ...editando, componentes: editando.componentes.map((y, j) => (j === i ? { ...y, qtd: e.target.value } : y)) })} style={{ ...inputStyle, width: 70, textAlign: "center" }} title="Quantidade" />
+                    <span style={{ color: MUTED }}>×</span>
+                    <select value={c.componente_id} onChange={(e) => setEditando({ ...editando, componentes: editando.componentes.map((y, j) => (j === i ? { ...y, componente_id: e.target.value } : y)) })} style={{ ...selStyle, flex: 1 }}>
+                      <option value="">— escolha o item —</option>
+                      {rows.filter((r) => r.id !== editando.id && !r.agrupador && (r.ativo || r.id === c.componente_id)).map((r) => <option key={r.id} value={r.id}>{r.nome}{r.unidade ? ` (${r.unidade})` : ""}</option>)}
+                    </select>
+                    <button type="button" onClick={() => setEditando({ ...editando, componentes: editando.componentes.filter((_, j) => j !== i) })} style={btnDangerSmall}><X size={12} /></button>
+                  </div>
+                ))}
+                <button type="button" onClick={() => setEditando({ ...editando, componentes: [...(editando.componentes || []), { componente_id: "", qtd: "1" }] })} style={btnGhostSmall}><Plus size={13} /> Adicionar item ao conjunto</button>
+                <div style={{ fontSize: 11, color: MUTED, marginTop: 6 }}>Não achou o item? Cadastre antes (ex.: "Praticável 2x1") e depois volte aqui.</div>
+              </div>
+            )}
+          </div>
           <label style={{ fontSize: 13, display: "inline-flex", gap: 6, alignItems: "center" }}>
             <input type="checkbox" checked={!!editando.ativo} onChange={(e) => setEditando({ ...editando, ativo: e.target.checked })} /> Item ativo (aparece nas sugestões)
           </label>
@@ -9956,14 +10051,16 @@ function ItensCadView({ session, setErro }) {
                     ? <a href={urlImagemItem(r.imagem_path)} target="_blank" rel="noreferrer"><img src={urlImagemItem(r.imagem_path)} alt="" style={{ width: 42, height: 42, objectFit: "cover", borderRadius: 4, border: `1px solid ${BORDER}`, display: "block" }} /></a>
                     : <div style={{ width: 42, height: 42, borderRadius: 4, border: `1px dashed ${BORDER}` }} />}
                 </td>
-                <td style={{ ...tdS, fontWeight: 600 }}>{r.nome}{r.item_orcamento && <span title="Compõe o orçamento do cliente" style={{ marginLeft: 6, color: GOLD }}>★</span>}</td>
+                <td style={{ ...tdS, fontWeight: 600 }}>{r.nome}{r.item_orcamento && <span title="Compõe o orçamento do cliente" style={{ marginLeft: 6, color: GOLD }}>★</span>}
+                  {r.agrupador && <><span style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, color: "#fff", background: NAVY, borderRadius: 999, padding: "1px 7px" }}>CONJUNTO</span><div style={{ fontSize: 11, fontWeight: 400, color: MUTED }}>{resumoConjunto(r.id) || "sem composição"}</div></>}
+                </td>
                 <td style={tdS}>{catItemLabel(r.categoria)}</td>
                 <td style={tdS}>{nomeCR(r.centro_resultado_id)}</td>
                 <td style={tdS}>{r.unidade || "—"}</td>
                 <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO }}>{brl(r.custo_padrao)}</td>
                 <td style={{ ...tdS, textAlign: "right", fontFamily: FONT_MONO, color: r.item_orcamento ? TEXT : MUTED }}>{r.item_orcamento && r.valor_venda != null ? brl(r.valor_venda) : "—"}</td>
                 <td style={{ ...tdS, textAlign: "right", whiteSpace: "nowrap" }}>
-                  <button onClick={() => setEditando({ ...r, custo_padrao: String(r.custo_padrao).replace(".", ","), valor_venda: r.valor_venda != null ? String(r.valor_venda).replace(".", ",") : "", imagem_original: r.imagem_path || null })} style={btnGhostSmall}>Editar</button>{" "}
+                  <button onClick={() => setEditando({ ...r, custo_padrao: String(r.custo_padrao).replace(".", ","), valor_venda: r.valor_venda != null ? String(r.valor_venda).replace(".", ",") : "", imagem_original: r.imagem_path || null, componentes: (comps[r.id] || []).map((c) => ({ componente_id: c.componente_id, qtd: fmtQtd(Number(c.qtd)) })) })} style={btnGhostSmall}>Editar</button>{" "}
                   <button onClick={() => excluir(r.id)} style={btnDangerSmall}><Trash2 size={13} /></button>
                 </td>
               </tr>
