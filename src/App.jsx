@@ -5401,7 +5401,7 @@ function LancamentosFinView({ session, setErro, centros }) {
   const [ate, setAte] = useState(fimMesISO(hoje));
   const [empresa, setEmpresa] = useState("todas");
   const [tipo, setTipo] = useState("todos");
-  const [situacao, setSituacao] = useState("todas");
+  const [situacao, setSituacao] = useState("abertas");
   const [pendencia, setPendencia] = useState("todas");
   const [busca, setBusca] = useState("");
   const [fConta, setFConta] = useState("");
@@ -5417,6 +5417,7 @@ function LancamentosFinView({ session, setErro, centros }) {
   const [dataLote, setDataLote] = useState(hoje);
   const [bancoLote, setBancoLote] = useState("");
   const [confirmaLote, setConfirmaLote] = useState(false);
+  const [msgLote, setMsgLote] = useState(null);
   const [trocando, setTrocando] = useState(null);
   const [inicioInteg, setInicioInteg] = useState(null);
   const porId = useMemo(() => Object.fromEntries(centros.map((c) => [c.id, c])), [centros]);
@@ -5613,16 +5614,20 @@ function LancamentosFinView({ session, setErro, centros }) {
 
   async function baixarLote(ids) {
     const alvo = regs.filter((r) => ids.includes(String(r.id)) && r.situacao !== "quitada");
-    setConfirmaLote(false);
-    if (!alvo.length) { setErro("Os lançamentos selecionados já estão quitados."); return; }
+    setConfirmaLote(false); setMsgLote(null);
+    if (!alvo.length) { setMsgLote({ erro: true, texto: "Os lançamentos selecionados já estão quitados — nada a baixar." }); return; }
     setTrocando("lote"); setErro("");
+    let feitos = 0;
     try {
       for (const l of alvo) {
-        await sbRequest(`lancamentos_fin?id=eq.${l.id}`, session, { method: "PATCH", body: { situacao: "quitada", pagamento: dataLote, valor_pago: Number(l.valor), ...(bancoLote ? { banco: bancoLote } : {}) } });
+        const r = await sbRequest(`lancamentos_fin?id=eq.${l.id}&select=id`, session, { method: "PATCH", body: { situacao: "quitada", pagamento: dataLote, valor_pago: Number(l.valor), ...(bancoLote ? { banco: bancoLote } : {}) } });
+        if (Array.isArray(r) && r.length === 0) throw new Error(`sem permissão para dar baixa em ${l.fornecedor_cliente || "um lançamento"}`);
+        feitos++;
       }
       setMarcados({});
+      setMsgLote({ texto: `✓ ${feitos} lançamento(s) baixado(s) em ${fmtDataBR(dataLote)}.` });
       carregar();
-    } catch (e) { setErro(msgSupabase(e)); }
+    } catch (e) { setMsgLote({ erro: true, texto: `${feitos ? feitos + " baixado(s); " : ""}não foi possível baixar: ${msgSupabase(e)}` }); carregar(); }
     finally { setTrocando(null); }
   }
 
@@ -5713,6 +5718,12 @@ function LancamentosFinView({ session, setErro, centros }) {
         ))}
       </div>
 
+      {msgLote && (
+        <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 8, fontSize: 14, fontWeight: 600, display: "flex", gap: 10, alignItems: "center", background: msgLote.erro ? "#FDECEC" : "#E7F4EC", color: msgLote.erro ? DANGER : "#2E7D5B" }}>
+          <span style={{ flex: 1 }}>{msgLote.texto}</span>
+          <button onClick={() => setMsgLote(null)} style={btnGhostSmall}>OK</button>
+        </div>
+      )}
       {idsMarcados.length > 0 && (() => {
         const tipos = new Set(regs.filter((r) => idsMarcados.includes(String(r.id))).map((r) => r.tipo));
         return (
