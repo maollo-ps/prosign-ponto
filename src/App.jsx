@@ -682,7 +682,7 @@ export default function App() {
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: TEXT, fontFamily: FONT_BODY }}>
-      <Header tab={tab} setTab={setTab} onLogout={() => setSession(null)} podeVerAba={podeVerAba} celAtivo={celAtivo} onAlternarCelular={alternarCelular} ocultar={ocultar} onAlternarOcultar={alternarOcultar} />
+      <Header tab={tab} setTab={setTab} onLogout={() => setSession(null)} podeVerAba={podeVerAba} session={session} perfil={perfil} areas={areasPermitidas} celAtivo={celAtivo} onAlternarCelular={alternarCelular} ocultar={ocultar} onAlternarOcultar={alternarOcultar} />
       <main style={{ maxWidth: 1180, margin: "0 auto", padding: "28px 20px 80px" }}>
         {erro && (
           <div style={{ background: "#FDECEC", color: DANGER, padding: 12, borderRadius: 8, marginBottom: 16, fontSize: 13 }}>
@@ -785,7 +785,96 @@ function LoginScreen({ onLogin }) {
 }
 
 // ---------- Header ----------
-function Header({ tab, setTab, onLogout, podeVerAba, celAtivo, onAlternarCelular, ocultar, onAlternarOcultar }) {
+// ---------------------------------------------------------
+// Sininho de avisos: peças PRONTAS que ainda não têm foto.
+// Cada um vê o que é seu:
+//  · produção (Luiz, Nicolas): peças que ele marcou como prontas
+//  · logística (Fábio): OS com montagem nos próximos 2 dias
+//  · comercial: PRs em que ela é a responsável (ou sem responsável)
+//  · administrador: tudo
+// ---------------------------------------------------------
+let _focoProducao = null;
+function AvisosFoto({ session, perfil, areas, onIr }) {
+  const [itens, setItens] = useState([]);
+  const [aberto, setAberto] = useState(false);
+  const caixaRef = useRef(null);
+  const admin = !!perfil?.is_admin;
+  const eu = primeiroNome(perfil?.nome || "");
+  const temProd = areas.includes("producao"), temLog = areas.includes("logistica"), temCom = areas.includes("comercial");
+  const ativo = admin || temProd || temLog || temCom;
+  async function carregar() {
+    if (!ativo || !session) return;
+    try {
+      const rows = (await sbRequest("os_itens?select=id,descricao,qtd,setor,produzido_por,produzido_em,os:ordens_servico!inner(id,numero,evento,montagem_inicio,status,orcamentos(numero_or,responsavel))&status_producao=eq.pronto&foto_path=is.null&setor=not.is.null&setor=neq.terceiro&os.status=not.in.(concluida,cancelada)&limit=500", session)) || [];
+      setItens(rows);
+    } catch { /* aviso é só um extra: se falhar, não atrapalha */ }
+  }
+  useEffect(() => {
+    carregar();
+    const t = setInterval(() => { if (!document.hidden) carregar(); }, 5 * 60000);
+    return () => clearInterval(t);
+  }, [session?.access_token, perfil?.id, areas.join(",")]); // eslint-disable-line
+  useEffect(() => {
+    if (!aberto) return;
+    const fora = (e) => { if (caixaRef.current && !caixaRef.current.contains(e.target)) setAberto(false); };
+    document.addEventListener("mousedown", fora);
+    return () => document.removeEventListener("mousedown", fora);
+  }, [aberto]);
+  if (!ativo) return null;
+  const limiteMont = Date.now() + 2 * 24 * 3600 * 1000;
+  const meus = itens.filter((x) => {
+    if (admin) return true;
+    const fezEu = eu && primeiroNome(x.produzido_por) === eu;
+    const resp = primeiroNome(x.os?.orcamentos?.responsavel || "");
+    const montPerto = x.os?.montagem_inicio && new Date(x.os.montagem_inicio).getTime() <= limiteMont;
+    if (temCom && (!resp || resp === eu)) return true;
+    if (temLog && montPerto) return true;
+    if (temProd && fezEu) return true;
+    return false;
+  });
+  // agrupa por OS
+  const grupos = [];
+  const porOS = {};
+  meus.forEach((x) => {
+    const k = x.os?.id; if (!k) return;
+    if (!porOS[k]) { porOS[k] = { os: x.os, itens: [] }; grupos.push(porOS[k]); }
+    porOS[k].itens.push(x);
+  });
+  grupos.sort((a, b) => String(a.os.montagem_inicio || "9").localeCompare(String(b.os.montagem_inicio || "9")));
+  const n = meus.length;
+  return (
+    <div ref={caixaRef} style={{ position: "relative" }}>
+      <button onClick={() => { setAberto((v) => !v); if (!aberto) carregar(); }} title={n ? `${n} peça(s) pronta(s) aguardando foto` : "Sem avisos"}
+        style={{ position: "relative", background: "rgba(255,255,255,0.12)", border: "none", color: "#fff", cursor: "pointer", fontSize: 15, borderRadius: 8, padding: "5px 10px", lineHeight: 1 }}>
+        🔔
+        {n > 0 && <span style={{ position: "absolute", top: -5, right: -5, background: GOLD, color: NAVY, borderRadius: 999, fontSize: 10, fontWeight: 800, minWidth: 17, height: 17, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>{n > 99 ? "99+" : n}</span>}
+      </button>
+      {aberto && (
+        <div style={{ position: "absolute", right: 0, top: "calc(100% + 8px)", width: 360, maxWidth: "90vw", maxHeight: 420, overflowY: "auto", background: "#fff", color: TEXT, borderRadius: 10, boxShadow: "0 10px 30px rgba(0,0,0,.2)", zIndex: 2000, fontFamily: FONT_BODY }}>
+          <div style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}`, fontWeight: 700, color: NAVY, fontSize: 14 }}>
+            {n ? `📷 ${n} peça${n > 1 ? "s" : ""} pronta${n > 1 ? "s" : ""} aguardando foto` : "Tudo em dia 🙂"}
+          </div>
+          {!n && <div style={{ padding: 14, fontSize: 13, color: MUTED }}>Nenhuma peça pronta sem foto.</div>}
+          {grupos.map((g) => (
+            <div key={g.os.id} style={{ padding: "10px 14px", borderBottom: `1px solid ${BORDER}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "baseline" }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{g.os.orcamentos?.numero_or ? `PR ${g.os.orcamentos.numero_or} · ` : `${numOS(g.os.numero)} · `}{g.os.evento}</div>
+                {g.os.montagem_inicio && <div style={{ fontSize: 11, color: MUTED, whiteSpace: "nowrap" }}>mont. {fmtDH(g.os.montagem_inicio)}</div>}
+              </div>
+              <div style={{ fontSize: 12, color: MUTED, margin: "4px 0 6px" }}>
+                {g.itens.slice(0, 4).map((x) => <div key={x.id}>• {x.descricao}{x.produzido_por ? ` — pronto por ${primeiroNome(x.produzido_por)}` : ""}</div>)}
+                {g.itens.length > 4 && <div>• e mais {g.itens.length - 4}</div>}
+              </div>
+              <button onClick={() => { setAberto(false); onIr(g.os.id); }} style={{ ...btnGhostSmall, padding: "4px 10px", fontSize: 12 }}>Tirar foto →</button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Header({ tab, setTab, onLogout, podeVerAba, session, perfil, areas, celAtivo, onAlternarCelular, ocultar, onAlternarOcultar }) {
   const items = [
     { id: "comercial", label: "Comercial", icon: TrendingUp },
     { id: "financeiro", label: "Financeiro", icon: Wallet },
@@ -811,6 +900,7 @@ function Header({ tab, setTab, onLogout, podeVerAba, celAtivo, onAlternarCelular
             </h1>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <AvisosFoto session={session} perfil={perfil} areas={areas || []} onIr={(osId) => { _focoProducao = osId; setTab(podeVerAba("producao") ? "producao" : "logistica"); window.dispatchEvent(new CustomEvent("foco-producao")); }} />
             <button onClick={onAlternarOcultar} title={ocultar ? "Mostrar os valores" : "Esconder os valores (reunião, tela compartilhada)"}
               style={{ display: "flex", alignItems: "center", gap: 6, background: ocultar ? GOLD : "rgba(255,255,255,0.12)", border: "none", color: ocultar ? NAVY : "#fff", cursor: "pointer", fontSize: 12, fontWeight: 700, borderRadius: 6, padding: "5px 9px" }}>
               {ocultar ? <EyeOff size={15} /> : <Eye size={15} />} {ocultar ? "Valores ocultos" : "Valores"}
@@ -9101,6 +9191,18 @@ function ProducaoView({ session, setErro }) {
   const [agrupar, setAgrupar] = useState(true);
   const [abertos, setAbertos] = useState({}); // { os_id: true }
   const meuNome = useMeuNome(session);
+  // vindo do sininho: abre o PR e mostra também os prontos (para tirar a foto)
+  useEffect(() => {
+    const focar = () => {
+      const id = _focoProducao; if (!id) return;
+      _focoProducao = null;
+      setFiltro("todos"); setBusca(""); setSetor("todos"); setAgrupar(true); setAbertos((a) => ({ ...a, [id]: true }));
+      setTimeout(() => { const el = document.querySelector(`[data-os-grupo="${id}"]`); if (el) el.scrollIntoView({ behavior: "smooth", block: "start" }); }, 400);
+    };
+    focar();
+    window.addEventListener("foco-producao", focar);
+    return () => window.removeEventListener("foco-producao", focar);
+  }, []); // eslint-disable-line
   // itens novos (chegaram há menos de 3 dias e ninguém abriu neste computador) piscam até serem vistos
   const [vistos, setVistos] = useState(() => { try { return new Set(JSON.parse(localStorage.getItem("prod_vistos") || "[]")); } catch { return new Set(); } });
   function marcarVistos(ids) {
@@ -9288,6 +9390,7 @@ function ProducaoView({ session, setErro }) {
             const pct = g.total ? Math.round((g.prontos / g.total) * 100) : 0;
             return (
               <Card key={g.id} className={g.novos > 0 && !aberto ? "prod-novo" : undefined} style={{ padding: 0, overflow: "hidden", borderLeft: `5px solid ${g.prontos === g.total ? OK : g.aguardando ? "#B8902E" : NAVY}` }}>
+                <div data-os-grupo={g.id} style={{ scrollMarginTop: 12 }} />
                 <button type="button" onClick={() => { if (aberto) marcarVistos(g.todos.map((x) => x.id)); setAbertos((a) => ({ ...a, [g.id]: !a[g.id] })); }}
                   style={{ width: "100%", textAlign: "left", background: aberto ? "#F4F6FA" : "#fff", border: "none", padding: 14, cursor: "pointer", display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap", fontFamily: "inherit" }}>
                   <span style={{ fontSize: 16, color: MUTED, width: 14 }}>{aberto ? "▾" : "▸"}</span>
