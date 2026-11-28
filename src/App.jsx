@@ -877,12 +877,12 @@ function AvisosFoto({ session, perfil, areas, onIr }) {
 function Header({ tab, setTab, onLogout, podeVerAba, session, perfil, areas, celAtivo, onAlternarCelular, ocultar, onAlternarOcultar }) {
   const items = [
     { id: "comercial", label: "Comercial", icon: TrendingUp },
-    { id: "financeiro", label: "Financeiro", icon: Wallet },
     { id: "producao", label: "Produção", icon: Wrench },
     { id: "logistica", label: "Logística", icon: Truck },
-    { id: "cadastros", label: "Cadastros", icon: Briefcase },
+    { id: "financeiro", label: "Financeiro", icon: Wallet },
     { id: "resultados", label: "Resultados", icon: FileBarChart },
     { id: "rh", label: "Recursos Humanos", icon: Users },
+    { id: "cadastros", label: "Cadastros", icon: Briefcase },
     { id: "usuarios", label: "Usuários", icon: UserCog },
     { id: "historico", label: "Histórico", icon: Clock },
   ].filter((it) => podeVerAba(it.id));
